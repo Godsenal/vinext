@@ -53,6 +53,10 @@ function escapeChar(char: string): string {
 
 const encode = (value: string): string => value;
 let reassignable = (value: string): string => value;
+function mutable(value: string): string {
+  return value;
+}
+mutable = "$&" as never;
 
 export function splice(html: string, data: string, mapTag: (tag: string) => string): string[] {
   const replacement = \`<p>\${data}</p>\`;
@@ -66,6 +70,7 @@ export function splice(html: string, data: string, mapTag: (tag: string) => stri
     html.replace(PLACEHOLDER, ...[data]),
     html.replace(...[PLACEHOLDER, data]),
     html.replace(PLACEHOLDER, data, undefined),
+    html.replace(PLACEHOLDER, mutable),
     html.replace(PLACEHOLDER, "<p></p>"),
     html.replace(PLACEHOLDER, \`<p></p>\`),
     html.replace(PLACEHOLDER, () => \`<p>\${data}</p>\`),
@@ -87,7 +92,7 @@ export function splice(html: string, data: string, mapTag: (tag: string) => stri
     const reportedLines = [
       ...result.output.matchAll(/replacements\.ts:(\d+):\d+: error vinext-security/g),
     ].map((match) => Number(match[1]));
-    expect(reportedLines).toEqual([15, 16, 17, 18, 19, 20, 21, 22, 30]);
+    expect(reportedLines).toEqual([19, 20, 21, 22, 23, 24, 25, 26, 27, 35]);
   });
 
   it("leaves files outside the runtime directories alone", () => {

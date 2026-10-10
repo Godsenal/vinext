@@ -10,12 +10,13 @@
  * searched for tags.
  */
 import {
+  DOCUMENT_HEAD_OPEN_ATTRIBUTE,
   type DocumentComponentName,
   getDocumentHeadCloseMarker,
-  getDocumentHeadOpenMarker,
   getDocumentMainPlaceholder,
   getDocumentScriptsPlaceholder,
 } from "vinext/shims/document-placeholders";
+import { escapeRegExp } from "../utils/regex.js";
 
 const REQUIRED_DOCUMENT_COMPONENTS: readonly DocumentComponentName[] = [
   "Main",
@@ -29,14 +30,22 @@ function spliceAt(html: string, start: number, end: number, insertion: string): 
 }
 
 /**
- * Insert `insertion` right after `<Head>`'s opening tag and drop its marker.
- * The marker is the tag's last attribute, so the tag ends where it does.
+ * Insert `insertion` right after `<Head>`'s opening tag and drop its marker
+ * attribute. The attribute is matched in any quote style and position, since
+ * dev HTML transforms run between rendering and this splice.
  */
 export function spliceDocumentHeadOpen(html: string, token: string, insertion: string): string {
-  const marker = getDocumentHeadOpenMarker(token);
-  const index = html.indexOf(marker);
-  if (index === -1) return html;
-  return spliceAt(html, index, index + marker.length, `>${insertion}`);
+  const marker = new RegExp(
+    `\\s${DOCUMENT_HEAD_OPEN_ATTRIBUTE}=(["']?)${escapeRegExp(token)}\\1(?=[\\s/>])`,
+  ).exec(html);
+  if (!marker) return html;
+  const markerEnd = marker.index + marker[0].length;
+  // React escapes `>` in attribute values, so the next one ends the tag.
+  const tagEnd = html.indexOf(">", markerEnd) + 1;
+  if (tagEnd === 0) return html;
+  return (
+    html.slice(0, marker.index) + html.slice(markerEnd, tagEnd) + insertion + html.slice(tagEnd)
+  );
 }
 
 /** Replace `<Head>`'s closing marker with `insertion`. */

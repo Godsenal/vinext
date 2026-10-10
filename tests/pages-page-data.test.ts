@@ -678,6 +678,51 @@ describe("pages page data", () => {
     );
   });
 
+  it("persists props for the next request when the cached shell has no __NEXT_DATA__", async () => {
+    // A custom Document without <NextScript /> caches HTML without the data
+    // script, so regeneration can't reuse the shell. The next foreground
+    // request renders the Document again instead of a generic shell.
+    const isrSet = vi.fn(async () => {});
+    let regenerationPromise: Promise<void> | undefined;
+    await resolvePagesPageData(
+      createOptions({
+        isrGet: vi.fn().mockResolvedValue({
+          isStale: true,
+          value: {
+            cacheControl: { revalidate: 1, expire: undefined },
+            value: {
+              kind: "PAGES",
+              html: '<!DOCTYPE html><html><head></head><body><div id="__next">stale</div></body></html>',
+              pageData: {},
+            },
+          },
+        }),
+        isrSet,
+        pageModule: {
+          default: function Page() {},
+          getStaticProps() {
+            return { props: { fresh: true }, revalidate: 10 };
+          },
+        },
+        triggerBackgroundRegeneration: vi.fn((_key, callback) => {
+          regenerationPromise = callback();
+        }),
+      }),
+    );
+
+    await regenerationPromise;
+    expect(isrSet).toHaveBeenCalledWith(
+      "pages:/posts/post",
+      expect.objectContaining({
+        kind: "PAGES",
+        html: "",
+        generatedFromDataRequest: true,
+        pageData: expect.objectContaining({ pageProps: { fresh: true } }),
+      }),
+      { cacheControl: { revalidate: 10, expire: 300 } },
+    );
+  });
+
   it("returns a notFound signal when getStaticPaths excludes a dynamic HTML path", async () => {
     const result = await resolvePagesPageData(
       createOptions({

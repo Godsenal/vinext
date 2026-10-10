@@ -98,6 +98,18 @@ describe("Pages Document splicing", () => {
     expect(splitDocumentAtMain(html, token)).toEqual({ prefix: html, suffix: "" });
   });
 
+  it("finds the head-open marker after an HTML transform reserializes the tag", () => {
+    for (const attribute of ["data-vinext-head-open=token", "data-vinext-head-open='token'"]) {
+      expect(
+        spliceDocumentHeadOpen(
+          `<html><head ${attribute} lang=en><title>t</title></head></html>`,
+          "token",
+          "<a/>",
+        ),
+      ).toBe("<html><head lang=en><a/><title>t</title></head></html>");
+    }
+  });
+
   it("inserts nothing for a Document without <Head> or <NextScript />, like Next.js", () => {
     const html = '<html><head><title>t</title></head><body><div id="__next"></div></body></html>';
     let spliced = spliceDocumentHeadOpen(html, "token", "<a/>");

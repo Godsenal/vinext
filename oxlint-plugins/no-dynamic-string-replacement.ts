@@ -38,8 +38,11 @@ function isFunctionNode(node: ESTree.Node | null | undefined): boolean {
   return node?.type === "ArrowFunctionExpression" || node?.type === "FunctionExpression";
 }
 
-/** True when the identifier is bound to a function in this file. */
+/** True when the identifier is bound to a function in this file and never reassigned. */
 function isFunctionBinding(variable: Variable): boolean {
+  if (variable.references.some((reference) => reference.isWrite() && !reference.init)) {
+    return false;
+  }
   const definition = variable.defs[0];
   if (!definition) return false;
   if (definition.type === "FunctionName") return true;

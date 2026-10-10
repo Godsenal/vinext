@@ -1221,11 +1221,16 @@ function findLegacyNextDataScript(cachedHtml: string, searchable: string): numbe
   return -1;
 }
 
+/**
+ * Swap the fresh body and data into the cached shell, or return null when
+ * the shell has no `#__next` or `__NEXT_DATA__` to locate, e.g. a custom
+ * Document without `<Main />` or `<NextScript />`.
+ */
 function rewritePagesCachedHtml(
   cachedHtml: string,
   freshBody: string,
   nextDataScript: string,
-): string {
+): string | null {
   // Locate tags in the masked copy so tag-like text inside a Document's
   // inline scripts cannot move where the fresh body and data go.
   const searchable = maskRawTextContent(cachedHtml);
@@ -1251,16 +1256,16 @@ function rewritePagesCachedHtml(
     return cachedHtml.slice(0, contentStart) + freshBody + "</div>" + gap + nextDataScript + tail;
   }
 
-  return (
-    '<!DOCTYPE html>\n<html>\n<head>\n</head>\n<body>\n  <div id="__next">' +
-    freshBody +
-    "</div>\n  " +
-    nextDataScript +
-    "\n</body>\n</html>"
-  );
+  return null;
 }
 
-export async function renderPagesIsrHtml(options: RenderPagesIsrHtmlOptions): Promise<string> {
+/**
+ * Regenerate ISR HTML by rendering the page body into the cached shell.
+ * Returns null when the shell can't be reused; see `rewritePagesCachedHtml`.
+ */
+export async function renderPagesIsrHtml(
+  options: RenderPagesIsrHtmlOptions,
+): Promise<string | null> {
   const renderProps = options.props ?? { pageProps: options.pageProps };
   const collectHead = options.collectIsrHeadHTML;
   let freshHead = "";
@@ -1685,17 +1690,20 @@ export async function resolvePagesPageData(
                   vinext: options.vinext,
                 }),
               );
-              await options.isrSet(
-                cacheKey,
-                buildPagesCacheValue(freshHtml, freshRenderProps, options.statusCode),
-                { cacheControl: isrCacheControl(revalidateSeconds, { expireSeconds }) },
-              );
-              return;
+              if (freshHtml !== null) {
+                await options.isrSet(
+                  cacheKey,
+                  buildPagesCacheValue(freshHtml, freshRenderProps, options.statusCode),
+                  { cacheControl: isrCacheControl(revalidateSeconds, { expireSeconds }) },
+                );
+                return;
+              }
             }
 
-            // A cached redirect/not-found has no reusable HTML shell. Persist
-            // the resolved props and let the next foreground request render
-            // the canonical PAGES representation without re-running user code.
+            // A cached redirect/not-found, or a shell that can't be reused, has
+            // no HTML to regenerate into. Persist the resolved props and let the
+            // next foreground request render the canonical PAGES representation
+            // without re-running user code.
             await options.isrSet(
               cacheKey,
               {
