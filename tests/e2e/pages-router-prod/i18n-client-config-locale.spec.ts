@@ -115,6 +115,42 @@ test.describe("Pages i18n locale: false rewrites (production)", () => {
   }
 });
 
+// The server matches each later rule in a rewrite chain against the
+// default-locale-prefixed destination; client navigation must resolve the
+// chain the same way rather than render a different page.
+test.describe("Pages i18n rewrite chains (production)", () => {
+  let app: ProductionApp;
+
+  test.beforeAll(async () => {
+    test.setTimeout(180_000);
+    app = await buildAndServe("pages-i18n-public-rewrite");
+  });
+
+  test.afterAll(async () => {
+    await app?.close();
+  });
+
+  test("client navigation through a rewrite chain renders the same page as the server", async ({
+    page,
+    request,
+  }) => {
+    const html = await (await request.get(`${app.baseUrl}/chain-start`)).text();
+    const serverHeading = html.match(/<h1>([^<]*)<\/h1>/)?.[1];
+    expect(serverHeading).toBeTruthy();
+
+    await page.goto(`${app.baseUrl}/`);
+    await waitForHydration(page);
+    await page.evaluate(() => {
+      (window as any).__LOCALE_NAV_MARKER__ = true;
+    });
+
+    await page.evaluate(() => (window as any).next.router.push("/chain-start"));
+    await expect(page.locator("h1")).toHaveText(serverHeading!);
+    expect(new URL(page.url()).pathname).toBe("/chain-start");
+    expect(await page.evaluate(() => (window as any).__LOCALE_NAV_MARKER__)).toBe(true);
+  });
+});
+
 // Next.js's server applies this root rewrite (resolve-routes.ts re-adds the
 // root slash). This fixture maps `en` to the example.com domain, so a
 // default-locale client navigation from 127.0.0.1 is a cross-domain document

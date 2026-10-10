@@ -1815,12 +1815,7 @@ function hasClientAppRouteManifest(): boolean {
   return Array.isArray(routes) && routes.length > 0;
 }
 
-function getClientConfigRouteContext(
-  href: string,
-  // Only the navigation URL gets the default locale; like Next.js, later rules
-  // in a rewrite chain match the previous destination as-is.
-  prefixDefaultLocale = true,
-): {
+function getClientConfigRouteContext(href: string): {
   basePathState: { basePath: string; hadBasePath: boolean };
   context: RequestContext;
   pathname: string;
@@ -1845,9 +1840,7 @@ function getClientConfigRouteContext(
       host: parsed.hostname,
       query: parsed.searchParams,
     },
-    pathname: prefixDefaultLocale
-      ? normalizeClientConfigLocalePathname(pathname, parsed.hostname)
-      : pathname,
+    pathname: normalizeClientConfigLocalePathname(pathname, parsed.hostname),
     search: parsed.search,
   };
 }
@@ -1916,9 +1909,10 @@ async function resolveClientConfigRedirect(href: string): Promise<string | null>
 async function applyClientConfigRewrite(
   href: string,
   rewrite: ClientRewrite,
-  prefixDefaultLocale: boolean,
 ): Promise<{ href: string; kind: "rewrite" } | { kind: "document" } | null> {
-  const routeContext = getClientConfigRouteContext(href, prefixDefaultLocale);
+  // Each destination in a rewrite chain is re-normalized, as the server does
+  // through `configSourcePathname()`.
+  const routeContext = getClientConfigRouteContext(href);
   if (!routeContext) return null;
 
   const { matchClientRewrite } = await import("../client/client-rewrite-matcher.js");
@@ -2112,7 +2106,7 @@ async function resolveClientConfigRewrite(
   let matched = false;
   for (const rewrite of rewrites.beforeFiles) {
     if (rewrite.localeFallback) continue;
-    const result = await applyClientConfigRewrite(currentHref, rewrite, !matched);
+    const result = await applyClientConfigRewrite(currentHref, rewrite);
     if (result?.kind === "document") return result;
     if (result?.kind !== "rewrite") continue;
     currentHref = result.href;
