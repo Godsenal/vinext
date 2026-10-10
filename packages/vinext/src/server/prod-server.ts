@@ -2474,7 +2474,11 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
         basePath,
         trailingSlash,
         rawQs,
-        { i18n: i18nConfig, hostname: new URL(webRequest.url).hostname },
+        {
+          i18n: i18nConfig,
+          hostname: new URL(webRequest.url).hostname,
+          skipProxyUrlNormalize,
+        },
       );
       if (basePathRootResponse) {
         await sendWebResponse(basePathRootResponse, req, res, compress);

@@ -2041,6 +2041,24 @@ export default function Home() {
     expect(res.headers.get("location")).toBe("/app?q=1");
   });
 
+  it("redirects a dot-segment spelling of /app/ to /app like the production adapters", async () => {
+    // URL parsing canonicalizes the path client-side, so send it raw.
+    const http = await import("node:http");
+    const { hostname, port } = new URL(bpBaseUrl);
+    const { status, location } = await new Promise<{ status?: number; location?: string }>(
+      (resolve, reject) => {
+        http
+          .get({ hostname, port, path: "/app/%2e?q=1" }, (res) => {
+            res.resume();
+            resolve({ status: res.statusCode, location: res.headers.location });
+          })
+          .on("error", reject);
+      },
+    );
+    expect(status).toBe(308);
+    expect(location).toBe("/app?q=1");
+  });
+
   it("GET /app/about serves the about page", async () => {
     const res = await fetch(`${bpBaseUrl}/app/about`);
     expect(res.status).toBe(200);

@@ -768,6 +768,24 @@ describe("basePathRootRedirect", () => {
     expect(redirect("/docs/", false)).toBeNull();
     expect(redirect("/DOCS/", false)).toBe("/docs");
   });
+
+  it("also matches the trailing default-locale root under skipProxyUrlNormalize", () => {
+    // resolve-routes.ts `maybeAddTrailingSlash` does not restore the slash, so
+    // real Next.js 16.2.7 redirects `/docs/en/` too.
+    const i18n = { locales: ["en", "fr"], defaultLocale: "en" };
+    const redirect = (pathname: string, skipProxyUrlNormalize: boolean) =>
+      basePathRootRedirect(pathname, "/docs", true, "?q=1", {
+        i18n,
+        skipProxyUrlNormalize,
+      })?.headers.get("Location") ?? null;
+
+    expect(redirect("/docs/en/", true)).toBe("/docs/?q=1");
+    expect(redirect("/docs/en", true)).toBe("/docs/?q=1");
+    expect(redirect("/docs/fr/", true)).toBeNull();
+    expect(redirect("/docs/en/", false)).toBeNull();
+    // Next.js also matches `/docs/` here, redirecting it to itself forever.
+    expect(redirect("/docs/", true)).toBeNull();
+  });
 });
 
 describe("normalizeTrailingSlash", () => {

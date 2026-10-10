@@ -338,16 +338,19 @@ describe("createAppRscHandler", () => {
   );
 
   it.each([
-    [true, "/docs/en", "/docs/"],
-    [false, "/docs/", null],
+    [true, "/docs/en", "/docs/", false],
+    [true, "/docs/en/", null, false],
+    [true, "/docs/en/", "/docs/", true],
+    [false, "/docs/", null, false],
   ])(
-    "matches the basePath root redirect like Next.js with i18n (trailingSlash: %s, %s)",
-    async (trailingSlash, requestPath, location) => {
+    "matches the basePath root redirect like Next.js with i18n (trailingSlash: %s, %s → %s, skipProxyUrlNormalize: %s)",
+    async (trailingSlash, requestPath, location, skipProxyUrlNormalize) => {
       // Observed against real Next.js 16.2.7: internal routes see the root
       // after the default locale is inserted and stripped again.
       const handler = createHandler({
         i18nConfig: { locales: ["en", "fr"], defaultLocale: "en" },
         renderNotFound: async () => new Response("root", { status: 404 }),
+        skipProxyUrlNormalize,
         trailingSlash,
       });
 

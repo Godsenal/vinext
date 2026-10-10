@@ -2893,7 +2893,11 @@ export function createAppRscRequestHandler<TRoute extends AppRscHandlerRoute>(
       options.basePath,
       options.trailingSlash,
       pagesDataUrl.search,
-      { i18n: options.i18nConfig, hostname: pagesDataUrl.hostname },
+      {
+        i18n: options.i18nConfig,
+        hostname: pagesDataUrl.hostname,
+        skipProxyUrlNormalize: options.skipProxyUrlNormalize,
+      },
     );
     if (basePathRootResponse) return basePathRootResponse;
     const pagesDataInScope =

@@ -260,8 +260,11 @@ export function normalizeTrailingSlash(
  *
  * With i18n, Next matches internal routes after inserting the default locale
  * and stripping it again (`resolve-routes.ts` `handleRoute`). So with
- * `trailingSlash`, `/docs/<default locale>` matches as well. Without it, a
- * root under the exact basePath loses its slash on the way and never matches.
+ * `trailingSlash`, `/docs/<default locale>` matches as well, and so does
+ * `/docs/<default locale>/` under `skipProxyUrlNormalize` (`maybeAddTrailingSlash`
+ * does not restore the slash). Next then also matches `/docs/` itself, a
+ * redirect loop vinext does not reproduce. Without `trailingSlash`, a root
+ * under the exact basePath loses its slash on the way and never matches.
  *
  * `normalizeTrailingSlash` never redirects the root, and once basePath is
  * stripped both spellings are `/`, so adapters call this with the pathname
@@ -272,7 +275,11 @@ export function basePathRootRedirect(
   basePath: string,
   trailingSlash: boolean,
   search: string,
-  options: { i18n?: NextI18nConfig | null; hostname?: string | null } = {},
+  options: {
+    i18n?: NextI18nConfig | null;
+    hostname?: string | null;
+    skipProxyUrlNormalize?: boolean;
+  } = {},
 ): Response | null {
   if (!basePath) return null;
   const lowerPathname = pathname.toLowerCase();
@@ -285,11 +292,14 @@ export function basePathRootRedirect(
       ? (detectDomainLocale(i18n.domains, options.hostname ?? undefined)?.defaultLocale ??
         i18n.defaultLocale)
       : undefined;
+    const localeRoot =
+      defaultLocale === undefined ? undefined : `${lowerBasePath}/${defaultLocale.toLowerCase()}`;
     matches =
       lowerPathname === lowerBasePath ||
-      (defaultLocale !== undefined &&
+      (localeRoot !== undefined &&
         exactBasePath &&
-        lowerPathname === `${lowerBasePath}/${defaultLocale.toLowerCase()}`);
+        (lowerPathname === localeRoot ||
+          (!!options.skipProxyUrlNormalize && lowerPathname === `${localeRoot}/`)));
   } else {
     matches = lowerPathname === `${lowerBasePath}/` && !(i18n && exactBasePath);
   }

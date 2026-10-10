@@ -6120,9 +6120,11 @@ export const loadServerActionClient = ${
         });
 
         // Next.js's priority basePath root redirect. It must run before Vite's
-        // base middleware, which 404s `/docs` and strips `/docs/` to `/`.
+        // base middleware, which 404s `/docs` and strips `/docs/` to `/`. Like
+        // the production adapters' `URL.pathname`, match the canonical spelling
+        // (`/docs/%2e` is `/docs/`).
         server.middlewares.use((req, res, next) => {
-          const url = req.url ?? "/";
+          const url = canonicalizeRequestUrlPathname(req.url ?? "/");
           const queryIndex = url.indexOf("?");
           const pathname = queryIndex === -1 ? url : url.slice(0, queryIndex);
           const search = queryIndex === -1 ? "" : url.slice(queryIndex);
@@ -6132,7 +6134,11 @@ export const loadServerActionClient = ${
             basePath,
             nextConfig.trailingSlash,
             search,
-            { i18n: nextConfig.i18n, hostname: req.headers.host },
+            {
+              i18n: nextConfig.i18n,
+              hostname: req.headers.host,
+              skipProxyUrlNormalize: nextConfig.skipProxyUrlNormalize,
+            },
           );
           if (redirect) {
             res.writeHead(redirect.status, { Location: redirect.headers.get("Location") ?? "/" });

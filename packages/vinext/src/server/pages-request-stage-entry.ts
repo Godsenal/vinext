@@ -401,6 +401,7 @@ async function handleRequestImpl(
       {
         i18n: i18nConfig,
         hostname: url.hostname,
+        skipProxyUrlNormalize,
       },
     );
     if (basePathRootResponse) return basePathRootResponse;
