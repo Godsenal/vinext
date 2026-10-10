@@ -438,7 +438,7 @@ describe("pages page data", () => {
       },
     });
 
-    const [before, body, after] = html.split(inlineScript);
+    const [before, body, after] = html?.split(inlineScript) ?? [];
     expect(before).toBe("<!DOCTYPE html><html><head></head><body>");
     expect(body).toBe('<!-- <script> --><div id="__next"><div>fresh-body</div></div>');
     expect(after).toMatch(
@@ -584,7 +584,7 @@ describe("pages page data", () => {
 
     expect(html).toContain('<title data-next-head="">fresh</title>');
     expect(html).not.toContain("stale prefix");
-    expect(html.match(/<title data-next-head="">/g)).toHaveLength(1);
+    expect(html?.match(/<title data-next-head="">/g)).toHaveLength(1);
   });
 
   it("preserves custom app props in fallback shells", async () => {
