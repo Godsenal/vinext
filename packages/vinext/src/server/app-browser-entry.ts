@@ -1985,7 +1985,9 @@ function bootstrapHydration(
           onUncaughtError,
         });
   // Client-chunk stylesheets render after the app tree so a commit inserts the
-  // Server Component stylesheets first (see app-browser-stylesheets.ts).
+  // Server Component stylesheets first (see app-browser-stylesheets.ts). The
+  // SSR root renders an empty sibling in the same slot so `useId()` values in
+  // the app tree match on hydration (see app-ssr-entry.ts).
   const children = createElement(
     Fragment,
     null,
