@@ -164,9 +164,9 @@ export function expandIsolatedStylesheets(
 
 /**
  * Put the CSS of isolated stylesheet chunks ahead of each importer's own CSS,
- * in the importer's import order. Covers both pure CSS chunks (already hoisted
- * into the importer's `importedCss` by Vite) and CSS Module chunks (still
- * listed in `imports`). `isolatedCssFiles` maps each isolated CSS file to its
+ * in the importer's import order. Isolated chunks may still be listed in
+ * `imports` (CSS Module chunks, and pure CSS chunks before vite:css-post
+ * merges them) or already merged into the importer's `importedCss`. `isolatedCssFiles` maps each isolated CSS file to its
  * stylesheet module id; `getStylesheetOrder` gives a chunk's stylesheet order.
  *
  * plugin-rsc lists a chunk's own CSS before the CSS of the chunks it imports,
@@ -318,8 +318,8 @@ export function createSharedCssChunks(options: {
   const plugin: Plugin = {
     name: "vinext:shared-css-chunks",
     apply: "build",
-    // Run after vite:css-post has hoisted pure CSS chunks and before
-    // vite:build-import-analysis reads `importedCss` for preload deps.
+    // `renderChunk` must run after vite:css-post has filled each chunk's
+    // `importedCss`.
     enforce: "post",
     configResolved(resolvedConfig) {
       config = resolvedConfig;
@@ -407,14 +407,22 @@ export function createSharedCssChunks(options: {
       for (const file of importedCss) build.cssFileModules.set(file, moduleId);
       return null;
     },
-    generateBundle(_options, bundle: Rollup.OutputBundle) {
-      const build = activeBuild;
-      if (!build || build.environmentName !== this.environment.name) return;
-      if (build.environmentName === "client") {
-        deleteUnreferencedCssAssets(bundle, replacedClientCss);
-      }
-      if (build.cssFileModules.size === 0) return;
-      hoistIsolatedCss(bundle, isIsolatedChunk, build.cssFileModules, getChunkStylesheetOrder);
+    generateBundle: {
+      // Reorder before any other plugin reads `importedCss`: plugin-rsc
+      // snapshots client reference CSS for its assets manifest, vite:css-post
+      // merges pure CSS chunks into their importers (appending only files not
+      // already listed, so this order survives), and
+      // vite:build-import-analysis and the Vite manifest record preload deps.
+      order: "pre",
+      handler(_options, bundle: Rollup.OutputBundle) {
+        const build = activeBuild;
+        if (!build || build.environmentName !== this.environment.name) return;
+        if (build.environmentName === "client") {
+          deleteUnreferencedCssAssets(bundle, replacedClientCss);
+        }
+        if (build.cssFileModules.size === 0) return;
+        hoistIsolatedCss(bundle, isIsolatedChunk, build.cssFileModules, getChunkStylesheetOrder);
+      },
     },
   };
 

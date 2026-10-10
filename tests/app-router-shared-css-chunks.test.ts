@@ -553,7 +553,10 @@ export default function Lazy() {
         pathToFileURL(path.join(fixtureRoot, "dist", "server", "__vite_rsc_assets_manifest.js"))
           .href
       )
-    ).default as { serverResources: Record<string, { css: string[] }> };
+    ).default as {
+      serverResources: Record<string, { css: string[] }>;
+      clientReferenceDeps: Record<string, { js: string[]; css: string[] }>;
+    };
     const resourcesFor = (file: string) =>
       Object.entries(assetsManifest.serverResources).find(([key]) => key.endsWith(file))?.[1];
     const layoutResources = resourcesFor("app/layout.tsx");
@@ -579,6 +582,7 @@ export default function Lazy() {
       sharedCss,
       layoutResources,
       resourcesFor,
+      clientReferenceDeps: assetsManifest.clientReferenceDeps,
       chunkSources,
       toHref,
       clientManifest,
@@ -764,6 +768,52 @@ export default function Lazy() {
       )?.css;
       expect(lazyCss).toContain(toHref(sharedCss[0]).slice(1));
       expectMarkerOrder(await readCss(lazyCss ?? []), ["x-marker", ".shared-marker", ".y-marker"]);
+    } finally {
+      await fsp.rm(fixtureRoot, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 120_000);
+
+  it("keeps a client reference's import order in plugin-rsc's assets manifest", async () => {
+    const fixtureRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-shared-css-ref-"));
+    try {
+      const { sharedCss, toHref, clientReferenceDeps, readCss } = await buildSharedStylesheetApp(
+        fixtureRoot,
+        {
+          sharedCss: ".shared-marker { color: rgb(1, 2, 3); }\n",
+          files: {
+            "app/x.module.css": ".x-marker { color: rgb(7, 8, 9); }\n",
+            "app/y.css": ".y-marker { color: rgb(10, 11, 12); }\n",
+            "app/styled-client.tsx": `"use client";
+import x from "./x.module.css";
+import "./shared.css";
+import "./y.css";
+
+export default function StyledClient() {
+  return <p className={"shared-marker " + x["x-marker"]}>styled</p>;
+}
+`,
+            "app/page.tsx": `import StyledClient from "./styled-client";
+
+export default function Page() {
+  return <StyledClient />;
+}
+`,
+          },
+        },
+      );
+
+      expect(sharedCss).toHaveLength(1);
+      // React preinits a client reference's stylesheets in this order during
+      // SSR, so it must match the reference's own import order.
+      const referenceCss = Object.values(clientReferenceDeps).find((deps) =>
+        deps.css.includes(toHref(sharedCss[0])),
+      )?.css;
+      expect(referenceCss).toBeDefined();
+      expectMarkerOrder(await readCss(referenceCss ?? []), [
+        "x-marker",
+        ".shared-marker",
+        ".y-marker",
+      ]);
     } finally {
       await fsp.rm(fixtureRoot, { recursive: true, force: true }).catch(() => {});
     }
