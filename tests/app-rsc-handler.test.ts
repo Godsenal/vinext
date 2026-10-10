@@ -36,6 +36,7 @@ import {
 import { applyAppMiddleware } from "../packages/vinext/src/server/app-middleware.js";
 import { applyLocaleToRoutes } from "../packages/vinext/src/config/config-matchers.js";
 import type { NextRequest } from "../packages/vinext/src/shims/server.js";
+import type { NextRewrite } from "../packages/vinext/src/config/next-config.js";
 import {
   handleMetadataRouteRequest,
   isMetadataRouteRequestPath,
@@ -288,6 +289,75 @@ function useSplitPolicyAdapter(): void {
 afterEach(() => setCdnCacheAdapter(new DefaultCdnCacheAdapter()));
 
 describe("createAppRscHandler", () => {
+  // Next.js inserts the default locale into the request pathname only; later
+  // rules match a config rewrite's destination as-is (resolve-routes.ts).
+  describe("i18n rewrite chains", () => {
+    const i18nConfig = { locales: ["en", "fr"], defaultLocale: "en" };
+    const routes = new Map(
+      ["/middle", "/final"].map((pattern) => [
+        pattern,
+        createPageRoute({ pattern, routeSegments: [pattern.slice(1)] }),
+      ]),
+    );
+
+    async function renderedPatternFor(configRewrites: HandlerOptions["configRewrites"]) {
+      const handler = createHandler({
+        configHeaders: [],
+        configRewrites,
+        dispatchMatchedPage: async (options) => new Response(options.route.pattern),
+        i18nConfig,
+        matchRoute: (pathname: string) => {
+          const route = routes.get(pathname);
+          return route ? { params: {}, route } : null;
+        },
+      });
+      const response = await handler(new Request("https://example.test/docs/start"), null);
+      return response.status === 200 ? await response.text() : response.status;
+    }
+
+    const localized = (rewrites: NextRewrite[]) =>
+      applyLocaleToRoutes<NextRewrite>(rewrites, i18nConfig, "rewrite");
+
+    it("does not continue a locale:false destination through a later ordinary rule", async () => {
+      expect(
+        await renderedPatternFor({
+          afterFiles: [],
+          beforeFiles: [
+            { source: "/en/start", destination: "/middle", locale: false },
+            ...localized([{ source: "/middle", destination: "/final" }]),
+          ],
+          fallback: [],
+        }),
+      ).toBe("/middle");
+    });
+
+    it("continues an afterFiles locale:false chain through the unprefixed destination", async () => {
+      expect(
+        await renderedPatternFor({
+          afterFiles: [
+            { source: "/en/start", destination: "/missing", locale: false },
+            { source: "/missing", destination: "/final", locale: false },
+          ],
+          beforeFiles: [],
+          fallback: [],
+        }),
+      ).toBe("/final");
+    });
+
+    it("continues a locale:false chain through the unprefixed destination", async () => {
+      expect(
+        await renderedPatternFor({
+          afterFiles: [],
+          beforeFiles: [
+            { source: "/en/start", destination: "/middle", locale: false },
+            { source: "/middle", destination: "/final", locale: false },
+          ],
+          fallback: [],
+        }),
+      ).toBe("/final");
+    });
+  });
+
   it.each([
     [false, "/docs/other/"],
     [true, null],

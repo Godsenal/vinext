@@ -23849,10 +23849,9 @@ describe("Pages Router _next/data client navigation", () => {
     }
   });
 
-  it("re-normalizes each rewrite chain destination like the server", async () => {
-    // The server matches later rules against the default-locale-prefixed
-    // destination (`configSourcePathname()`), so a `locale: false` rule
-    // written against the bare destination does not continue the chain.
+  it("matches later rewrites in a chain against the previous destination as-is", async () => {
+    // Next.js prefixes the default locale onto the navigation URL only; a
+    // later rule matches the previous rule's destination unchanged.
     const previousWindow = (globalThis as any).window;
     const originalFetch = globalThis.fetch;
 
@@ -23888,8 +23887,8 @@ describe("Pages Router _next/data client navigation", () => {
       const Router = (await import("../packages/vinext/src/shims/router.js")).default;
       expect(await Router.push("/start")).toBe(true);
 
-      expect(middleLoader).toHaveBeenCalledTimes(1);
-      expect(finalLoader).not.toHaveBeenCalled();
+      expect(middleLoader).not.toHaveBeenCalled();
+      expect(finalLoader).toHaveBeenCalledTimes(1);
       expect(pushState).toHaveBeenLastCalledWith(expect.anything(), "", "/start");
     } finally {
       if (previousWindow === undefined) delete (globalThis as any).window;
@@ -23900,14 +23899,13 @@ describe("Pages Router _next/data client navigation", () => {
   });
 
   it.each([
-    ["generated locale variants", true, "/final"],
-    ["only the unprefixed fallback copy", false, "/middle"],
+    ["generated locale variants", true],
+    ["only the unprefixed fallback copy", false],
   ])(
-    "continues rewrite chains through locale variants, not fallback copies: %s",
-    async (_label, withLocaleVariants, expectedRoute) => {
-      // Like the server, the destination is re-prefixed with the default
-      // locale, so the localized variant continues the chain and the
-      // unprefixed fallback copy never matches.
+    "does not match later chain rules through unprefixed locale fallback copies: %s",
+    async (_label, withLocaleVariants) => {
+      // Next.js emits only the locale-prefixed variant of an ordinary rule, so
+      // an unprefixed intermediate destination ends the chain.
       const previousWindow = (globalThis as any).window;
       const originalFetch = globalThis.fetch;
 
@@ -23950,8 +23948,8 @@ describe("Pages Router _next/data client navigation", () => {
         const Router = (await import("../packages/vinext/src/shims/router.js")).default;
         expect(await Router.push("/start")).toBe(true);
 
-        expect(middleLoader).toHaveBeenCalledTimes(expectedRoute === "/middle" ? 1 : 0);
-        expect(finalLoader).toHaveBeenCalledTimes(expectedRoute === "/final" ? 1 : 0);
+        expect(middleLoader).toHaveBeenCalledTimes(1);
+        expect(finalLoader).not.toHaveBeenCalled();
       } finally {
         if (previousWindow === undefined) delete (globalThis as any).window;
         else (globalThis as any).window = previousWindow;
