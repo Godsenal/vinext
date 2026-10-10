@@ -23876,8 +23876,8 @@ describe("Pages Router _next/data client navigation", () => {
   });
 
   it.each([
-    ["generated locale variants (async matcher)", true],
-    ["only the unprefixed fallback copy (sync matcher)", false],
+    ["generated locale variants", true],
+    ["only the unprefixed fallback copy", false],
   ])(
     "does not match later chain rules through unprefixed locale fallback copies: %s",
     async (_label, withLocaleVariants) => {
@@ -24022,6 +24022,73 @@ describe("Pages Router _next/data client navigation", () => {
       vi.resetModules();
     }
   });
+
+  it.each([
+    ["a mixed-case literal", "/:locale/FILES", "/about", "/files", "/about"],
+    ["a catch-all after another param", "/:locale/files/:path*", "/:path*", "/files", null],
+    [
+      "a __proto__ capture",
+      "/:locale/:__proto__",
+      "/show/:locale/:__proto__",
+      "/value",
+      "/show/en/value",
+    ],
+  ])(
+    "matches i18n client rewrites like the server for %s",
+    async (_label, source, destination, target, expectedRoute) => {
+      // Locale prefixing reaches source shapes the simple matcher handles
+      // differently from matchConfigPattern, so i18n navigations use the full
+      // matcher.
+      const previousWindow = (globalThis as any).window;
+      const originalFetch = globalThis.fetch;
+
+      const loaders = {
+        "/": vi.fn(async () => makePageModule("home")),
+        "/about": vi.fn(async () => makePageModule("about")),
+        "/show/[locale]/[value]": vi.fn(async () => makePageModule("show")),
+        "/[slug]": vi.fn(async () => makePageModule("slug")),
+      };
+      const { win } = createDataNavWindow({
+        locale: "en",
+        loaders,
+        ssgPatterns: [],
+        sspPatterns: [],
+      });
+      (win as any).__VINEXT_LOCALES__ = ["en", "fr"];
+      (win as any).__VINEXT_DEFAULT_LOCALE__ = "en";
+      (win as any).__VINEXT_CLIENT_REWRITES__ = toClientRewrites({
+        beforeFiles: [{ source, destination, locale: false }],
+        afterFiles: [],
+        fallback: [],
+      });
+      (globalThis as any).window = win;
+      vi.resetModules();
+
+      const fetchMock = vi.fn(async () => new Response("{}"));
+      globalThis.fetch = fetchMock as any;
+
+      try {
+        const Router = (await import("../packages/vinext/src/shims/router.js")).default;
+        expect(await Router.push(target)).toBe(true);
+
+        const expectedLoader =
+          expectedRoute === "/about"
+            ? loaders["/about"]
+            : expectedRoute === null
+              ? loaders["/[slug]"]
+              : loaders["/show/[locale]/[value]"];
+        expect(expectedLoader).toHaveBeenCalledTimes(1);
+        for (const loader of Object.values(loaders)) {
+          if (loader !== expectedLoader) expect(loader).not.toHaveBeenCalled();
+        }
+      } finally {
+        if (previousWindow === undefined) delete (globalThis as any).window;
+        else (globalThis as any).window = previousWindow;
+        globalThis.fetch = originalFetch;
+        vi.resetModules();
+      }
+    },
+  );
 
   it("keeps a source trailing slash required when the pathname has none", async () => {
     // matchConfigPattern only makes a source's trailing slash optional when the

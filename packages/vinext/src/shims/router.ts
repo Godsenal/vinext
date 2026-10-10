@@ -1947,23 +1947,15 @@ function shouldEvaluateClientConfigRule(
   return ruleBasePath === false ? !state.hadBasePath : state.hadBasePath;
 }
 
-const SIMPLE_CLIENT_CONFIG_SEGMENT_RE = /^(?:[^:*+?()\\]*|:[\w-]+[*+]?)$/;
-
 function matchSimpleClientConfigPattern(
   pathname: string,
   source: string,
 ): Record<string, string> | null | undefined {
-  // Only whole-segment literals, `:param` and `:param*`/`:param+` are handled
-  // here; anything else (regex groups, optional params, `/:slug.md`,
-  // `/blog-:slug`) is left to matchConfigPattern.
-  if (!source.split("/").every((part) => SIMPLE_CLIENT_CONFIG_SEGMENT_RE.test(part))) {
+  if (source.includes("(") || source.includes("\\") || /:[\w-]+[*+][^/]/.test(source)) {
     return undefined;
   }
 
-  // Like matchConfigPattern: a source's trailing slash is optional only when
-  // the pathname has one.
-  const pathnameHadTrailingSlash = pathname.length > 1 && pathname.endsWith("/");
-  const sourceParts = (pathnameHadTrailingSlash ? removeTrailingSlash(source) : source).split("/");
+  const sourceParts = removeTrailingSlash(source).split("/");
   const pathParts = removeTrailingSlash(pathname).split("/");
   const params: Record<string, string> = {};
   let pathIndex = 0;
@@ -1992,13 +1984,6 @@ function matchSimpleClientConfigPattern(
   return pathIndex === pathParts.length ? params : null;
 }
 
-function destinationPathUsesAnyParam(destination: string, params: Record<string, string>): boolean {
-  const keys = Object.keys(params);
-  if (keys.length === 0) return true;
-  const pathAndHost = destination.split("#", 1)[0]!.split("?", 1)[0]!;
-  return keys.some((key) => new RegExp(`:${key}([+*])?(?![A-Za-z0-9_])`).test(pathAndHost));
-}
-
 function simpleClientConfigSourceCouldMatch(pathname: string, source: string): boolean {
   const wildcardIndex = source.search(/[:(\\*+?]/);
   const literalPrefix = wildcardIndex === -1 ? source : source.slice(0, wildcardIndex);
@@ -2014,15 +1999,24 @@ function isExternalClientConfigUrl(url: string): boolean {
   return /^[a-z][a-z0-9+.-]*:/i.test(url) || url.startsWith("//");
 }
 
+/**
+ * With i18n, rules match the locale-prefixed pathname, which reaches source
+ * shapes the simple matcher does not handle exactly as matchConfigPattern
+ * does. Leave those navigations to the full matcher.
+ */
+function usesFullClientConfigMatcher(): boolean {
+  return Boolean(window.__VINEXT_LOCALES__?.length);
+}
+
 function clientConfigRedirectCouldMatch(href: string): boolean {
   const redirects = window.__VINEXT_CLIENT_REDIRECTS__;
   if (!redirects || redirects.length === 0) return false;
+  if (usesFullClientConfigMatcher()) return true;
 
   const routeContext = getClientConfigRouteContext(href);
   if (!routeContext) return false;
 
   for (const redirect of redirects) {
-    if (redirect.localeFallback) continue;
     if (!shouldEvaluateClientConfigRule(redirect.basePath, routeContext.basePathState)) {
       continue;
     }
@@ -2039,12 +2033,12 @@ function clientConfigRedirectCouldMatch(href: string): boolean {
 function resolveClientConfigRewriteSync(href: string): ClientConfigRewriteResolution {
   const rewrites = window.__VINEXT_CLIENT_REWRITES__;
   if (!rewrites) return null;
+  if (usesFullClientConfigMatcher()) return undefined;
 
   let currentHref = href;
   let matched = false;
   for (const rewrite of rewrites.beforeFiles) {
-    if (rewrite.localeFallback) continue;
-    const routeContext = getClientConfigRouteContext(currentHref, !matched);
+    const routeContext = getClientConfigRouteContext(currentHref);
     if (!routeContext) return null;
     if (!shouldEvaluateClientConfigRule(rewrite.basePath, routeContext.basePathState)) {
       continue;
@@ -2057,9 +2051,6 @@ function resolveClientConfigRewriteSync(href: string): ClientConfigRewriteResolu
     const params = matchSimpleClientConfigPattern(routeContext.pathname, rewrite.source);
     if (params === undefined) return undefined;
     if (params === null) continue;
-    // matchRewrite appends captures to the query when the destination's path
-    // and host use none of them; leave that case to it.
-    if (!destinationPathUsesAnyParam(rewrite.destination, params)) return undefined;
 
     const rewritten = substituteDestinationParams(rewrite.destination, params, "rewrite");
     if (isExternalClientConfigUrl(rewritten)) return { kind: "document" };
