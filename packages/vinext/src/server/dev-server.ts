@@ -24,6 +24,7 @@ import {
 import "vinext/shims/router-state";
 import {
   createDocumentPlaceholderToken,
+  type DocumentComponentName,
   withDocumentPlaceholders,
 } from "vinext/shims/document-placeholders";
 import { withScriptNonce } from "vinext/shims/script-nonce-context";
@@ -433,6 +434,7 @@ async function streamPageToResponseImpl(
   // Build the document shell with a placeholder for the body
   const streamBodyMarker = `<!--VINEXT_STREAM_BODY:${ssrHeadMarkerId}-->`;
   const placeholderToken = createDocumentPlaceholderToken();
+  const renderedComponents = new Set<DocumentComponentName>();
   let shellTemplate: string;
   let documentAssetProps: DocumentAssetProps = {};
   const protectedAssetMarker = `data-vinext-document-asset-props-protected-${randomUUID()}`;
@@ -461,11 +463,13 @@ async function streamPageToResponseImpl(
       ? React.createElement(DocumentComponent, docProps)
       : React.createElement(DocumentComponent);
     const renderedDocument = extractDocumentAssetProps(
-      await renderToStringAsync(withDocumentPlaceholders(docElement, placeholderToken)),
+      await renderToStringAsync(
+        withDocumentPlaceholders(docElement, placeholderToken, renderedComponents),
+      ),
       placeholderToken,
     );
     documentAssetProps = renderedDocument.props;
-    warnMissingDocumentComponents(renderedDocument.html, placeholderToken);
+    warnMissingDocumentComponents(renderedComponents);
     let docHtml = protectAssetTags(renderedDocument.html);
     const generatedScripts = applyGeneratedAssetProps(
       scripts,

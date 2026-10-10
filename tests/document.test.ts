@@ -74,6 +74,23 @@ describe("per-render placeholders with raw head HTML", () => {
     );
     expect(render(head)).toBe("<head><title>t</title></head>");
   });
+
+  it("stringify TrustedHTML-like raw head HTML as React does", () => {
+    const head = React.createElement(Head, {
+      dangerouslySetInnerHTML: { __html: { toString: () => "<title>t</title>" } },
+    } as unknown as React.ComponentProps<typeof Head>);
+    expect(render(withDocumentPlaceholders(head, "token"))).toBe(
+      '<head data-vinext-head-open="token"><title>t</title><template data-vinext-head-close="token"></template></head>',
+    );
+  });
+});
+
+describe("rendered Document components", () => {
+  it("records each next/document component that rendered", () => {
+    const rendered = new Set<string>();
+    render(withDocumentPlaceholders(React.createElement(Document), "token", rendered as never));
+    expect([...rendered].sort()).toEqual(["Head", "Html", "Main", "NextScript"]);
+  });
 });
 
 describe("NextScript", () => {

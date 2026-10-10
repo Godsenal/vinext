@@ -10,7 +10,16 @@
  */
 import React from "react";
 
-export const DocumentPlaceholderContext = React.createContext<string | null>(null);
+export type DocumentComponentName = "Main" | "Head" | "NextScript" | "Html";
+
+type DocumentPlaceholderContextValue = {
+  token: string;
+  renderedComponents: Set<DocumentComponentName> | undefined;
+};
+
+const DocumentPlaceholderContext = React.createContext<DocumentPlaceholderContextValue | null>(
+  null,
+);
 
 /** Attribute `<Head>` adds last on its opening tag. */
 export const DOCUMENT_HEAD_OPEN_ATTRIBUTE = "data-vinext-head-open";
@@ -21,11 +30,27 @@ export function createDocumentPlaceholderToken(): string {
   return crypto.randomUUID();
 }
 
+/**
+ * Provide this render's token. The `next/document` components add their
+ * names to `renderedComponents`, like Next.js's `docComponentsRendered`.
+ */
 export function withDocumentPlaceholders(
   element: React.ReactElement,
   token: string,
+  renderedComponents?: Set<DocumentComponentName>,
 ): React.ReactElement {
-  return React.createElement(DocumentPlaceholderContext.Provider, { value: token }, element);
+  return React.createElement(
+    DocumentPlaceholderContext.Provider,
+    { value: { token, renderedComponents } },
+    element,
+  );
+}
+
+/** Record that `component` rendered and return this render's token, if any. */
+export function useDocumentPlaceholderToken(component: DocumentComponentName): string | null {
+  const context = React.useContext(DocumentPlaceholderContext);
+  context?.renderedComponents?.add(component);
+  return context?.token ?? null;
 }
 
 /**

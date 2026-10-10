@@ -64,6 +64,7 @@ export function splice(html: string, data: string, mapTag: (tag: string) => stri
     html["replace"](PLACEHOLDER, data),
     html.replace(PLACEHOLDER, reassignable),
     html.replace(PLACEHOLDER, ...[data]),
+    html.replace(...[PLACEHOLDER, data]),
     html.replace(PLACEHOLDER, "<p></p>"),
     html.replace(PLACEHOLDER, \`<p></p>\`),
     html.replace(PLACEHOLDER, () => \`<p>\${data}</p>\`),
@@ -83,7 +84,7 @@ export function splice(html: string, data: string, mapTag: (tag: string) => stri
     const reportedLines = [
       ...result.output.matchAll(/replacements\.ts:(\d+):\d+: error vinext-security/g),
     ].map((match) => Number(match[1]));
-    expect(reportedLines).toEqual([15, 16, 17, 18, 19, 20]);
+    expect(reportedLines).toEqual([15, 16, 17, 18, 19, 20, 21]);
   });
 
   it("leaves files outside the runtime directories alone", () => {

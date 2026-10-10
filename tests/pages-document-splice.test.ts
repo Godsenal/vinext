@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { Head, Html, Main, NextScript } from "../packages/vinext/src/shims/document.js";
 import {
   createDocumentPlaceholderToken,
+  type DocumentComponentName,
   withDocumentPlaceholders,
 } from "../packages/vinext/src/shims/document-placeholders.js";
 import {
@@ -14,8 +15,14 @@ import {
   warnMissingDocumentComponents,
 } from "../packages/vinext/src/server/pages-document-splice.js";
 
-async function renderDocument(element: React.ReactElement, token: string): Promise<string> {
-  const stream = await renderToReadableStream(withDocumentPlaceholders(element, token));
+async function renderDocument(
+  element: React.ReactElement,
+  token: string,
+  renderedComponents?: Set<DocumentComponentName>,
+): Promise<string> {
+  const stream = await renderToReadableStream(
+    withDocumentPlaceholders(element, token, renderedComponents),
+  );
   await stream.allReady;
   return new Response(stream).text();
 }
@@ -106,30 +113,31 @@ describe("Pages Document splicing", () => {
 
     it("warns with Next.js's message for the components a Document left out", async () => {
       const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-      const token = createDocumentPlaceholderToken();
-      const html = await renderDocument(
+      const rendered = new Set<DocumentComponentName>();
+      await renderDocument(
         React.createElement(
-          Html,
+          "html",
           null,
           React.createElement("head"),
           React.createElement("body", null, React.createElement(Main)),
         ),
-        token,
+        createDocumentPlaceholderToken(),
+        rendered,
       );
 
-      warnMissingDocumentComponents(html, token);
+      warnMissingDocumentComponents(rendered);
 
       expect(warn).toHaveBeenCalledWith(
         "Your custom Document (pages/_document) did not render all the required subcomponents.\n" +
-          "Missing components: <Head />, <NextScript />\n" +
+          "Missing components: <Head />, <NextScript />, <Html />\n" +
           "Read how to fix here: https://nextjs.org/docs/messages/missing-document-component",
       );
     });
 
     it("stays quiet for a complete Document", async () => {
       const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-      const token = createDocumentPlaceholderToken();
-      const html = await renderDocument(
+      const rendered = new Set<DocumentComponentName>();
+      await renderDocument(
         React.createElement(
           Html,
           null,
@@ -141,10 +149,11 @@ describe("Pages Document splicing", () => {
             React.createElement(NextScript),
           ),
         ),
-        token,
+        createDocumentPlaceholderToken(),
+        rendered,
       );
 
-      warnMissingDocumentComponents(html, token);
+      warnMissingDocumentComponents(rendered);
 
       expect(warn).not.toHaveBeenCalled();
     });

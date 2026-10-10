@@ -16,7 +16,7 @@ import { safeJsonStringify } from "../server/html.js";
 import {
   DOCUMENT_HEAD_CLOSE_ATTRIBUTE,
   DOCUMENT_HEAD_OPEN_ATTRIBUTE,
-  DocumentPlaceholderContext,
+  useDocumentPlaceholderToken,
   getDocumentHeadCloseMarker,
   getDocumentMainPlaceholder,
   getDocumentScriptsPlaceholder,
@@ -49,6 +49,7 @@ const HtmlContext = React.createContext<HtmlProps | undefined>(undefined);
 export function Html(
   props: React.DetailedHTMLProps<React.HtmlHTMLAttributes<HTMLHtmlElement>, HTMLHtmlElement>,
 ): React.ReactElement {
+  useDocumentPlaceholderToken("Html");
   return <html {...props} />;
 }
 
@@ -110,7 +111,7 @@ function DocumentHeadElement({
   children,
   ...props
 }: React.ComponentPropsWithoutRef<"head">): React.ReactElement {
-  const token = React.useContext(DocumentPlaceholderContext);
+  const token = useDocumentPlaceholderToken("Head");
   // The renderer inserts `next/head` output after the opening tag and asset
   // tags before the closing <template>. Both markers are spliced out, and
   // the open marker stays the tag's last attribute so the tag ends after it.
@@ -121,9 +122,8 @@ function DocumentHeadElement({
   const openMarker = token ? { [DOCUMENT_HEAD_OPEN_ATTRIBUTE]: token } : {};
   if (dangerouslySetInnerHTML) {
     // Raw head HTML takes no children, so the close marker joins the HTML.
-    // Documents render only on the server, where `__html` is a string.
-    const raw = dangerouslySetInnerHTML.__html;
-    const html = typeof raw === "string" ? raw : "";
+    // oxlint-disable-next-line typescript/no-base-to-string -- React stringifies TrustedHTML the same way
+    const html = String(dangerouslySetInnerHTML.__html ?? "");
     return (
       <head
         {...attributes}
@@ -145,7 +145,7 @@ function DocumentHeadElement({
 }
 
 export function Main(): React.ReactElement {
-  const token = React.useContext(DocumentPlaceholderContext);
+  const token = useDocumentPlaceholderToken("Main");
   return (
     <div id="__next" dangerouslySetInnerHTML={{ __html: getDocumentMainPlaceholder(token) }} />
   );
@@ -193,7 +193,7 @@ export class NextScript extends React.Component<OriginProps> {
 }
 
 function NextScriptPlaceholder(props: Record<string, string>): React.ReactElement {
-  const token = React.useContext(DocumentPlaceholderContext);
+  const token = useDocumentPlaceholderToken("NextScript");
   return (
     <span {...props} dangerouslySetInnerHTML={{ __html: getDocumentScriptsPlaceholder(token) }} />
   );

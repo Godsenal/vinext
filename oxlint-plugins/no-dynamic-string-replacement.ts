@@ -68,6 +68,14 @@ const rule = defineRule({
       return false;
     }
 
+    function report(node: ESTree.Node): void {
+      context.report({
+        node,
+        message:
+          "Pass a function (or a static string) as the replacement: String#replace expands `$&`, `` $` `` and `$'` inside dynamic strings, letting inserted data rewrite the output.",
+      });
+    }
+
     return {
       CallExpression(node) {
         const callee = node.callee;
@@ -81,17 +89,18 @@ const rule = defineRule({
             ? property.name
             : null;
         if (methodName === null || !REPLACE_METHODS.has(methodName)) return;
+        // A spread that could supply the replacement can't be shown to be a
+        // static string or a function.
+        const spread = node.arguments.slice(0, 2).find((arg) => arg.type === "SpreadElement");
+        if (spread) {
+          report(spread);
+          return;
+        }
         // String#replace takes exactly two arguments; this skips the Pages
         // router's `replace(url, as, options)` without type information.
         if (node.arguments.length !== 2) return;
         const replacement = node.arguments[1];
-        // A spread can't be shown to supply a static string or a function.
-        if (replacement.type !== "SpreadElement" && isSafeReplacement(replacement)) return;
-        context.report({
-          node: replacement,
-          message:
-            "Pass a function (or a static string) as the replacement: String#replace expands `$&`, `` $` `` and `$'` inside dynamic strings, letting inserted data rewrite the output.",
-        });
+        if (!isSafeReplacement(replacement)) report(replacement);
       },
     };
   },

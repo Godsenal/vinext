@@ -68,7 +68,7 @@ function createStream(chunks: string[]): ReadableStream<Uint8Array> {
 
 /** Give a mocked Document's shim placeholders this render's token. */
 function renderMockDocument(element: React.ReactNode, html: string): string {
-  const token = (element as React.ReactElement<{ value: string }>).props.value;
+  const token = (element as React.ReactElement<{ value: { token: string } }>).props.value.token;
   return html
     .replace(
       /<head\b([^>]*)>/,
@@ -1120,9 +1120,7 @@ describe("pages page response", () => {
       expect(html).toMatch(
         /<\/head><body><div id="__next"><div>live-body<\/div><\/div><\/body><\/html>$/,
       );
-      expect(warn).toHaveBeenCalledWith(
-        expect.stringContaining("Missing component: <NextScript />"),
-      );
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("<NextScript />"));
     } finally {
       warn.mockRestore();
     }

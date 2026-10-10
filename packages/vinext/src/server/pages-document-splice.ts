@@ -10,11 +10,19 @@
  * searched for tags.
  */
 import {
+  type DocumentComponentName,
   getDocumentHeadCloseMarker,
   getDocumentHeadOpenMarker,
   getDocumentMainPlaceholder,
   getDocumentScriptsPlaceholder,
 } from "vinext/shims/document-placeholders";
+
+const REQUIRED_DOCUMENT_COMPONENTS: readonly DocumentComponentName[] = [
+  "Main",
+  "Head",
+  "NextScript",
+  "Html",
+];
 
 function spliceAt(html: string, start: number, end: number, insertion: string): string {
   return html.slice(0, start) + insertion + html.slice(end);
@@ -62,17 +70,14 @@ export function splitDocumentAtMain(
 }
 
 /**
- * Outside production, warn about a Document that left out `<Main />`,
- * `<Head>` or `<NextScript />`, with Next.js's message. Call it on the
- * rendered Document before any marker is spliced out.
+ * Outside production, warn about a Document that left out a required
+ * `next/document` component, with Next.js's message.
  */
-export function warnMissingDocumentComponents(html: string, token: string): void {
+export function warnMissingDocumentComponents(
+  renderedComponents: ReadonlySet<DocumentComponentName>,
+): void {
   if (process.env.NODE_ENV === "production") return;
-  const missing = [
-    html.includes(getDocumentMainPlaceholder(token)) ? null : "Main",
-    html.includes(getDocumentHeadOpenMarker(token)) ? null : "Head",
-    html.includes(getDocumentScriptsPlaceholder(token)) ? null : "NextScript",
-  ].filter((name) => name !== null);
+  const missing = REQUIRED_DOCUMENT_COMPONENTS.filter((name) => !renderedComponents.has(name));
   if (missing.length === 0) return;
   const plural = missing.length !== 1 ? "s" : "";
   console.warn(

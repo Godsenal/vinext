@@ -3,6 +3,7 @@ import type { VinextNextData } from "../client/vinext-next-data.js";
 import type { CachedPagesValue } from "vinext/shims/cache-handler";
 import {
   createDocumentPlaceholderToken,
+  type DocumentComponentName,
   withDocumentPlaceholders,
 } from "vinext/shims/document-placeholders";
 import { withScriptNonce } from "vinext/shims/script-nonce-context";
@@ -346,12 +347,15 @@ async function buildPagesShellHtml(
       ? React.createElement(options.DocumentComponent, docProps)
       : React.createElement(options.DocumentComponent);
     const placeholderToken = createDocumentPlaceholderToken();
+    const renderedComponents = new Set<DocumentComponentName>();
     const renderedDocument = extractDocumentAssetProps(
-      await options.renderDocumentToString(withDocumentPlaceholders(docElement, placeholderToken)),
+      await options.renderDocumentToString(
+        withDocumentPlaceholders(docElement, placeholderToken, renderedComponents),
+      ),
       placeholderToken,
     );
     let html = renderedDocument.html;
-    warnMissingDocumentComponents(html, placeholderToken);
+    warnMissingDocumentComponents(renderedComponents);
     const generatedAssetTags = applyDocumentAssetProps(options.assetTags, renderedDocument.props, {
       configuredCrossOrigin: options.crossOrigin,
       // Next.js emits optimized framework scripts from Head. When optimized

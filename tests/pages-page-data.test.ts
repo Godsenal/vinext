@@ -330,8 +330,8 @@ describe("maskRawTextContent", () => {
     expect(maskRawTextContent(html)).toBe(`<script>${" ".repeat(text.length)}</script><head>`);
   });
 
-  it("scans unterminated openers in linear time", () => {
-    for (const opener of ["<!--", "<script>", "<script "]) {
+  it("scans many comments and unterminated openers in linear time", () => {
+    for (const opener of ["<!--", "<!--x-->", "<script>", "<script "]) {
       const html = opener.repeat(250_000);
       const started = performance.now();
       expect(maskRawTextContent(html)).toHaveLength(html.length);

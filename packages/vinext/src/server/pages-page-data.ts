@@ -1193,11 +1193,13 @@ export function maskRawTextContent(html: string): string {
 
 /** End of the comment opened at `start`: `-->`, `--!>`, `<!-->` or `<!--->`. */
 function findCommentEnd(html: string, start: number): number {
-  // Searching from the opener's dashes also matches `<!-->` and `<!--->`.
-  const close = html.indexOf("-->", start + 2);
-  const bangClose = html.indexOf("--!>", start + 4);
-  if (bangClose !== -1 && (close === -1 || bangClose < close)) return bangClose + 4;
-  return close === -1 ? html.length : close + 3;
+  // Scanning from the opener's dashes also matches `<!-->` and `<!--->`.
+  for (let dashes = html.indexOf("--", start + 2); dashes !== -1;) {
+    if (html[dashes + 2] === ">") return dashes + 3;
+    if (dashes >= start + 4 && html.startsWith("!>", dashes + 2)) return dashes + 4;
+    dashes = html.indexOf("--", dashes + 1);
+  }
+  return html.length;
 }
 
 function findClosingTag(html: string, name: string, from: number): number {
