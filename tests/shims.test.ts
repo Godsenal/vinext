@@ -13076,6 +13076,9 @@ describe("matchConfigPattern", () => {
     // Unnamed groups do not shift the param captures.
     expect(matchConfigPattern("/en", "/(en|fr)/:path*")).toEqual({ path: "" });
     expect(matchConfigPattern("/en/a", "/(en|fr)/:path*")).toEqual({ path: "a" });
+    expect(matchConfigPattern("/en/b", "/(en|fr)/:x(a|b)/:tail*")).toEqual({ x: "b", tail: "" });
+    // The compiled source adds no named groups, so `\\k` stays an identity escape.
+    expect(matchConfigPattern("/k/z", "/(\\k)/:tail*")).toEqual({ tail: "z" });
     // A greedy earlier param takes the rest, as in path-to-regexp.
     expect(matchConfigPattern("/x/y", "/:a+/:b*")).toEqual({ a: "x/y", b: "" });
   });
