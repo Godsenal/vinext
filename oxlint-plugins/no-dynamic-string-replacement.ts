@@ -10,6 +10,11 @@
  *
  * The replacement must therefore be a static string, whose patterns are
  * visible in review, or a function, whose return value is inserted verbatim.
+ *
+ * The rule guards against accidental dynamic replacements in direct calls
+ * (`s.replace`, `s["replace"]`, `s.replace.call`/`.apply`, through TypeScript
+ * assertions). It does not follow aliased methods or reflection such as
+ * `Reflect.apply(String.prototype.replace, …)`.
  */
 import { definePlugin, defineRule, type ESTree, type Scope, type Variable } from "@oxlint/plugins";
 
@@ -25,9 +30,23 @@ function findVariable(scope: Scope | null, name: string): Variable | null {
   return null;
 }
 
+/** Strip TypeScript-only wrappers, which vanish at runtime. */
+function unwrap(node: ESTree.Node): ESTree.Node {
+  let current = node;
+  while (
+    current.type === "TSAsExpression" ||
+    current.type === "TSSatisfiesExpression" ||
+    current.type === "TSNonNullExpression" ||
+    current.type === "ParenthesizedExpression"
+  ) {
+    current = current.expression;
+  }
+  return current;
+}
+
 /** The property name of `object.name` or `object["name"]`, if static. */
 function getMethodName(member: ESTree.MemberExpression): string | null {
-  if (member.computed) return getStaticString(member.property);
+  if (member.computed) return getStaticString(unwrap(member.property));
   return member.property.type === "Identifier" ? member.property.name : null;
 }
 
@@ -108,7 +127,7 @@ const rule = defineRule({
 
     return {
       CallExpression(node) {
-        const callee = node.callee;
+        const callee = unwrap(node.callee);
         if (callee.type !== "MemberExpression") return;
         const methodName = getMethodName(callee);
         if (methodName !== null && REPLACE_METHODS.has(methodName)) {
@@ -119,7 +138,7 @@ const rule = defineRule({
         }
         // `s.replace.call(s, pattern, replacement)` and
         // `s.replace.apply(s, [pattern, replacement])`.
-        const target = callee.object;
+        const target = unwrap(callee.object);
         if (target.type !== "MemberExpression") return;
         const targetName = getMethodName(target);
         if (targetName === null || !REPLACE_METHODS.has(targetName)) return;
@@ -130,7 +149,11 @@ const rule = defineRule({
           }
           checkReplaceArguments(node.arguments.slice(1));
         } else if (methodName === "apply") {
-          const list = node.arguments[1];
+          if (node.arguments[0]?.type === "SpreadElement") {
+            report(node.arguments[0]);
+            return;
+          }
+          const list = node.arguments[1] && unwrap(node.arguments[1]);
           if (!list) return;
           if (list.type === "ArrayExpression") checkReplaceArguments(list.elements);
           else report(list);
