@@ -77,6 +77,7 @@ export type VinextResponseStoreEnv = WorkersResponseStoreClientEnv | WorkersResp
 const ROUTE_REVALIDATOR_ID = "vinext:response";
 const RESPONSE_STORE_KEY_PARAM = "__workers_response_store";
 const AGE_BASIS_HEADER = "X-Workers-Response-Store-Age-Basis";
+const STORED_WITHOUT_ETAG_HEADER = "X-Vinext-Response-Store-Without-ETag";
 const WARMUP_USER_AGENT = "vinext-cloudflare-cdn-warm";
 const REPLAY_REQUEST_HEADERS = VINEXT_RSC_VARY_HEADER.split(",").map((name) =>
   name.trim().toLowerCase(),
@@ -241,7 +242,7 @@ export function createVinextResponseStoreOptions<Env extends VinextResponseStore
           await response.body?.cancel().catch(() => {});
           throw new Error("Vinext response-stage regeneration was not cacheable");
         }
-        return withPageETag(
+        return forStorage(
           withoutRequestScopedHeaders(response, invocation.props),
           invocation.props,
         );
@@ -412,24 +413,31 @@ function answersConditionalRequest(responseStageProps: unknown, status: number):
 }
 
 /**
- * Store a page with Next.js's ETag, a hash of its payload, so a regeneration
- * that renders the same page keeps the validator its clients hold. The store
- * gives an entry without an ETag a per-revision one. Reading the body never
- * delays a client: admission reads its own branch of the body, no client
- * waits on a regeneration, and a fill's client waits for the store's write.
+ * The entry to store for a response. A page is stored with Next.js's ETag, a
+ * hash of its payload, so a regeneration that renders the same page keeps the
+ * validator its clients hold. Reading the body never delays a client:
+ * admission reads its own branch of the body, no client waits on a
+ * regeneration, and a fill's client waits for the store's write.
+ *
+ * The store gives an entry without an ETag a per-revision one, which Next.js
+ * never sends, so such an entry is marked to drop it from its HITs.
  */
-async function withPageETag(response: Response, responseStageProps: unknown): Promise<Response> {
-  if (
-    response.body === null ||
-    !generatesETags() ||
-    !answersConditionalRequest(responseStageProps, response.status)
-  ) {
-    return response;
-  }
-  const body = await response.arrayBuffer();
+async function forStorage(response: Response, responseStageProps: unknown): Promise<Response> {
   const headers = new Headers(response.headers);
-  // Next.js hashes the string it decodes from the rendered page.
-  headers.set("ETag", generateETag(new TextDecoder().decode(body)));
+  let body: ArrayBuffer | ReadableStream<Uint8Array> | null = response.body;
+  if (
+    response.body !== null &&
+    generatesETags() &&
+    answersConditionalRequest(responseStageProps, response.status)
+  ) {
+    body = await response.arrayBuffer();
+    // Next.js hashes the string it decodes from the rendered page.
+    headers.set("ETag", generateETag(new TextDecoder().decode(body)));
+  } else if (headers.has("ETag")) {
+    return response;
+  } else {
+    headers.set(STORED_WITHOUT_ETAG_HEADER, "1");
+  }
   return new Response(body, {
     headers,
     status: response.status,
@@ -437,17 +445,16 @@ async function withPageETag(response: Response, responseStageProps: unknown): Pr
   });
 }
 
-/** Answer a stored page's conditional request as Next.js does for a cached page. */
+/** Send a stored response as Next.js sends a cached one, answering a page's conditional request. */
 function storedForRequest(
   stored: Response,
   request: Request,
   responseStageProps: unknown,
 ): Response {
-  if (!answersConditionalRequest(responseStageProps, stored.status)) return stored;
-  // With `generateEtags: false`, Next.js sends a page without an ETag.
-  if (!generatesETags()) {
+  if (stored.headers.has(STORED_WITHOUT_ETAG_HEADER)) {
     const headers = new Headers(stored.headers);
     headers.delete("ETag");
+    headers.delete(STORED_WITHOUT_ETAG_HEADER);
     return new Response(stored.body, {
       headers,
       status: stored.status,
@@ -456,6 +463,7 @@ function storedForRequest(
   }
   const etag = stored.headers.get("ETag");
   return etag &&
+    answersConditionalRequest(responseStageProps, stored.status) &&
     isPageNotModified(
       {
         cacheControl: request.headers.get("Cache-Control") ?? undefined,
@@ -662,7 +670,7 @@ const handler = {
               }
               await responseStore.put(
                 key,
-                await withPageETag(withoutRequestScopedHeaders(admitted, props), props),
+                await forStorage(withoutRequestScopedHeaders(admitted, props), props),
                 {
                   coalesce: true,
                   revalidator: { id: ROUTE_REVALIDATOR_ID, args: [serializedInvocation] },
@@ -705,7 +713,7 @@ const handler = {
       const [foregroundBody, cacheBody] = rendered.body ? rendered.body.tee() : [null, null];
       const cacheResponse = withoutRequestScopedHeaders(new Response(cacheBody, rendered), props);
       try {
-        await responseStore.put(key, await withPageETag(cacheResponse, props), {
+        await responseStore.put(key, await forStorage(cacheResponse, props), {
           coalesce: true,
           revalidator: { id: ROUTE_REVALIDATOR_ID, args: [serializedInvocation] },
         });
@@ -740,12 +748,15 @@ const handler = {
         const serializedRscInvocation = JSON.stringify(rscInvocation);
         await responseStore.put(
           rscKey,
-          new Response(rscData, {
-            headers: rscHeaders,
-            // As in Next.js, the page's RSC payload takes its document's
-            // status, except that it carries a redirect as a 200.
-            status: rendered.status >= 300 && rendered.status < 400 ? 200 : rendered.status,
-          }),
+          await forStorage(
+            new Response(rscData, {
+              headers: rscHeaders,
+              // As in Next.js, the page's RSC payload takes its document's
+              // status, except that it carries a redirect as a 200.
+              status: rendered.status >= 300 && rendered.status < 400 ? 200 : rendered.status,
+            }),
+            rscSeed.props,
+          ),
           {
             coalesce: true,
             revalidator: { id: ROUTE_REVALIDATOR_ID, args: [serializedRscInvocation] },

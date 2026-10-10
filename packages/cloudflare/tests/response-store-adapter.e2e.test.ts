@@ -1094,6 +1094,8 @@ describe("Cloudflare Workers Response Store adapter", () => {
       const stored = await request(path, { headers });
       assert.equal(stored.headers.get("x-vinext-cache"), "HIT", path);
       const body = await stored.arrayBuffer();
+      // Nor does the store's per-revision ETag reach the payload.
+      assert.equal(stored.headers.get("etag"), null, path);
       const response = await request(path, {
         headers: { ...headers, "Cache-Control": "max-age=0", "If-None-Match": "*" },
       });
@@ -1101,13 +1103,14 @@ describe("Cloudflare Workers Response Store adapter", () => {
       assert.equal((await response.arrayBuffer()).byteLength, body.byteLength, path);
     }
 
-    // Next.js sends a route handler's cached response in full.
+    // Next.js sends a route handler's cached response in full, with only the
+    // ETag the handler sets.
     const route = await request("/api/now");
-    const etag = route.headers.get("etag");
     await route.arrayBuffer();
-    assert.ok(etag);
+    assert.equal(route.headers.get("x-vinext-cache"), "HIT");
+    assert.equal(route.headers.get("etag"), null);
     const routeConditional = await request("/api/now", {
-      headers: { "Cache-Control": "max-age=0", "If-None-Match": etag },
+      headers: { "Cache-Control": "max-age=0", "If-None-Match": "*" },
     });
     assert.equal(routeConditional.status, 200);
     assert.equal(routeConditional.headers.get("x-vinext-cache"), "HIT");

@@ -1004,21 +1004,52 @@ describe("Cloudflare Response Store Worker query-free cache identity", () => {
     expect(await regenerated.text()).toBe("page");
   });
 
-  it("keeps a route handler's response as rendered", async () => {
-    dispatchWithIdentity(false, { isRscRequest: false, kind: "app-route-handler" });
+  // Next.js sends a route handler's ETag, if it sets one, and a page's RSC
+  // payload without one, so the store's per-revision ETag never reaches a HIT.
+  it.each([
+    ["a route handler", { isRscRequest: false, kind: "app-route-handler" }, null],
+    [
+      "a route handler that sets an ETag",
+      { isRscRequest: false, kind: "app-route-handler" },
+      'W/"app"',
+    ],
+    ["a page's RSC payload", { isRscRequest: true }, null],
+  ])("sends %s with its own ETag on a HIT", async (_name, overrides, etag) => {
+    dispatchWithIdentity(false, overrides);
     stages.response.mockImplementation(
-      async () => new Response("route", { headers: { "Cache-Control": "public, max-age=60" } }),
+      async () =>
+        new Response("payload", {
+          headers: { "Cache-Control": "public, max-age=60", ...(etag ? { ETag: etag } : {}) },
+        }),
     );
-    const { entries, store } = createMemoryStore();
+    const { store } = createMemoryStore();
+    // The store gives an entry without an ETag a per-revision one.
+    const fetch = store.fetch;
+    store.fetch = vi.fn(async (request: Request) => {
+      const response = await fetch(request);
+      if (response.status !== 200 || response.headers.has("ETag")) return response;
+      const headers = new Headers(response.headers);
+      headers.set("ETag", 'W/"entry:1"');
+      return new Response(response.body, { headers, status: response.status });
+    });
+    const handler = createVinextResponseStoreHandler(store);
 
-    const response = await createVinextResponseStoreHandler(store).fetch(
-      new Request("https://example.com/route"),
+    await (
+      await handler.fetch(new Request("https://example.com/a"), {} as never, context())
+    ).text();
+    const hit = await handler.fetch(
+      new Request("https://example.com/a", {
+        headers: { "Cache-Control": "max-age=0", "If-None-Match": "*" },
+      }),
       {} as never,
       context(),
     );
-    await response.text();
 
-    expect([...entries.values()][0]?.headers.has("ETag")).toBe(false);
+    expect(hit.headers.get("X-Vinext-Cache")).toBe("HIT");
+    expect(hit.status).toBe(200);
+    expect(hit.headers.get("ETag")).toBe(etag);
+    expect([...hit.headers.keys()].some((name) => name.includes("without-etag"))).toBe(false);
+    expect(await hit.text()).toBe("payload");
   });
 
   // With `generateEtags: false`, Next.js sends a page without an ETag, so it
