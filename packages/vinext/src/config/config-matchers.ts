@@ -664,6 +664,10 @@ function configPathStartsWith(pathname: string, prefix: string): boolean {
   return pathname.slice(0, prefix.length).toLowerCase() === prefix.toLowerCase();
 }
 
+function paramGroupName(index: number): string {
+  return `__vinextParam${index}`;
+}
+
 export function matchConfigPattern(
   pathname: string,
   pattern: string,
@@ -726,17 +730,25 @@ export function matchConfigPattern(
               const quantifier = rest[0];
               tokenRe.lastIndex += 1;
               const constraint = extractConstraint(pattern, tokenRe);
-              paramNames.push(name);
+              const group = `(?<${paramGroupName(paramNames.push(name) - 1)}>`;
               if (constraint !== null) {
-                regexStr += `(${constraint})`;
+                regexStr += `${group}${constraint})`;
+              } else if (
+                quantifier === "*" &&
+                regexStr.endsWith("/") &&
+                tokenRe.lastIndex === pattern.length
+              ) {
+                // Like path-to-regexp, a trailing `/:param*` makes its slash
+                // optional too, so `/:locale/files/:path*` matches `/en/files`.
+                regexStr = `${regexStr.slice(0, -1)}(?:/${group}.*))?`;
               } else {
-                regexStr += quantifier === "*" ? "(.*)" : "(.+)";
+                regexStr += `${group}${quantifier === "*" ? ".*" : ".+"})`;
               }
             } else {
               // Check for inline constraint without quantifier
               const constraint = extractConstraint(pattern, tokenRe);
-              paramNames.push(name);
-              regexStr += constraint !== null ? `(${constraint})` : "([^/]+)";
+              const group = `(?<${paramGroupName(paramNames.push(name) - 1)}>`;
+              regexStr += `${group}${constraint ?? "[^/]+"})`;
             }
           } else if (tok[0] === ".") {
             regexStr += "\\.";
@@ -751,8 +763,10 @@ export function matchConfigPattern(
       const match = compiled.re.exec(pathname);
       if (!match) return null;
       const params: Record<string, string> = Object.create(null);
+      // Named groups keep param captures aligned when the source also has
+      // unnamed groups like `/(en|fr)/:path*`.
       for (let i = 0; i < compiled.paramNames.length; i++) {
-        params[compiled.paramNames[i]] = match[i + 1] ?? "";
+        params[compiled.paramNames[i]] = match.groups?.[paramGroupName(i)] ?? "";
       }
       return params;
     } catch {
