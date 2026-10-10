@@ -31,12 +31,15 @@ function spliceAt(html: string, start: number, end: number, insertion: string): 
 
 /**
  * Insert `insertion` right after `<Head>`'s opening tag and drop its marker
- * attribute. The attribute is matched in any quote style and position, since
- * dev HTML transforms run between rendering and this splice.
+ * attribute. The attribute is matched in any valid serialization, since dev
+ * HTML transforms run between rendering and this splice.
  */
 export function spliceDocumentHeadOpen(html: string, token: string, insertion: string): string {
+  // Attribute names are ASCII case-insensitive, and `=` may have whitespace
+  // around it.
   const marker = new RegExp(
-    `\\s${DOCUMENT_HEAD_OPEN_ATTRIBUTE}=(["']?)${escapeRegExp(token)}\\1(?=[\\s/>])`,
+    `[\\t\\n\\f\\r ]${DOCUMENT_HEAD_OPEN_ATTRIBUTE}[\\t\\n\\f\\r ]*=[\\t\\n\\f\\r ]*(["']?)${escapeRegExp(token)}\\1(?=[\\t\\n\\f\\r />])`,
+    "i",
   ).exec(html);
   if (!marker) return html;
   const markerEnd = marker.index + marker[0].length;

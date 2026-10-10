@@ -99,7 +99,11 @@ describe("Pages Document splicing", () => {
   });
 
   it("finds the head-open marker after an HTML transform reserializes the tag", () => {
-    for (const attribute of ["data-vinext-head-open=token", "data-vinext-head-open='token'"]) {
+    for (const attribute of [
+      "data-vinext-head-open=token",
+      "data-vinext-head-open='token'",
+      'DATA-VINEXT-HEAD-OPEN = "token"',
+    ]) {
       expect(
         spliceDocumentHeadOpen(
           `<html><head ${attribute} lang=en data-x=">" data-y='>'><title>t</title></head></html>`,
