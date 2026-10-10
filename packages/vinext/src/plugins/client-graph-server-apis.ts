@@ -21,7 +21,12 @@ const INVALID_CLIENT_LIB_APIS: ReadonlyMap<string, ReadonlySet<string>> = new Ma
   ],
 ]);
 
-const MAY_IMPORT_SERVER_API_RE = /["']next\/(?:headers|root-params|server|cache)["']/;
+// An import declaration always spells `import` literally (escaped keywords
+// are syntax errors), while its specifier may use escapes such as
+// "next\u002fheaders" that only the parsed AST decodes.
+const IMPORT_KEYWORD_RE = /\bimport\b/;
+// Vite transforms a module loaded with a query (`./x.ts?v=1`) as its file type.
+const SOURCE_MODULE_ID_RE = /\.(?:[cm]?tsx?|[cm]?jsx?|mdx)(?:[?#].*)?$/;
 
 type InvalidClientImport = {
   /** The module specifier, or the imported API name for library APIs. */
@@ -70,7 +75,7 @@ function isServerReferenceModule(body: ModuleItem[]): boolean {
  * and `"use cache"` modules are skipped.
  */
 export function findInvalidClientImports(code: string): InvalidClientImport[] {
-  if (!MAY_IMPORT_SERVER_API_RE.test(code)) return [];
+  if (!IMPORT_KEYWORD_RE.test(code)) return [];
 
   let body: ModuleItem[];
   try {
@@ -142,10 +147,10 @@ export function createClientGraphServerApisPlugin(
     transform: {
       filter: {
         id: {
-          include: /\.(?:[cm]?tsx?|[cm]?jsx?|mdx)$/,
+          include: SOURCE_MODULE_ID_RE,
           exclude: [VIRTUAL_MODULE_ID_RE, /\/node_modules\//],
         },
-        code: MAY_IMPORT_SERVER_API_RE,
+        code: IMPORT_KEYWORD_RE,
       },
       handler(code, id) {
         if (this.environment?.name !== "client") return null;

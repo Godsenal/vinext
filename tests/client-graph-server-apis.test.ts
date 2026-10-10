@@ -130,6 +130,24 @@ export async function readSession() {
     `depends on "next/headers". ${OUTSIDE_APP_MESSAGE}`,
   ],
   [
+    "next/headers in a module loaded with a query",
+    `"use client";
+
+import { readSession } from "./query-session.ts?probe";
+
+export function ClientGraphProbe() {
+  return <p>{typeof readSession}</p>;
+}
+`,
+    {
+      "app/client-graph-probe/query-session.ts": `import { cookies } from "next/headers";
+
+export const readSession = cookies;
+`,
+    },
+    `depends on "next/headers" ${CLIENT_COMPONENT_MESSAGE}`,
+  ],
+  [
     "after() imported by a Client Component",
     `"use client";
 
@@ -282,6 +300,14 @@ describe("findInvalidClientImports", () => {
       "cacheTag",
       "unstable_cacheTag",
     ]);
+  });
+
+  it("matches escaped specifiers by their decoded value", () => {
+    expect(
+      findInvalidClientImports(`import { cookies } from "next\\u002fheaders";`).map(
+        (found) => found.name,
+      ),
+    ).toEqual(["next/headers"]);
   });
 
   it("ignores forms Next.js does not check", () => {
