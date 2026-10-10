@@ -16,7 +16,7 @@ import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { createBuilder } from "vite";
+import { createBuilder, createLogger } from "vite";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
 import {
@@ -194,8 +194,9 @@ describe("hoistIsolatedCss", () => {
 });
 
 describe("patchPreloadHelperForAppStylesheets", () => {
-  // Mirrors the stylesheet branch of Vite's `preload()` helper source.
-  const helper = `const links = document.getElementsByTagName("link");
+  // Mirrors the stylesheet branch of Vite's `preload()` helper source, where
+  // `dep` is the resolved href string.
+  const stringDepHelper = `const links = document.getElementsByTagName("link");
 		const cspNonceMeta = document.querySelector("meta[property=csp-nonce]");
 		const cspNonce = cspNonceMeta?.nonce || cspNonceMeta?.getAttribute("nonce");
 		promise = allSettled(deps.map((dep) => {
@@ -211,24 +212,47 @@ describe("patchPreloadHelperForAppStylesheets", () => {
 			const link = document.createElement("link");
 			document.head.appendChild(link);
 		}));`;
+  // Vite+ 1.1's helper resolves `dep` to a URL and tests it with
+  // `isCssPreloadUrl`.
+  const urlDepHelper = `const cspNonceMeta = document.querySelector("meta[property=csp-nonce]");
+		const cspNonce = cspNonceMeta?.nonce || cspNonceMeta?.getAttribute("nonce");
+		promise = allSettled(deps.map((depString) => {
+			depString = assetsURL(depString, importerUrl);
+			const dep = importMetaResolve(depString);
+			if (dep.href in seen) return;
+			seen[dep.href] = true;
+			const isCss = isCssPreloadUrl(dep);
+			if ((isCss ? preloadedHrefs.styles : preloadedHrefs.all).has(dep.href)) return;
+			const link = document.createElement("link");
+			document.head.appendChild(link);
+		}));`;
 
-  it("hands stylesheets to the App Router loader after the existing-link check", () => {
-    const patched = patchPreloadHelperForAppStylesheets(helper);
-    expect(patched).not.toBeNull();
-    const handOff = patched!.indexOf(`Symbol.for(${JSON.stringify(APP_STYLESHEET_LOADER_KEY)})`);
-    expect(handOff).toBeGreaterThan(patched!.indexOf('link.rel === "stylesheet"'));
-    expect(handOff).toBeLessThan(patched!.indexOf('document.createElement("link")'));
-    expect(patched).toContain("return vinextLoadStylesheet(dep, cspNonce);");
-  });
+  it.each([
+    ["a string", stringDepHelper, 'link.rel === "stylesheet"'],
+    ["a URL", urlDepHelper, ".has(dep.href)) return;"],
+  ])(
+    "hands stylesheets to the App Router loader after the existing-link check when dep is %s",
+    (_, helper, existingLinkCheck) => {
+      const patched = patchPreloadHelperForAppStylesheets(helper);
+      expect(patched).not.toBeNull();
+      const handOff = patched!.indexOf(`Symbol.for(${JSON.stringify(APP_STYLESHEET_LOADER_KEY)})`);
+      expect(handOff).toBeGreaterThan(patched!.indexOf(existingLinkCheck));
+      expect(handOff).toBeLessThan(patched!.indexOf('document.createElement("link")'));
+      expect(patched).toContain("return vinextLoadStylesheet(String(dep), cspNonce);");
+    },
+  );
 
   it("returns null when Vite's helper changes shape", () => {
     expect(patchPreloadHelperForAppStylesheets("export const preload = () => {}")).toBeNull();
     // The hand-off reads `dep`, `isCss` and `cspNonce`; renamed bindings would
     // otherwise throw a ReferenceError for every CSS dependency at runtime.
-    expect(patchPreloadHelperForAppStylesheets(helper.replaceAll("cspNonce", "nonce"))).toBeNull();
-    expect(
-      patchPreloadHelperForAppStylesheets(helper.replace("const isCss = dep.", "const isCss = d.")),
-    ).toBeNull();
+    for (const helper of [stringDepHelper, urlDepHelper]) {
+      expect(
+        patchPreloadHelperForAppStylesheets(helper.replaceAll("cspNonce", "nonce")),
+      ).toBeNull();
+      expect(patchPreloadHelperForAppStylesheets(helper.replaceAll(/\bdep\b/g, "d"))).toBeNull();
+      expect(patchPreloadHelperForAppStylesheets(helper.replaceAll("isCss", "css"))).toBeNull();
+    }
   });
 });
 
@@ -427,10 +451,18 @@ export default function Lazy() {
       await writeFile(path.join(fixtureRoot, file), source);
     }
 
+    const warnings: string[] = [];
+    const recordWarning = (message: string) => {
+      warnings.push(message);
+    };
+    const customLogger = createLogger("silent");
+    customLogger.warn = recordWarning;
+    customLogger.warnOnce = recordWarning;
     const builder = await createBuilder({
       root: fixtureRoot,
       configFile: false,
       plugins: [vinext({ appDir: fixtureRoot })],
+      customLogger,
       logLevel: "silent",
     });
     await builder.buildApp();
@@ -466,6 +498,7 @@ export default function Lazy() {
       return sources.join("\n");
     };
     return {
+      warnings,
       clientFiles,
       sharedCss,
       layoutResources,
@@ -488,7 +521,7 @@ export default function Lazy() {
   it("emits one stylesheet href for both builds and orders it before the layout CSS", async () => {
     const fixtureRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-shared-css-"));
     try {
-      const { clientFiles, sharedCss, layoutResources, chunkSources, toHref } =
+      const { warnings, clientFiles, sharedCss, layoutResources, chunkSources, toHref } =
         await buildSharedStylesheetApp(fixtureRoot, {
           sharedCss: ".shared-marker { color: rgb(1, 2, 3); }\n",
         });
@@ -507,6 +540,8 @@ export default function Lazy() {
       expect(layoutResources?.css).toHaveLength(2);
       expect(layoutResources?.css[0]).toBe(sharedHref);
       expect(chunkSources.some((code) => code.includes(APP_STYLESHEET_LOADER_KEY))).toBe(true);
+      // The installed Vite's preload helper must still take the hand-off.
+      expect(warnings.filter((warning) => warning.includes("preload helper"))).toEqual([]);
     } finally {
       await fsp.rm(fixtureRoot, { recursive: true, force: true }).catch(() => {});
     }

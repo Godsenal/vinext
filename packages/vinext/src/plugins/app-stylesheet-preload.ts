@@ -24,7 +24,10 @@ import { APP_STYLESHEET_LOADER_KEY } from "../utils/app-stylesheet-loader.js";
 
 const LINK_CREATION = 'const link = document.createElement("link");';
 // Bindings the hand-off reads; their absence means Vite's helper changed.
-const REQUIRED_BINDINGS = ["const cspNonce = ", "const isCss = dep."];
+// `isCss` is derived from `dep`, which older helpers keep as a string and
+// newer ones resolve to a URL (`isCssPreloadUrl(dep)`), so the hand-off passes
+// `String(dep)`.
+const REQUIRED_BINDINGS = [/const cspNonce = /, /const isCss = [^;\n]*\bdep\b/];
 
 /**
  * Insert the loader hand-off ahead of the helper's `<link>` creation. Returns
@@ -34,13 +37,13 @@ export function patchPreloadHelperForAppStylesheets(code: string): string | null
   const index = code.indexOf(LINK_CREATION);
   if (index === -1) return null;
   for (const binding of REQUIRED_BINDINGS) {
-    const bindingIndex = code.indexOf(binding);
+    const bindingIndex = code.search(binding);
     if (bindingIndex === -1 || bindingIndex > index) return null;
   }
   const handOff =
     "if (isCss) {" +
     ` const vinextLoadStylesheet = globalThis[Symbol.for(${JSON.stringify(APP_STYLESHEET_LOADER_KEY)})];` +
-    ' if (typeof vinextLoadStylesheet === "function") return vinextLoadStylesheet(dep, cspNonce);' +
+    ' if (typeof vinextLoadStylesheet === "function") return vinextLoadStylesheet(String(dep), cspNonce);' +
     " }\n";
   return code.slice(0, index) + handOff + code.slice(index);
 }
