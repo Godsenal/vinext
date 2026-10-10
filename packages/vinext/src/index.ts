@@ -7415,7 +7415,6 @@ export const loadServerActionClient = ${
     // the same reason as the server-only check above.
     createClientGraphServerApisPlugin({
       getAppDir: () => (hasAppDir ? canonicalize(appDir) : null),
-      isUseServerModule: (code) => getLeadingReactDirective(code) === "use server",
     }),
     // Strip console.* calls from the client bundle when compiler.removeConsole
     // is enabled in next.config. Inspired by Next.js's SWC remove_console transform.

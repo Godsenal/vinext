@@ -43,9 +43,31 @@ function readImportedName(specifier: unknown): string | null {
 }
 
 /**
+ * Whether the module prologue marks a Server Function or cache module. Those
+ * are replaced with server reference proxies in the client graph (by
+ * @vitejs/plugin-rsc and `vinext:use-cache-callable`, after this check runs),
+ * so their imports never reach it; Next.js skips them the same way.
+ */
+function isServerReferenceModule(body: ModuleItem[]): boolean {
+  for (const item of body) {
+    if (item.type !== "ExpressionStatement" || typeof item.directive !== "string") return false;
+    const directive = item.directive;
+    if (
+      directive === "use server" ||
+      directive === "use cache" ||
+      directive.startsWith("use cache: ")
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
  * Find the server-only APIs a module imports, in source order. Like Next.js,
  * only top-level static `import` declarations count, the source must match
- * exactly, and library APIs match by imported (not local) name.
+ * exactly, library APIs match by imported (not local) name, and `"use server"`
+ * and `"use cache"` modules are skipped.
  */
 export function findInvalidClientImports(code: string): InvalidClientImport[] {
   if (!MAY_IMPORT_SERVER_API_RE.test(code)) return [];
@@ -56,6 +78,7 @@ export function findInvalidClientImports(code: string): InvalidClientImport[] {
   } catch {
     return [];
   }
+  if (isServerReferenceModule(body)) return [];
 
   const found: InvalidClientImport[] = [];
   for (const item of body) {
@@ -79,13 +102,16 @@ export function findInvalidClientImports(code: string): InvalidClientImport[] {
   return found;
 }
 
-/** Next.js picks the message by whether the importing file is inside `app/`. */
+/**
+ * Next.js picks the message by whether the importing file's path starts with
+ * the app directory (a plain prefix match, as Next.js does).
+ */
 export function createInvalidClientImportMessage(
   name: string,
   moduleId: string,
   appDir: string,
 ): string {
-  if (moduleId.startsWith(`${appDir}/`)) {
+  if (moduleId.startsWith(appDir)) {
     return `You're importing a module that depends on "${name}" into a React Client Component module. This API is only available in Server Components but one of its parents is marked with "use client", so this module is also a Client Component.\nLearn more: https://nextjs.org/docs/app/building-your-application/rendering`;
   }
   return `You're importing a module that depends on "${name}". This API is only available in Server Components in the App Router, but you are using it in the Pages Router.\nLearn more: https://nextjs.org/docs/app/building-your-application/rendering/server-components`;
@@ -94,8 +120,6 @@ export function createInvalidClientImportMessage(
 type ClientGraphServerApisPluginOptions = {
   /** Canonical, slash-separated App Router directory, or null without one. */
   getAppDir: () => string | null;
-  /** Whether the module is a `"use server"` module. */
-  isUseServerModule: (code: string) => boolean;
 };
 
 /**
@@ -118,7 +142,7 @@ export function createClientGraphServerApisPlugin(
     transform: {
       filter: {
         id: {
-          include: /\.(tsx?|jsx?|mjs)$/,
+          include: /\.(?:[cm]?tsx?|[cm]?jsx?|mdx)$/,
           exclude: [VIRTUAL_MODULE_ID_RE, /\/node_modules\//],
         },
         code: MAY_IMPORT_SERVER_API_RE,
@@ -127,9 +151,6 @@ export function createClientGraphServerApisPlugin(
         if (this.environment?.name !== "client") return null;
         const appDir = options.getAppDir();
         if (!appDir) return null;
-        // @vitejs/plugin-rsc replaces a "use server" module in the client
-        // graph with server reference proxies, so its imports never reach it.
-        if (options.isUseServerModule(code)) return null;
 
         const [invalid] = findInvalidClientImports(code);
         if (!invalid) return null;

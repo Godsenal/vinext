@@ -191,6 +191,47 @@ describe("App Router client builds of the Node fixture", () => {
   }, 120_000);
 });
 
+describe("App Router client builds that Next.js accepts", () => {
+  it("build Server Function and cache modules that a Client Component imports", async () => {
+    // Both are replaced with server reference proxies in the client graph, so
+    // their imports never reach the browser; Next.js skips them too.
+    const root = copyFixture(APP_FIXTURE_DIR);
+    writeProbePage(
+      root,
+      `"use client";
+
+import { refreshProbe } from "./probe-actions";
+import { getCachedProbe } from "./probe-cache";
+
+export function ClientGraphProbe() {
+  return <button onClick={() => void refreshProbe().then(() => getCachedProbe())}>probe</button>;
+}
+`,
+      {
+        "app/client-graph-probe/probe-actions.ts": `"use server";
+
+import { revalidatePath } from "next/cache";
+
+export async function refreshProbe() {
+  revalidatePath("/client-graph-probe");
+}
+`,
+        "app/client-graph-probe/probe-cache.ts": `"use cache";
+
+import { cacheLife } from "next/cache";
+
+export async function getCachedProbe() {
+  cacheLife("hours");
+  return Date.now();
+}
+`,
+      },
+    );
+
+    await expect(buildFixture(root)).resolves.toBeUndefined();
+  }, 120_000);
+});
+
 describe("App Router dev server", () => {
   it("rejects a Client Component that imports next/headers", async () => {
     const [, clientSource, extraFiles] = PROBES[0];
@@ -258,13 +299,26 @@ describe("findInvalidClientImports", () => {
     expect(findInvalidClientImports(code)).toEqual([]);
   });
 
-  it("picks Next.js' message by whether the module is inside app/", () => {
+  it("skips Server Function and cache modules, as Next.js does", () => {
+    const imports = `import { cookies } from "next/headers";\nimport { cacheLife } from "next/cache";`;
+
+    for (const directive of ["use server", "use cache", "use cache: remote"]) {
+      expect(findInvalidClientImports(`"${directive}";\n${imports}`)).toEqual([]);
+    }
+    expect(
+      findInvalidClientImports(`"use client";\n${imports}`).map((found) => found.name),
+    ).toEqual(["next/headers", "cacheLife"]);
+    // Only the prologue marks a module.
+    expect(
+      findInvalidClientImports(`${imports}\n"use server";`).map((found) => found.name),
+    ).toEqual(["next/headers", "cacheLife"]);
+  });
+
+  it("picks Next.js' message by whether the module path starts with app/", () => {
     expect(createInvalidClientImportMessage("next/headers", "/repo/app/c.tsx", "/repo/app")).toBe(
       `You're importing a module that depends on "next/headers" ${CLIENT_COMPONENT_MESSAGE}\nLearn more: https://nextjs.org/docs/app/building-your-application/rendering`,
     );
-    expect(
-      createInvalidClientImportMessage("next/headers", "/repo/application/c.tsx", "/repo/app"),
-    ).toBe(
+    expect(createInvalidClientImportMessage("next/headers", "/repo/lib/c.tsx", "/repo/app")).toBe(
       `You're importing a module that depends on "next/headers". ${OUTSIDE_APP_MESSAGE}\nLearn more: https://nextjs.org/docs/app/building-your-application/rendering/server-components`,
     );
   });
