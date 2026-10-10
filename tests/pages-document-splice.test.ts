@@ -102,11 +102,11 @@ describe("Pages Document splicing", () => {
     for (const attribute of ["data-vinext-head-open=token", "data-vinext-head-open='token'"]) {
       expect(
         spliceDocumentHeadOpen(
-          `<html><head ${attribute} lang=en><title>t</title></head></html>`,
+          `<html><head ${attribute} lang=en data-x=">" data-y='>'><title>t</title></head></html>`,
           "token",
           "<a/>",
         ),
-      ).toBe("<html><head lang=en><a/><title>t</title></head></html>");
+      ).toBe(`<html><head lang=en data-x=">" data-y='>'><a/><title>t</title></head></html>`);
     }
   });
 

@@ -40,12 +40,30 @@ export function spliceDocumentHeadOpen(html: string, token: string, insertion: s
   ).exec(html);
   if (!marker) return html;
   const markerEnd = marker.index + marker[0].length;
-  // React escapes `>` in attribute values, so the next one ends the tag.
-  const tagEnd = html.indexOf(">", markerEnd) + 1;
-  if (tagEnd === 0) return html;
+  const tagEnd = findTagEnd(html, markerEnd);
+  if (tagEnd === -1) return html;
   return (
     html.slice(0, marker.index) + html.slice(markerEnd, tagEnd) + insertion + html.slice(tagEnd)
   );
+}
+
+/**
+ * Index just past the `>` that ends the tag containing `from`. A transform
+ * may have written `>` inside a quoted attribute value, so quotes are skipped.
+ */
+function findTagEnd(html: string, from: number): number {
+  let quote: string | null = null;
+  for (let index = from; index < html.length; index++) {
+    const char = html[index];
+    if (quote) {
+      if (char === quote) quote = null;
+    } else if (char === '"' || char === "'") {
+      quote = char;
+    } else if (char === ">") {
+      return index + 1;
+    }
+  }
+  return -1;
 }
 
 /** Replace `<Head>`'s closing marker with `insertion`. */
