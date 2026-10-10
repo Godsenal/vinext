@@ -11,6 +11,7 @@
 import { createElement, startTransition, useEffect, useState, type ReactNode } from "react";
 import { preload } from "react-dom";
 import { APP_STYLESHEET_LOADER_KEY } from "../utils/app-stylesheet-loader.js";
+import { isStylesheetCoveredByInlineCss } from "./app-inline-css-client.js";
 
 // Matches the precedence plugin-rsc uses when SSR preinitializes client
 // reference stylesheets, so runtime-loaded client CSS joins the same group.
@@ -83,6 +84,10 @@ function fetchStylesheet(url: string, href: string, nonce: string | undefined): 
 
 function loadAppStylesheet(url: string, nonce?: string): Promise<void> {
   const href = toDocumentStylesheetHref(url, location.href, serverStylesheetUrlPrefix());
+  // With `experimental.inlineCss` the server replaced this stylesheet's link
+  // with an inline <style>, which Vite's existing-link check cannot see. Its
+  // rules already apply, so a second link would only reorder the cascade.
+  if (isStylesheetCoveredByInlineCss(href, location.href)) return Promise.resolve();
   const requested = requestedStylesheets.get(href);
   if (requested) return requested;
   const stylesheetNonce = nonce || undefined;

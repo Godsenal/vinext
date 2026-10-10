@@ -313,13 +313,20 @@ describe("App Router stylesheet loader", () => {
     }
   }
 
-  function installFakeDocument(baseURI = "https://example.com/page") {
+  function installFakeDocument(baseURI = "https://example.com/page", inlinedHrefs: string[] = []) {
     const appended: FakeLink[] = [];
     vi.stubGlobal("location", new URL("https://example.com/page"));
     vi.stubGlobal("document", {
       baseURI,
       createElement: () => new FakeLink(),
-      head: { appendChild: (link: FakeLink) => appended.push(link) },
+      head: {
+        appendChild: (link: FakeLink) => appended.push(link),
+        // `<style data-vinext-inline-css data-href>` elements (experimental.inlineCss).
+        querySelectorAll: () =>
+          inlinedHrefs.map((href) => ({
+            getAttribute: (name: string) => (name === "data-href" ? href : null),
+          })),
+      },
     });
     installAppStylesheetLoader();
     const load = (globalThis as Record<symbol, unknown>)[Symbol.for(APP_STYLESHEET_LOADER_KEY)] as (
@@ -385,6 +392,19 @@ describe("App Router stylesheet loader", () => {
     const { appended, load } = installFakeDocument("https://other.example.net/");
     void load("https://example.com/_next/static/css/loader-base.abc.css");
     expect(appended[0].href).toBe("/_next/static/css/loader-base.abc.css");
+  });
+
+  it("does not load a stylesheet the server inlined", async () => {
+    const { appended, load } = installFakeDocument("https://example.com/page", [
+      "/_next/static/css/loader-other.abc.css /_next/static/css/loader-inlined.abc.css",
+    ]);
+    await load("https://example.com/_next/static/css/loader-inlined.abc.css");
+    expect(appended).toHaveLength(0);
+
+    void load("https://example.com/_next/static/css/loader-not-inlined.abc.css");
+    expect(appended.map((link) => link.href)).toEqual([
+      "/_next/static/css/loader-not-inlined.abc.css",
+    ]);
   });
 
   it("spells stylesheets under an absolute Vite base like the server", () => {
