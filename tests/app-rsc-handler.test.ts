@@ -300,7 +300,11 @@ describe("createAppRscHandler", () => {
       ]),
     );
 
-    async function renderedPatternFor(configRewrites: HandlerOptions["configRewrites"]) {
+    async function renderedPatternFor(
+      configRewrites: HandlerOptions["configRewrites"],
+      init?: RequestInit,
+      url = "https://example.test/docs/start",
+    ) {
       const handler = createHandler({
         configHeaders: [],
         configRewrites,
@@ -311,7 +315,7 @@ describe("createAppRscHandler", () => {
           return route ? { params: {}, route } : null;
         },
       });
-      const response = await handler(new Request("https://example.test/docs/start"), null);
+      const response = await handler(new Request(url, init), null);
       return response.status === 200 ? await response.text() : response.status;
     }
 
@@ -331,18 +335,44 @@ describe("createAppRscHandler", () => {
       ).toBe("/middle");
     });
 
-    it("continues an afterFiles locale:false chain through the unprefixed destination", async () => {
-      expect(
-        await renderedPatternFor({
-          afterFiles: [
-            { source: "/en/start", destination: "/missing", locale: false },
-            { source: "/missing", destination: "/final", locale: false },
-          ],
+    it.each(["afterFiles", "fallback"] as const)(
+      "continues a %s locale:false chain through the unprefixed destination",
+      async (phase) => {
+        const configRewrites: HandlerOptions["configRewrites"] = {
+          afterFiles: [],
           beforeFiles: [],
           fallback: [],
-        }),
-      ).toBe("/final");
-    });
+        };
+        configRewrites[phase].push(
+          { source: "/en/start", destination: "/missing", locale: false },
+          { source: "/missing", destination: "/final", locale: false },
+        );
+        expect(await renderedPatternFor(configRewrites)).toBe("/final");
+      },
+    );
+
+    it.each(["afterFiles", "fallback"] as const)(
+      "continues a %s locale:false chain for a server action outside basePath",
+      async (phase) => {
+        // Actions outside basePath resolve late rewrites before routing.
+        const configRewrites: HandlerOptions["configRewrites"] = {
+          afterFiles: [],
+          beforeFiles: [],
+          fallback: [],
+        };
+        configRewrites[phase].push(
+          { source: "/en/start", destination: "/missing", locale: false, basePath: false },
+          { source: "/missing", destination: "/final", locale: false, basePath: false },
+        );
+        expect(
+          await renderedPatternFor(
+            configRewrites,
+            { method: "POST", headers: { "next-action": "action-id" } },
+            "https://example.test/start",
+          ),
+        ).toBe("/final");
+      },
+    );
 
     it("continues a locale:false chain through the unprefixed destination", async () => {
       expect(

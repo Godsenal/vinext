@@ -23898,6 +23898,60 @@ describe("Pages Router _next/data client navigation", () => {
     }
   });
 
+  it("continues a chain of ordinary rules through the locale-prefixed destinations", async () => {
+    // Ordinary rules rewrite to `/:nextInternalLocale/...`, so the as-is
+    // destination still carries the locale the next rule matches.
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+
+    const middleLoader = vi.fn(async () => makePageModule("middle"));
+    const finalLoader = vi.fn(async () => makePageModule("final"));
+    const { win } = createDataNavWindow({
+      locale: "en",
+      loaders: {
+        "/": vi.fn(async () => makePageModule("home")),
+        "/middle": middleLoader,
+        "/final": finalLoader,
+      },
+      ssgPatterns: [],
+      sspPatterns: [],
+    });
+    (win as any).__VINEXT_LOCALES__ = ["en", "fr"];
+    (win as any).__VINEXT_DEFAULT_LOCALE__ = "en";
+    const { applyLocaleToRoutes } =
+      await import("../packages/vinext/src/config/config-matchers.js");
+    (win as any).__VINEXT_CLIENT_REWRITES__ = toClientRewrites({
+      beforeFiles: applyLocaleToRoutes<NextRewrite>(
+        [
+          { source: "/start", destination: "/middle" },
+          { source: "/middle", destination: "/final" },
+        ],
+        { locales: ["en", "fr"], defaultLocale: "en" },
+        "rewrite",
+      ),
+      afterFiles: [],
+      fallback: [],
+    });
+    (globalThis as any).window = win;
+    vi.resetModules();
+
+    const fetchMock = vi.fn(async () => new Response("{}"));
+    globalThis.fetch = fetchMock as any;
+
+    try {
+      const Router = (await import("../packages/vinext/src/shims/router.js")).default;
+      expect(await Router.push("/start")).toBe(true);
+
+      expect(middleLoader).not.toHaveBeenCalled();
+      expect(finalLoader).toHaveBeenCalledTimes(1);
+    } finally {
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      globalThis.fetch = originalFetch;
+      vi.resetModules();
+    }
+  });
+
   it.each([
     ["generated locale variants", true],
     ["only the unprefixed fallback copy", false],
