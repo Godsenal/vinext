@@ -24,13 +24,20 @@ export function getDomainLocaleOrigin(item: DomainLocale): string {
 
 /** Whether `url` is absolute on one of the configured locale domains. */
 export function isDomainLocaleUrl(url: string, domainItems?: readonly DomainLocale[]): boolean {
-  if (!domainItems?.length) return false;
-  return domainItems.some((item) => {
-    const origin = getDomainLocaleOrigin(item);
-    if (!url.startsWith(origin)) return false;
-    const next = url.charAt(origin.length);
-    return next === "" || next === "/" || next === "?" || next === "#";
-  });
+  if (!domainItems?.length || !/^https?:\/\//i.test(url)) return false;
+  const origin = parseUrlOrigin(url);
+  return (
+    origin !== null &&
+    domainItems.some((item) => parseUrlOrigin(getDomainLocaleOrigin(item)) === origin)
+  );
+}
+
+function parseUrlOrigin(url: string): string | null {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return null;
+  }
 }
 
 export function normalizeDomainHostname(hostname: string | null | undefined): string | undefined {

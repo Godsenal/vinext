@@ -37,6 +37,8 @@ describe("Pages i18n domain helpers", () => {
     expect(isDomainLocaleUrl("https://example.com", i18n.domains)).toBe(true);
     expect(isDomainLocaleUrl("https://example.com/app/new?x=1", i18n.domains)).toBe(true);
     expect(isDomainLocaleUrl("http://example.fr#top", i18n.domains)).toBe(true);
+    expect(isDomainLocaleUrl("HTTPS://EXAMPLE.COM/new", i18n.domains)).toBe(true);
+    expect(isDomainLocaleUrl("https://example.com:443/new", i18n.domains)).toBe(true);
     for (const url of [
       "https://example.com.evil.test/new",
       "https://example.com@evil.test/new",
