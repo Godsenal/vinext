@@ -168,6 +168,11 @@ export function expandIsolatedStylesheets(
  * into the importer's `importedCss` by Vite) and CSS Module chunks (still
  * listed in `imports`). `isolatedCssFiles` maps each isolated CSS file to its
  * stylesheet module id; `getStylesheetOrder` gives a chunk's stylesheet order.
+ *
+ * plugin-rsc lists a chunk's own CSS before the CSS of the chunks it imports,
+ * so isolated CSS that reaches a chunk through a chunk that is not isolated
+ * (a helper in a common chunk that imports a shared stylesheet) is hoisted
+ * too, when the chunk's own modules reach it.
  */
 export function hoistIsolatedCss(
   bundle: Record<string, { type: string } & Partial<ChunkWithCss>>,
@@ -181,23 +186,33 @@ export function hoistIsolatedCss(
     const importedCss = chunk.viteMetadata?.importedCss;
     if (!importedCss || isIsolatedChunk(chunk)) continue;
 
+    const positions = new Map<string, number>();
+    for (const id of getStylesheetOrder(chunk)) positions.set(id, positions.size);
+
     const dependencyCss = new Set<string>();
-    for (const importedFile of chunk.imports) {
+    const visited = new Set<string>();
+    const pending = chunk.imports.map((file) => ({ file, direct: true }));
+    while (pending.length > 0) {
+      const { file: importedFile, direct } = pending.pop()!;
+      if (visited.has(importedFile)) continue;
+      visited.add(importedFile);
       const imported = bundle[importedFile];
       if (imported?.type !== "chunk") continue;
       const importedChunk = imported as ChunkWithCss;
-      if (!isIsolatedChunk(importedChunk)) continue;
+      const directIsolated = direct && isIsolatedChunk(importedChunk);
       for (const file of importedChunk.viteMetadata?.importedCss ?? []) {
-        if (isolatedCssFiles.has(file)) dependencyCss.add(file);
+        const moduleId = isolatedCssFiles.get(file);
+        if (moduleId !== undefined && (directIsolated || positions.has(moduleId))) {
+          dependencyCss.add(file);
+        }
       }
+      for (const file of importedChunk.imports) pending.push({ file, direct: false });
     }
     for (const file of importedCss) {
       if (isolatedCssFiles.has(file)) dependencyCss.add(file);
     }
     if (dependencyCss.size === 0) continue;
 
-    const positions = new Map<string, number>();
-    for (const id of getStylesheetOrder(chunk)) positions.set(id, positions.size);
     const position = (file: string) =>
       positions.get(isolatedCssFiles.get(file) ?? "") ?? Number.POSITIVE_INFINITY;
     // Array#sort is stable, so files without a known position keep their order.

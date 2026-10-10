@@ -174,6 +174,51 @@ describe("hoistIsolatedCss", () => {
     ]);
   });
 
+  it("hoists isolated stylesheets that arrive through a non-isolated chunk", () => {
+    // The layout imports a helper before its own CSS; the helper imports the
+    // shared stylesheet and lands in a common chunk, so Vite hoists the pure
+    // CSS chunk into the common chunk rather than the layout's.
+    const bundle = {
+      "layout.js": {
+        type: "chunk",
+        imports: ["common.js"],
+        moduleIds: ["/app/layout.tsx", "/app/layout.module.css"],
+        viteMetadata: { importedCss: new Set(["css/layout.css"]) },
+      },
+      "common.js": {
+        type: "chunk",
+        imports: ["unrelated.js"],
+        moduleIds: ["/app/helper.tsx", "/app/other.tsx"],
+        viteMetadata: { importedCss: new Set(["css/global.css"]) },
+      },
+      "unrelated.js": {
+        type: "chunk",
+        imports: ["shared.module.js"],
+        moduleIds: ["/app/unrelated.tsx"],
+        viteMetadata: { importedCss: new Set<string>() },
+      },
+      "shared.module.js": {
+        type: "chunk",
+        imports: [],
+        moduleIds: ["/app/shared.module.css"],
+        viteMetadata: { importedCss: new Set(["css/shared.module.css"]) },
+      },
+    };
+
+    hoistIsolatedCss(bundle, isIsolatedChunk, isolatedCssFiles, (chunk) =>
+      chunk.moduleIds.includes("/app/layout.tsx")
+        ? ["/app/global.css", "/app/layout.module.css"]
+        : ["/app/global.css"],
+    );
+
+    // shared.module.css is only reached by another module in the common
+    // chunk, so the layout's modules impose no order on it.
+    expect([...bundle["layout.js"].viteMetadata.importedCss]).toEqual([
+      "css/global.css",
+      "css/layout.css",
+    ]);
+  });
+
   it("leaves chunks without isolated stylesheets untouched", () => {
     const importedCss = new Set(["css/page.css", "css/other.css"]);
     hoistIsolatedCss(
@@ -286,6 +331,7 @@ describe("App Router stylesheet loader", () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
     delete (globalThis as Record<symbol, unknown>)[Symbol.for(APP_STYLESHEET_LOADER_KEY)];
   });
 
@@ -339,6 +385,16 @@ describe("App Router stylesheet loader", () => {
     const { appended, load } = installFakeDocument("https://other.example.net/");
     void load("https://example.com/_next/static/css/loader-base.abc.css");
     expect(appended[0].href).toBe("/_next/static/css/loader-base.abc.css");
+  });
+
+  it("spells stylesheets under an absolute Vite base like the server", () => {
+    // Without an asset prefix, plugin-rsc renders `base + file` literally.
+    vi.stubEnv("BASE_URL", "https://example.com/assets/");
+    const { appended, load } = installFakeDocument();
+    void load("https://example.com/assets/_next/static/css/loader-vite-base.abc.css");
+    expect(appended[0].href).toBe(
+      "https://example.com/assets/_next/static/css/loader-vite-base.abc.css",
+    );
   });
 });
 
@@ -478,9 +534,9 @@ export default function Lazy() {
           .href
       )
     ).default as { serverResources: Record<string, { css: string[] }> };
-    const layoutResources = Object.entries(assetsManifest.serverResources).find(([key]) =>
-      key.endsWith("app/layout.tsx"),
-    )?.[1];
+    const resourcesFor = (file: string) =>
+      Object.entries(assetsManifest.serverResources).find(([key]) => key.endsWith(file))?.[1];
+    const layoutResources = resourcesFor("app/layout.tsx");
     const chunkSources = await Promise.all(
       clientFiles.filter((file) => file.endsWith(".js")).map((file) => fsp.readFile(file, "utf8")),
     );
@@ -502,6 +558,7 @@ export default function Lazy() {
       clientFiles,
       sharedCss,
       layoutResources,
+      resourcesFor,
       chunkSources,
       toHref,
       clientManifest,
@@ -605,6 +662,52 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         ".shared-marker",
         ".b-marker",
       ]);
+    } finally {
+      await fsp.rm(fixtureRoot, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 120_000);
+
+  it("keeps import order when the shared stylesheet arrives through a common chunk", async () => {
+    const fixtureRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-shared-css-common-"));
+    try {
+      // The page imports a helper before its own CSS. Another page imports the
+      // helper too, so it lands in a chunk shared by both lazily loaded pages
+      // and the shared stylesheet reaches the page only through that chunk.
+      const helperPage = (name: string, helper: string) => `import Helper from "${helper}";
+import "./own.css";
+
+export default function ${name}() {
+  return <Helper />;
+}
+`;
+      const { sharedCss, resourcesFor, toHref, readCss } = await buildSharedStylesheetApp(
+        fixtureRoot,
+        {
+          sharedCss: ".shared-marker { color: rgb(1, 2, 3); }\n",
+          files: {
+            "app/helper.tsx": `import "./shared.css";
+
+export default function Helper() {
+  return <span className="shared-marker">helper</span>;
+}
+`,
+            "app/own.css": ".own-marker { color: rgb(4, 5, 6); }\n",
+            "app/page.tsx": helperPage("Page", "./helper"),
+            "app/other/own.css": ".other-marker { color: rgb(7, 8, 9); }\n",
+            "app/other/page.tsx": helperPage("OtherPage", "../helper"),
+          },
+        },
+      );
+
+      expect(sharedCss).toHaveLength(1);
+      for (const [page, ownMarker] of [
+        ["app/page.tsx", ".own-marker"],
+        ["app/other/page.tsx", ".other-marker"],
+      ] as const) {
+        const pageCss = resourcesFor(page)?.css ?? [];
+        expect(pageCss, page).toContain(toHref(sharedCss[0]));
+        expectMarkerOrder(await readCss(pageCss), [".shared-marker", ownMarker]);
+      }
     } finally {
       await fsp.rm(fixtureRoot, { recursive: true, force: true }).catch(() => {});
     }

@@ -22,10 +22,15 @@ let stylesheets: readonly ClientStylesheet[] = [];
 const requestedStylesheets = new Map<string, Promise<void>>();
 const listeners = new Set<() => void>();
 
-// The literal URL prefix server stylesheet hrefs start with when `assetPrefix`
-// is configured (see `resolveAssetUrlPrefix`), or "" when they are `base` +
-// file. Inlined at build time.
-const ASSET_URL_PREFIX = process.env.__VINEXT_ASSET_URL_PREFIX ?? "";
+/**
+ * The literal URL prefix server stylesheet hrefs start with: the asset prefix
+ * when `assetPrefix` is configured (see `resolveAssetUrlPrefix`), otherwise
+ * Vite's `base`, which plugin-rsc prepends to each file. Both are inlined at
+ * build time.
+ */
+function serverStylesheetUrlPrefix(): string {
+  return process.env.__VINEXT_ASSET_URL_PREFIX || import.meta.env.BASE_URL || "";
+}
 
 /**
  * Convert the absolute URL Vite's preload helper resolves back to the literal
@@ -33,11 +38,11 @@ const ASSET_URL_PREFIX = process.env.__VINEXT_ASSET_URL_PREFIX ?? "";
  * resources by that literal string, so any other spelling of the same URL is
  * inserted a second time.
  *
- * With an `assetPrefix`, plugin-rsc renders `assetUrlPrefix + file`, which may
- * be absolute, protocol-relative or root-relative. Otherwise it renders
- * `base + file`: root-relative for same-origin assets. `pageUrl` is the page's
- * own URL (not `document.baseURI`, which a `<base>` element can point at
- * another origin).
+ * plugin-rsc renders `assetUrlPrefix + file`, where the prefix is the asset
+ * prefix or Vite's `base` and may be absolute, protocol-relative or
+ * root-relative. Same-origin URLs outside the prefix become root-relative.
+ * `pageUrl` is the page's own URL (not `document.baseURI`, which a `<base>`
+ * element can point at another origin).
  */
 export function toDocumentStylesheetHref(
   url: string,
@@ -77,7 +82,7 @@ function fetchStylesheet(url: string, href: string, nonce: string | undefined): 
 }
 
 function loadAppStylesheet(url: string, nonce?: string): Promise<void> {
-  const href = toDocumentStylesheetHref(url, location.href, ASSET_URL_PREFIX);
+  const href = toDocumentStylesheetHref(url, location.href, serverStylesheetUrlPrefix());
   const requested = requestedStylesheets.get(href);
   if (requested) return requested;
   const stylesheetNonce = nonce || undefined;
