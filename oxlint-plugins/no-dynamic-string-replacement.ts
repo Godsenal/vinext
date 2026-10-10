@@ -25,6 +25,12 @@ function findVariable(scope: Scope | null, name: string): Variable | null {
   return null;
 }
 
+/** The property name of `object.name` or `object["name"]`, if static. */
+function getMethodName(member: ESTree.MemberExpression): string | null {
+  if (member.computed) return getStaticString(member.property);
+  return member.property.type === "Identifier" ? member.property.name : null;
+}
+
 /** The value of a string literal or an expression-free template literal. */
 function getStaticString(node: ESTree.Node): string | null {
   if (node.type === "Literal") return typeof node.value === "string" ? node.value : null;
@@ -87,29 +93,48 @@ const rule = defineRule({
       });
     }
 
+    /** Check `String#replace` arguments, wherever the call shape put them. */
+    function checkReplaceArguments(args: ReadonlyArray<ESTree.Node | null>): void {
+      // A spread that could supply the replacement can't be shown to be a
+      // static string or a function.
+      const spread = args.slice(0, 2).find((arg) => arg?.type === "SpreadElement");
+      if (spread) {
+        report(spread);
+        return;
+      }
+      const replacement = args[1];
+      if (replacement && !isSafeReplacement(replacement)) report(replacement);
+    }
+
     return {
       CallExpression(node) {
         const callee = node.callee;
         if (callee.type !== "MemberExpression") return;
-        const property = callee.property;
-        const methodName = callee.computed
-          ? getStaticString(property)
-          : property.type === "Identifier"
-            ? property.name
-            : null;
-        if (methodName === null || !REPLACE_METHODS.has(methodName)) return;
-        // A spread that could supply the replacement can't be shown to be a
-        // static string or a function.
-        const spread = node.arguments.slice(0, 2).find((arg) => arg.type === "SpreadElement");
-        if (spread) {
-          report(spread);
+        const methodName = getMethodName(callee);
+        if (methodName !== null && REPLACE_METHODS.has(methodName)) {
+          // Without type information the Pages router's `replace(url, as)`
+          // looks the same; its call sites carry a targeted disable comment.
+          checkReplaceArguments(node.arguments);
           return;
         }
-        // Without type information the Pages router's `replace(url, as)` looks
-        // the same; its call sites carry a targeted disable comment.
-        const replacement = node.arguments[1];
-        if (!replacement) return;
-        if (!isSafeReplacement(replacement)) report(replacement);
+        // `s.replace.call(s, pattern, replacement)` and
+        // `s.replace.apply(s, [pattern, replacement])`.
+        const target = callee.object;
+        if (target.type !== "MemberExpression") return;
+        const targetName = getMethodName(target);
+        if (targetName === null || !REPLACE_METHODS.has(targetName)) return;
+        if (methodName === "call") {
+          if (node.arguments[0]?.type === "SpreadElement") {
+            report(node.arguments[0]);
+            return;
+          }
+          checkReplaceArguments(node.arguments.slice(1));
+        } else if (methodName === "apply") {
+          const list = node.arguments[1];
+          if (!list) return;
+          if (list.type === "ArrayExpression") checkReplaceArguments(list.elements);
+          else report(list);
+        }
       },
     };
   },

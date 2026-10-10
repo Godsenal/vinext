@@ -71,6 +71,9 @@ export function splice(html: string, data: string, mapTag: (tag: string) => stri
     html.replace(...[PLACEHOLDER, data]),
     html.replace(PLACEHOLDER, data, undefined),
     html.replace(PLACEHOLDER, mutable),
+    html.replace.call(html, PLACEHOLDER, data),
+    html.replaceAll.apply(html, [PLACEHOLDER, data]),
+    html.replace.apply(html, [PLACEHOLDER, data] as [string, string]),
     html.replace(PLACEHOLDER, "<p></p>"),
     html.replace(PLACEHOLDER, \`<p></p>\`),
     html.replace(PLACEHOLDER, () => \`<p>\${data}</p>\`),
@@ -78,6 +81,7 @@ export function splice(html: string, data: string, mapTag: (tag: string) => stri
     html.replace(/[<>]/g, encode),
     html.replace(/<a\\b[^>]*>/g, mapTag),
     html.replace(/[?#]/g, encodeURIComponent),
+    html.replace.call(html, PLACEHOLDER, () => data),
     html[\`replace\`](PLACEHOLDER, data),
     // oxlint-disable-next-line vinext-security/no-dynamic-string-replacement -- router navigation
     router.replace(html, data, {}),
@@ -92,7 +96,7 @@ export function splice(html: string, data: string, mapTag: (tag: string) => stri
     const reportedLines = [
       ...result.output.matchAll(/replacements\.ts:(\d+):\d+: error vinext-security/g),
     ].map((match) => Number(match[1]));
-    expect(reportedLines).toEqual([19, 20, 21, 22, 23, 24, 25, 26, 27, 35]);
+    expect(reportedLines).toEqual([19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 39]);
   });
 
   it("leaves files outside the runtime directories alone", () => {
