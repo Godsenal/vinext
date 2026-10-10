@@ -121,7 +121,9 @@ function DocumentHeadElement({
   const openMarker = token ? { [DOCUMENT_HEAD_OPEN_ATTRIBUTE]: token } : {};
   if (dangerouslySetInnerHTML) {
     // Raw head HTML takes no children, so the close marker joins the HTML.
-    const html = String(dangerouslySetInnerHTML.__html ?? "");
+    // Documents render only on the server, where `__html` is a string.
+    const raw = dangerouslySetInnerHTML.__html;
+    const html = typeof raw === "string" ? raw : "";
     return (
       <head
         {...attributes}

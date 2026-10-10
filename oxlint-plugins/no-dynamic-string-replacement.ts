@@ -85,8 +85,8 @@ const rule = defineRule({
         // router's `replace(url, as, options)` without type information.
         if (node.arguments.length !== 2) return;
         const replacement = node.arguments[1];
-        if (replacement.type === "SpreadElement") return;
-        if (isSafeReplacement(replacement)) return;
+        // A spread can't be shown to supply a static string or a function.
+        if (replacement.type !== "SpreadElement" && isSafeReplacement(replacement)) return;
         context.report({
           node: replacement,
           message:

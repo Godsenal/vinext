@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { describe, expect, it, vi } from "vite-plus/test";
 import {
   getPagesRouteParams,
+  maskRawTextContent,
   matchesPagesStaticPath,
   renderPagesIsrHtml,
   resolvePagesRevalidateSeconds,
@@ -306,6 +307,38 @@ function createOptions(
     ...overrides,
   };
 }
+
+describe("maskRawTextContent", () => {
+  it("blanks comments and every raw-text element's content, keeping the length", () => {
+    const html =
+      "<iframe></head></iframe><XMP></body></XMP><noembed></head></noembed>" +
+      "<!--></head><p></p><!-- </body> --><!--x--!><i></i>" +
+      "<script><!--</head></script ><plaintext></body>";
+    expect(maskRawTextContent(html)).toBe(
+      "<iframe>       </iframe><XMP>       </XMP><noembed>       </noembed>" +
+        "     </head><p></p>" +
+        " ".repeat(16) +
+        " ".repeat(9) +
+        "<i></i>" +
+        "<script>           </script ><plaintext>       ",
+    );
+  });
+
+  it("ends raw text only at an end tag followed by ASCII whitespace, / or >", () => {
+    const text = "</script\u00a0><head></head>";
+    const html = `<script>${text}</script><head>`;
+    expect(maskRawTextContent(html)).toBe(`<script>${" ".repeat(text.length)}</script><head>`);
+  });
+
+  it("scans unterminated openers in linear time", () => {
+    for (const opener of ["<!--", "<script>", "<script "]) {
+      const html = opener.repeat(250_000);
+      const started = performance.now();
+      expect(maskRawTextContent(html)).toHaveLength(html.length);
+      expect(performance.now() - started).toBeLessThan(1000);
+    }
+  });
+});
 
 describe("pages page data", () => {
   it("preserves omitted and explicit false revalidation as indefinite", () => {

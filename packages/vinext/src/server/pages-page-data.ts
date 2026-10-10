@@ -46,7 +46,6 @@ import { isUnknownRecord } from "../utils/record.js";
 import { isDangerousScheme } from "vinext/shims/url-safety";
 import { encodeCacheTag } from "../utils/encode-cache-tag.js";
 import { tracePagesData, tracePagesDocument } from "./pages-execution-tracing.js";
-import { maskRawTextContent } from "./pages-document-splice.js";
 
 export type PagesRedirectResult = {
   destination: string;
@@ -1146,6 +1145,65 @@ function refreshCachedHeadTags(cachedHtml: string, freshHead: string): string {
   return (
     cachedHtml.slice(0, first.index) + freshHead + cachedHtml.slice(last.index + last[0].length)
   );
+}
+
+// Elements whose content the HTML parser reads as text up to their closing
+// tag (`plaintext` never closes). React writes `dangerouslySetInnerHTML`
+// into them unescaped, so their content can hold any tag-like string. Tag
+// names end only at ASCII whitespace, `/` or `>`.
+const RAW_TEXT_OPENER_PATTERN =
+  /<!--|<(script|style|title|textarea|noscript|xmp|iframe|noembed|noframes|plaintext)(?=[\t\n\f\r />])/gi;
+
+/**
+ * Blank comments and the content of raw-text elements, keeping those
+ * elements' tags and the string's length, so a tag search on the result
+ * finds only real markup at indexes that still map onto `html`. React
+ * escapes `<`, `>` and quotes everywhere else, including attribute values.
+ *
+ * One left-to-right pass: a commented-out `<script>` opens no element, a
+ * `<!--` inside script text opens no comment, and an unterminated one runs
+ * to the end of the input without rescanning it. Script text that enters the
+ * parser's double-escaped state (`<!--<script>`) is not modelled; it breaks
+ * the Document's own markup in the browser anyway.
+ */
+export function maskRawTextContent(html: string): string {
+  let masked = "";
+  let copied = 0;
+  const opener = new RegExp(RAW_TEXT_OPENER_PATTERN);
+  for (let match = opener.exec(html); match; match = opener.exec(html)) {
+    let start: number;
+    let end: number;
+    const name = match[1]?.toLowerCase();
+    if (name === undefined) {
+      start = match.index;
+      end = findCommentEnd(html, match.index);
+    } else {
+      // The first `>` ends the tag, since React escapes it in attributes.
+      const tagEnd = html.indexOf(">", match.index);
+      if (tagEnd === -1) break;
+      start = tagEnd + 1;
+      end = name === "plaintext" ? html.length : findClosingTag(html, name, start);
+    }
+    masked += html.slice(copied, start) + " ".repeat(end - start);
+    copied = end;
+    opener.lastIndex = end;
+  }
+  return masked + html.slice(copied);
+}
+
+/** End of the comment opened at `start`: `-->`, `--!>`, `<!-->` or `<!--->`. */
+function findCommentEnd(html: string, start: number): number {
+  // Searching from the opener's dashes also matches `<!-->` and `<!--->`.
+  const close = html.indexOf("-->", start + 2);
+  const bangClose = html.indexOf("--!>", start + 4);
+  if (bangClose !== -1 && (close === -1 || bangClose < close)) return bangClose + 4;
+  return close === -1 ? html.length : close + 3;
+}
+
+function findClosingTag(html: string, name: string, from: number): number {
+  const closing = new RegExp(`</${name}(?=[\\t\\n\\f\\r />])`, "gi");
+  closing.lastIndex = from;
+  return closing.exec(html)?.index ?? html.length;
 }
 
 /** Index of an inline `<script>window.__NEXT_DATA__` tag, skipping script text. */

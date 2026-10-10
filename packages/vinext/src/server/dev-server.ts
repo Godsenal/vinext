@@ -40,6 +40,7 @@ import {
   spliceDocumentHeadOpen,
   spliceDocumentScripts,
   splitDocumentAtMain,
+  warnMissingDocumentComponents,
 } from "./pages-document-splice.js";
 import { getClientTraceMetadataHTML } from "./client-trace-metadata.js";
 import { getScriptNonceFromNodeHeaderSources } from "./csp.js";
@@ -464,6 +465,7 @@ async function streamPageToResponseImpl(
       placeholderToken,
     );
     documentAssetProps = renderedDocument.props;
+    warnMissingDocumentComponents(renderedDocument.html, placeholderToken);
     let docHtml = protectAssetTags(renderedDocument.html);
     const generatedScripts = applyGeneratedAssetProps(
       scripts,

@@ -1102,20 +1102,30 @@ describe("pages page response", () => {
     expect(html.match(/<!DOCTYPE html>/g)).toHaveLength(1);
   });
 
-  it("appends hydration scripts when a Document without NextScript renders __NEXT_DATA__ text", async () => {
+  it("inserts no hydration scripts for a Document without NextScript, like Next.js", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const common = createCommonOptions();
     common.renderDocumentToString.mockImplementationOnce(async (element: React.ReactNode) =>
       renderMockDocument(
         element,
-        '<!DOCTYPE html><html><head></head><body data-route="/?probe=__NEXT_DATA__"><div id="__next"><!-- __NEXT_MAIN__ --></div></body></html>',
+        '<!DOCTYPE html><html><head></head><body><div id="__next"><!-- __NEXT_MAIN__ --></div></body></html>',
       ),
     );
 
-    const response = await renderPagesPageResponse(common.options);
+    try {
+      const response = await renderPagesPageResponse(common.options);
 
-    const html = await response.text();
-    expect(html).toContain('<script id="__NEXT_DATA__" type="application/json">');
-    expect(html.indexOf('<script id="__NEXT_DATA__"')).toBeLessThan(html.indexOf("</body>"));
+      const html = await response.text();
+      expect(html).not.toContain("__NEXT_DATA__");
+      expect(html).toMatch(
+        /<\/head><body><div id="__next"><div>live-body<\/div><\/div><\/body><\/html>$/,
+      );
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining("Missing component: <NextScript />"),
+      );
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it("uses custom document html and styles without calling renderPage", async () => {

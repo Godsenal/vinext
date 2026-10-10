@@ -43,6 +43,7 @@ import {
   spliceDocumentHeadOpen,
   spliceDocumentScripts,
   splitDocumentAtMain,
+  warnMissingDocumentComponents,
 } from "./pages-document-splice.js";
 import { isBotUserAgent } from "../utils/html-limited-bots.js";
 import { NEXTJS_CACHE_HEADER, VINEXT_REVALIDATED_CACHE_TAG_HEADER } from "./headers.js";
@@ -350,6 +351,7 @@ async function buildPagesShellHtml(
       placeholderToken,
     );
     let html = renderedDocument.html;
+    warnMissingDocumentComponents(html, placeholderToken);
     const generatedAssetTags = applyDocumentAssetProps(options.assetTags, renderedDocument.props, {
       configuredCrossOrigin: options.crossOrigin,
       // Next.js emits optimized framework scripts from Head. When optimized

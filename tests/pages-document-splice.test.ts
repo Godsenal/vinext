@@ -1,17 +1,17 @@
 import React from "react";
 import { renderToReadableStream } from "react-dom/server.edge";
-import { describe, expect, it } from "vite-plus/test";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { Head, Html, Main, NextScript } from "../packages/vinext/src/shims/document.js";
 import {
   createDocumentPlaceholderToken,
   withDocumentPlaceholders,
 } from "../packages/vinext/src/shims/document-placeholders.js";
 import {
-  maskRawTextContent,
   spliceDocumentHeadClose,
   spliceDocumentHeadOpen,
   spliceDocumentScripts,
   splitDocumentAtMain,
+  warnMissingDocumentComponents,
 } from "../packages/vinext/src/server/pages-document-splice.js";
 
 async function renderDocument(element: React.ReactElement, token: string): Promise<string> {
@@ -91,70 +91,62 @@ describe("Pages Document splicing", () => {
     expect(splitDocumentAtMain(html, token)).toEqual({ prefix: html, suffix: "" });
   });
 
-  it("falls back to the <head> tags for a Document that renders a plain <head>", () => {
-    const html = '<html><head data-x="1"><title>t</title></head><body></body></html>';
-
-    expect(
-      spliceDocumentHeadClose(spliceDocumentHeadOpen(html, "token", "<a/>"), "token", "<b/>"),
-    ).toBe('<html><head data-x="1"><a/><title>t</title><b/></head><body></body></html>');
-  });
-
-  it("finds only real tags for a plain <head> Document, not text in its inline scripts or comments", () => {
-    const forged = JSON.stringify(
-      '<head></head><script id="__NEXT_DATA__" type="application/json"></script></body>',
-    );
-    const script = `<script>window.route = ${forged};</script>`;
-    const comment = "<!-- <style> </head> -->";
-    const html = `<html>${script}<head>${comment}${script}</head><body>${script}<div id="__next"></div>${script}</body></html>`;
-
+  it("inserts nothing for a Document without <Head> or <NextScript />, like Next.js", () => {
+    const html = '<html><head><title>t</title></head><body><div id="__next"></div></body></html>';
     let spliced = spliceDocumentHeadOpen(html, "token", "<a/>");
     spliced = spliceDocumentHeadClose(spliced, "token", "<b/>");
     spliced = spliceDocumentScripts(spliced, "token", "<c/>");
-
-    expect(spliced).toBe(
-      `<html>${script}<head><a/>${comment}${script}<b/></head><body>${script}<div id="__next"></div>${script}  <c/>\n</body></html>`,
-    );
+    expect(spliced).toBe(html);
   });
 
-  describe("maskRawTextContent", () => {
-    it("blanks comments and every raw-text element's content, keeping the length", () => {
-      const html =
-        "<iframe></head></iframe><XMP></body></XMP><noembed></head></noembed>" +
-        "<!--></head><p></p><!-- </body> --><script><!--</head></script ><plaintext></body>";
-      expect(maskRawTextContent(html)).toBe(
-        "<iframe>       </iframe><XMP>       </XMP><noembed>       </noembed>" +
-          "     </head><p></p>" +
-          " ".repeat(16) +
-          "<script>           </script ><plaintext>       ",
+  describe("warnMissingDocumentComponents", () => {
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it("warns with Next.js's message for the components a Document left out", async () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const token = createDocumentPlaceholderToken();
+      const html = await renderDocument(
+        React.createElement(
+          Html,
+          null,
+          React.createElement("head"),
+          React.createElement("body", null, React.createElement(Main)),
+        ),
+        token,
+      );
+
+      warnMissingDocumentComponents(html, token);
+
+      expect(warn).toHaveBeenCalledWith(
+        "Your custom Document (pages/_document) did not render all the required subcomponents.\n" +
+          "Missing components: <Head />, <NextScript />\n" +
+          "Read how to fix here: https://nextjs.org/docs/messages/missing-document-component",
       );
     });
 
-    it("scans unterminated openers in linear time", () => {
-      for (const opener of ["<!--", "<script>", "<script "]) {
-        const html = opener.repeat(250_000);
-        const started = performance.now();
-        expect(maskRawTextContent(html)).toHaveLength(html.length);
-        expect(performance.now() - started).toBeLessThan(1000);
-      }
-    });
-  });
-
-  describe("scripts without <NextScript />", () => {
-    const scripts = '<script id="__NEXT_DATA__" type="application/json">{}</script>';
-
-    it("appends before the last </body> when request data merely contains __NEXT_DATA__", () => {
-      const html =
-        '<html><body data-route="/?probe=__NEXT_DATA__&amp;x= id=&quot;__NEXT_DATA__&quot;">' +
-        "__NEXT_DATA__</body></html>";
-      expect(spliceDocumentScripts(html, "token", scripts)).toBe(
-        html.replace("</body>", `  ${scripts}\n</body>`),
+    it("stays quiet for a complete Document", async () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const token = createDocumentPlaceholderToken();
+      const html = await renderDocument(
+        React.createElement(
+          Html,
+          null,
+          React.createElement(Head),
+          React.createElement(
+            "body",
+            null,
+            React.createElement(Main),
+            React.createElement(NextScript),
+          ),
+        ),
+        token,
       );
-    });
 
-    it("leaves a Document that renders its own __NEXT_DATA__ script unchanged", () => {
-      const html =
-        '<html><body><script id="__NEXT_DATA__" type="application/json">{"page":"/"}</script></body></html>';
-      expect(spliceDocumentScripts(html, "token", scripts)).toBe(html);
+      warnMissingDocumentComponents(html, token);
+
+      expect(warn).not.toHaveBeenCalled();
     });
   });
 });
