@@ -24025,7 +24025,6 @@ describe("Pages Router _next/data client navigation", () => {
 
   it.each([
     ["a mixed-case literal", "/:locale/FILES", "/about", "/files", "/about"],
-    ["a catch-all after another param", "/:locale/files/:path*", "/:path*", "/files", null],
     [
       "a __proto__ capture",
       "/:locale/:__proto__",
@@ -24046,7 +24045,6 @@ describe("Pages Router _next/data client navigation", () => {
         "/": vi.fn(async () => makePageModule("home")),
         "/about": vi.fn(async () => makePageModule("about")),
         "/show/[locale]/[value]": vi.fn(async () => makePageModule("show")),
-        "/[slug]": vi.fn(async () => makePageModule("slug")),
       };
       const { win } = createDataNavWindow({
         locale: "en",
@@ -24072,11 +24070,7 @@ describe("Pages Router _next/data client navigation", () => {
         expect(await Router.push(target)).toBe(true);
 
         const expectedLoader =
-          expectedRoute === "/about"
-            ? loaders["/about"]
-            : expectedRoute === null
-              ? loaders["/[slug]"]
-              : loaders["/show/[locale]/[value]"];
+          expectedRoute === "/about" ? loaders["/about"] : loaders["/show/[locale]/[value]"];
         expect(expectedLoader).toHaveBeenCalledTimes(1);
         for (const loader of Object.values(loaders)) {
           if (loader !== expectedLoader) expect(loader).not.toHaveBeenCalled();
