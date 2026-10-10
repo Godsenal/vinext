@@ -82,6 +82,7 @@ export async function navigatePagesRouterLink(
   if (interpolateDynamicRoute) routerOptions._vinextInterpolateDynamicRoute = true;
   if (shallow !== undefined) routerOptions.shallow = shallow;
   if (replace) {
+    // oxlint-disable-next-line vinext-security/no-dynamic-string-replacement -- Pages router navigation, not String#replace
     await router.replace(href, as, routerOptions);
   } else {
     await router.push(href, as, routerOptions);

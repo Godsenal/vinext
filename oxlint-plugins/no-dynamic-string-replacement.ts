@@ -14,8 +14,6 @@
 import { definePlugin, defineRule, type ESTree, type Scope, type Variable } from "@oxlint/plugins";
 
 const REPLACE_METHODS = new Set(["replace", "replaceAll"]);
-// `router`, `Router`, `singletonRouter`, ...
-const ROUTER_RECEIVER_PATTERN = /router$/i;
 // Global functions that are safe to pass by reference.
 const GLOBAL_FUNCTIONS = new Set(["encodeURI", "encodeURIComponent"]);
 
@@ -23,6 +21,15 @@ function findVariable(scope: Scope | null, name: string): Variable | null {
   for (let current = scope; current; current = current.upper) {
     const variable = current.set.get(name);
     if (variable) return variable;
+  }
+  return null;
+}
+
+/** The value of a string literal or an expression-free template literal. */
+function getStaticString(node: ESTree.Node): string | null {
+  if (node.type === "Literal") return typeof node.value === "string" ? node.value : null;
+  if (node.type === "TemplateLiteral" && node.expressions.length === 0) {
+    return node.quasis[0]?.value.cooked ?? null;
   }
   return null;
 }
@@ -59,8 +66,7 @@ const rule = defineRule({
   },
   createOnce(context) {
     function isSafeReplacement(node: ESTree.Node): boolean {
-      if (node.type === "Literal") return typeof node.value === "string";
-      if (node.type === "TemplateLiteral") return node.expressions.length === 0;
+      if (getStaticString(node) !== null) return true;
       if (isFunctionNode(node)) return true;
       if (node.type === "Identifier") {
         if (context.sourceCode.isGlobalReference(node)) return GLOBAL_FUNCTIONS.has(node.name);
@@ -84,9 +90,7 @@ const rule = defineRule({
         if (callee.type !== "MemberExpression") return;
         const property = callee.property;
         const methodName = callee.computed
-          ? property.type === "Literal" && typeof property.value === "string"
-            ? property.value
-            : null
+          ? getStaticString(property)
           : property.type === "Identifier"
             ? property.name
             : null;
@@ -98,14 +102,8 @@ const rule = defineRule({
           report(spread);
           return;
         }
-        // Without type information, recognise the Pages router's
-        // `replace(url, as, options)` by its receiver's name.
-        if (
-          callee.object.type === "Identifier" &&
-          ROUTER_RECEIVER_PATTERN.test(callee.object.name)
-        ) {
-          return;
-        }
+        // Without type information the Pages router's `replace(url, as)` looks
+        // the same; its call sites carry a targeted disable comment.
         const replacement = node.arguments[1];
         if (!replacement) return;
         if (!isSafeReplacement(replacement)) report(replacement);

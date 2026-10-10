@@ -73,8 +73,9 @@ export function splice(html: string, data: string, mapTag: (tag: string) => stri
     html.replace(/[<>]/g, encode),
     html.replace(/<a\\b[^>]*>/g, mapTag),
     html.replace(/[?#]/g, encodeURIComponent),
+    html[\`replace\`](PLACEHOLDER, data),
+    // oxlint-disable-next-line vinext-security/no-dynamic-string-replacement -- router navigation
     router.replace(html, data, {}),
-    router.replace(html, data),
   ];
 }
 `,
@@ -86,7 +87,7 @@ export function splice(html: string, data: string, mapTag: (tag: string) => stri
     const reportedLines = [
       ...result.output.matchAll(/replacements\.ts:(\d+):\d+: error vinext-security/g),
     ].map((match) => Number(match[1]));
-    expect(reportedLines).toEqual([15, 16, 17, 18, 19, 20, 21, 22]);
+    expect(reportedLines).toEqual([15, 16, 17, 18, 19, 20, 21, 22, 30]);
   });
 
   it("leaves files outside the runtime directories alone", () => {

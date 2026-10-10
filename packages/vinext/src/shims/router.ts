@@ -3958,6 +3958,7 @@ function PagesRouterProvider({ children }: { children: ReactNode }): ReactElemen
         void singletonRouter.push(href, undefined, { scroll: options?.scroll });
       },
       replace(href, options) {
+        // oxlint-disable-next-line vinext-security/no-dynamic-string-replacement -- Pages router navigation, not String#replace
         void singletonRouter.replace(href, undefined, { scroll: options?.scroll });
       },
       prefetch(href) {
@@ -4758,6 +4759,7 @@ export class Router {
     return singletonRouter.push(url, as, options);
   }
   replace(url: Url, as?: Url, options?: TransitionOptions): Promise<boolean> {
+    // oxlint-disable-next-line vinext-security/no-dynamic-string-replacement -- Pages router navigation, not String#replace
     return singletonRouter.replace(url, as, options);
   }
   reload(): void {

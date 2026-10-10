@@ -447,6 +447,7 @@ const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFo
           const routerModule = await import("./router.js");
           Router = routerModule.default;
           if (replace) {
+            // oxlint-disable-next-line vinext-security/no-dynamic-string-replacement -- Pages router navigation, not String#replace
             await Router.replace(url, undefined, { scroll });
           } else {
             await Router.push(url, undefined, { scroll });
