@@ -14,6 +14,8 @@
 import { definePlugin, defineRule, type ESTree, type Scope, type Variable } from "@oxlint/plugins";
 
 const REPLACE_METHODS = new Set(["replace", "replaceAll"]);
+// `router`, `Router`, `singletonRouter`, ...
+const ROUTER_RECEIVER_PATTERN = /router$/i;
 // Global functions that are safe to pass by reference.
 const GLOBAL_FUNCTIONS = new Set(["encodeURI", "encodeURIComponent"]);
 
@@ -96,10 +98,16 @@ const rule = defineRule({
           report(spread);
           return;
         }
-        // String#replace takes exactly two arguments; this skips the Pages
-        // router's `replace(url, as, options)` without type information.
-        if (node.arguments.length !== 2) return;
+        // Without type information, recognise the Pages router's
+        // `replace(url, as, options)` by its receiver's name.
+        if (
+          callee.object.type === "Identifier" &&
+          ROUTER_RECEIVER_PATTERN.test(callee.object.name)
+        ) {
+          return;
+        }
         const replacement = node.arguments[1];
+        if (!replacement) return;
         if (!isSafeReplacement(replacement)) report(replacement);
       },
     };

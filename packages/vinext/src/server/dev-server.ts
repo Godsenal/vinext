@@ -25,7 +25,7 @@ import "vinext/shims/router-state";
 import {
   createDocumentPlaceholderToken,
   type DocumentComponentName,
-  withDocumentPlaceholders,
+  getDocumentHeadOpenMarker,
 } from "vinext/shims/document-placeholders";
 import { withScriptNonce } from "vinext/shims/script-nonce-context";
 import { createInlineScriptTag, createNonceAttribute, safeJsonStringify } from "./html.js";
@@ -304,6 +304,8 @@ async function streamPageToResponseImpl(
     assetHeadHTML?: string;
     scripts: string;
     DocumentComponent: React.ComponentType | null;
+    /** Loads the Document's `next/document` shims; see the placeholder import below. */
+    runner: ModuleImporter;
     statusCode?: number;
     extraHeaders?: Record<string, string | string[]>;
     /** Called after renderToReadableStream resolves (shell ready) to collect head HTML */
@@ -462,6 +464,11 @@ async function streamPageToResponseImpl(
     const docElement = docProps
       ? React.createElement(DocumentComponent, docProps)
       : React.createElement(DocumentComponent);
+    // The Document and its `next/document` shims load through the runner, so
+    // the placeholder provider must come from that module graph too.
+    const { withDocumentPlaceholders } = (await options.runner.import(
+      "vinext/document-placeholders",
+    )) as typeof import("vinext/shims/document-placeholders");
     const renderedDocument = extractDocumentAssetProps(
       await renderToStringAsync(
         withDocumentPlaceholders(docElement, placeholderToken, renderedComponents),
@@ -499,9 +506,10 @@ async function streamPageToResponseImpl(
     // canonical ordering. Don't duplicate them here.
     const generatedScripts = applyGeneratedAssetProps(scripts, {}, "next-script");
     const generatedAssetHeadHTML = applyGeneratedAssetProps(assetHeadHTML, {}, "next-script");
+    // The open marker lets the transformed head block move back to the top.
     shellTemplate = `<!DOCTYPE html>
 <html>
-<head>
+<head${getDocumentHeadOpenMarker(placeholderToken)}
   ${ssrHeadStartMarker}${protectAssetTags(headHTML)}${ssrHeadEndMarker}
   ${protectAssetTags(fontHeadHTML)}
   ${generatedAssetHeadHTML}
@@ -1704,6 +1712,7 @@ export function createSSRHandler(
           assetHeadHTML,
           scripts: allScripts,
           DocumentComponent,
+          runner,
           statusCode,
           extraHeaders,
           // Forward the per-request nonce so the shared renderPage helper can
@@ -2091,6 +2100,7 @@ async function renderErrorPage(
           assetHeadHTML,
           scripts: errorScripts,
           DocumentComponent,
+          runner,
           statusCode,
           documentContext: {
             err,

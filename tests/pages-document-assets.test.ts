@@ -250,6 +250,9 @@ export default function Document() {
       for (const tag of viteScripts) {
         expect(tag).toContain('crossorigin="anonymous"');
       }
+      // Collected next/head tags lead the head, ahead of Vite's client.
+      expect(html).toMatch(/<head><meta charset="utf-8" data-next-head=""/);
+      expect(html).not.toContain("data-vinext-head-open");
     } finally {
       await noDocumentServer?.close();
       fs.rmSync(noDocumentRoot, { recursive: true, force: true });

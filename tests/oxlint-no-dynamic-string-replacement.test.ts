@@ -56,7 +56,7 @@ let reassignable = (value: string): string => value;
 
 export function splice(html: string, data: string, mapTag: (tag: string) => string): string[] {
   const replacement = \`<p>\${data}</p>\`;
-  const router = { replace: (_url: string, _as: string, _options: object) => "" };
+  const router = { replace: (_url: string, _as: string, _options?: object) => "" };
   return [
     html.replace(PLACEHOLDER, \`<p>\${data}</p>\`),
     html.replaceAll(PLACEHOLDER, replacement),
@@ -65,6 +65,7 @@ export function splice(html: string, data: string, mapTag: (tag: string) => stri
     html.replace(PLACEHOLDER, reassignable),
     html.replace(PLACEHOLDER, ...[data]),
     html.replace(...[PLACEHOLDER, data]),
+    html.replace(PLACEHOLDER, data, undefined),
     html.replace(PLACEHOLDER, "<p></p>"),
     html.replace(PLACEHOLDER, \`<p></p>\`),
     html.replace(PLACEHOLDER, () => \`<p>\${data}</p>\`),
@@ -73,6 +74,7 @@ export function splice(html: string, data: string, mapTag: (tag: string) => stri
     html.replace(/<a\\b[^>]*>/g, mapTag),
     html.replace(/[?#]/g, encodeURIComponent),
     router.replace(html, data, {}),
+    router.replace(html, data),
   ];
 }
 `,
@@ -84,7 +86,7 @@ export function splice(html: string, data: string, mapTag: (tag: string) => stri
     const reportedLines = [
       ...result.output.matchAll(/replacements\.ts:(\d+):\d+: error vinext-security/g),
     ].map((match) => Number(match[1]));
-    expect(reportedLines).toEqual([15, 16, 17, 18, 19, 20, 21]);
+    expect(reportedLines).toEqual([15, 16, 17, 18, 19, 20, 21, 22]);
   });
 
   it("leaves files outside the runtime directories alone", () => {
