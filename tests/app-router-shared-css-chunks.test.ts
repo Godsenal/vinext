@@ -219,6 +219,41 @@ describe("hoistIsolatedCss", () => {
     ]);
   });
 
+  it("keeps import order for isolated stylesheets without a known position", () => {
+    // A facade chunk whose own modules impose no stylesheet order, before
+    // vite:css-post merges its pure CSS imports.
+    const chunk = (imports: string[], moduleIds: string[], css: string[]) => ({
+      type: "chunk",
+      imports,
+      moduleIds,
+      viteMetadata: { importedCss: new Set(css) },
+    });
+    const bundle = {
+      "facade.js": chunk(
+        ["global.js", "shared.module.js"],
+        ["/app/facade.tsx"],
+        ["css/facade.css"],
+      ),
+      // Reaches the facade's direct import before the facade's own walk does.
+      "entry.js": chunk(["common.js", "shared.module.js"], ["/app/entry.tsx"], ["css/entry.css"]),
+      "common.js": chunk(["shared.module.js"], ["/app/common.tsx"], []),
+      "global.js": chunk([], ["/app/global.css"], ["css/global.css"]),
+      "shared.module.js": chunk([], ["/app/shared.module.css"], ["css/shared.module.css"]),
+    };
+
+    hoistIsolatedCss(bundle, isIsolatedChunk, isolatedCssFiles, () => []);
+
+    expect([...bundle["facade.js"].viteMetadata.importedCss]).toEqual([
+      "css/global.css",
+      "css/shared.module.css",
+      "css/facade.css",
+    ]);
+    expect([...bundle["entry.js"].viteMetadata.importedCss]).toEqual([
+      "css/shared.module.css",
+      "css/entry.css",
+    ]);
+  });
+
   it("leaves chunks without isolated stylesheets untouched", () => {
     const importedCss = new Set(["css/page.css", "css/other.css"]);
     hoistIsolatedCss(

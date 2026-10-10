@@ -189,24 +189,29 @@ export function hoistIsolatedCss(
     const positions = new Map<string, number>();
     for (const id of getStylesheetOrder(chunk)) positions.set(id, positions.size);
 
+    const directImports = new Set(chunk.imports);
     const dependencyCss = new Set<string>();
     const visited = new Set<string>();
-    const pending = chunk.imports.map((file) => ({ file, direct: true }));
+    // Depth-first in import order, like plugin-rsc's CSS collection, so files
+    // without a known position keep the order the chunk imports them in.
+    const pending = [...chunk.imports].reverse();
     while (pending.length > 0) {
-      const { file: importedFile, direct } = pending.pop()!;
+      const importedFile = pending.pop()!;
       if (visited.has(importedFile)) continue;
       visited.add(importedFile);
       const imported = bundle[importedFile];
       if (imported?.type !== "chunk") continue;
       const importedChunk = imported as ChunkWithCss;
-      const directIsolated = direct && isIsolatedChunk(importedChunk);
+      const directIsolated = directImports.has(importedFile) && isIsolatedChunk(importedChunk);
       for (const file of importedChunk.viteMetadata?.importedCss ?? []) {
         const moduleId = isolatedCssFiles.get(file);
         if (moduleId !== undefined && (directIsolated || positions.has(moduleId))) {
           dependencyCss.add(file);
         }
       }
-      for (const file of importedChunk.imports) pending.push({ file, direct: false });
+      for (let index = importedChunk.imports.length - 1; index >= 0; index--) {
+        pending.push(importedChunk.imports[index]);
+      }
     }
     for (const file of importedCss) {
       if (isolatedCssFiles.has(file)) dependencyCss.add(file);
