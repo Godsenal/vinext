@@ -47,25 +47,69 @@ function readImportedName(specifier: unknown): string | null {
   return typeof name === "string" ? name : null;
 }
 
+type ModuleDirective = "use client" | "server-reference" | null;
+
 /**
- * Whether the module prologue marks a Server Function or cache module. Those
- * are replaced with server reference proxies in the client graph (by
- * @vitejs/plugin-rsc and `vinext:use-cache-callable`, after this check runs),
- * so their imports never reach it; Next.js skips them the same way.
+ * Read the module prologue. `"server-reference"` marks a Server Function or
+ * cache module: those are replaced with server reference proxies in the
+ * client graph (by @vitejs/plugin-rsc and `vinext:use-cache-callable`, after
+ * this check runs), so their imports never reach it; Next.js skips them too.
  */
-function isServerReferenceModule(body: ModuleItem[]): boolean {
+function readModuleDirective(body: ModuleItem[]): ModuleDirective {
   for (const item of body) {
-    if (item.type !== "ExpressionStatement" || typeof item.directive !== "string") return false;
+    if (item.type !== "ExpressionStatement" || typeof item.directive !== "string") return null;
     const directive = item.directive;
+    if (directive === "use client") return "use client";
     if (
       directive === "use server" ||
       directive === "use cache" ||
       directive.startsWith("use cache: ")
     ) {
-      return true;
+      return "server-reference";
     }
   }
-  return false;
+  return null;
+}
+
+type ClientGraphModuleInfo = {
+  /** Whether the module starts a `"use client"` boundary. */
+  isClientBoundary: boolean;
+  invalidImports: InvalidClientImport[];
+};
+
+function analyzeClientGraphModule(code: string): ClientGraphModuleInfo {
+  const none: ClientGraphModuleInfo = { isClientBoundary: false, invalidImports: [] };
+  if (!IMPORT_KEYWORD_RE.test(code)) return none;
+
+  let body: ModuleItem[];
+  try {
+    body = parseAst(code).body;
+  } catch {
+    return none;
+  }
+  const directive = readModuleDirective(body);
+  if (directive === "server-reference") return none;
+
+  const invalidImports: InvalidClientImport[] = [];
+  for (const item of body) {
+    if (item.type !== "ImportDeclaration") continue;
+    const source = item.source.value;
+    if (typeof source !== "string") continue;
+
+    if (INVALID_CLIENT_IMPORTS.has(source)) {
+      invalidImports.push({ name: source, start: item.start });
+    }
+
+    const invalidApis = INVALID_CLIENT_LIB_APIS.get(source);
+    if (!invalidApis) continue;
+    for (const specifier of item.specifiers) {
+      const imported = readImportedName(specifier);
+      if (imported && invalidApis.has(imported)) {
+        invalidImports.push({ name: imported, start: specifier.start });
+      }
+    }
+  }
+  return { isClientBoundary: directive === "use client", invalidImports };
 }
 
 /**
@@ -75,36 +119,7 @@ function isServerReferenceModule(body: ModuleItem[]): boolean {
  * and `"use cache"` modules are skipped.
  */
 export function findInvalidClientImports(code: string): InvalidClientImport[] {
-  if (!IMPORT_KEYWORD_RE.test(code)) return [];
-
-  let body: ModuleItem[];
-  try {
-    body = parseAst(code).body;
-  } catch {
-    return [];
-  }
-  if (isServerReferenceModule(body)) return [];
-
-  const found: InvalidClientImport[] = [];
-  for (const item of body) {
-    if (item.type !== "ImportDeclaration") continue;
-    const source = item.source.value;
-    if (typeof source !== "string") continue;
-
-    if (INVALID_CLIENT_IMPORTS.has(source)) {
-      found.push({ name: source, start: item.start });
-    }
-
-    const invalidApis = INVALID_CLIENT_LIB_APIS.get(source);
-    if (!invalidApis) continue;
-    for (const specifier of item.specifiers) {
-      const imported = readImportedName(specifier);
-      if (imported && invalidApis.has(imported)) {
-        found.push({ name: imported, start: specifier.start });
-      }
-    }
-  }
-  return found;
+  return analyzeClientGraphModule(code).invalidImports;
 }
 
 /**
@@ -125,25 +140,63 @@ export function createInvalidClientImportMessage(
 type ClientGraphServerApisPluginOptions = {
   /** Canonical, slash-separated App Router directory, or null without one. */
   getAppDir: () => string | null;
+  /**
+   * For a browser Web Worker's plugin container (`worker.plugins`). Vite
+   * bundles every worker separately, and a worker is browser code throughout.
+   */
+  worker?: boolean;
 };
 
+/** Whether `id` is, or is imported (at any depth) by, a `"use client"` module. */
+function isUnderClientBoundary(
+  id: string,
+  clientBoundaries: ReadonlySet<string>,
+  getImporters: (id: string) => Iterable<string>,
+): boolean {
+  const seen = new Set<string>();
+  const pending = [id];
+  for (let next = pending.pop(); next !== undefined; next = pending.pop()) {
+    if (seen.has(next)) continue;
+    seen.add(next);
+    if (clientBoundaries.has(next)) return true;
+    pending.push(...getImporters(next));
+  }
+  return false;
+}
+
 /**
- * Fail the build when a module in the browser graph imports a request API
+ * Fail the build when a module in the client layer imports a request API
  * (`next/headers`, `next/root-params`) or a server-only cache/`after` API,
  * matching Next.js' compile error for modules under a `"use client"`
  * boundary. Those modules are also evaluated during SSR, where module-scope
  * `cookies()` or `headers()` would capture the first request that loads them.
  *
- * Like Next.js, the check needs an App Router and skips `node_modules`. The
- * browser graph is exactly the client layer: it holds every module under a
- * `"use client"` boundary and the Pages Router's page components, but not
- * middleware, instrumentation or Pages data exports, which are stripped first.
+ * Like Next.js, the check needs an App Router and skips `node_modules`.
+ *
+ * - The browser graph (and every Web Worker bundle) is client layer
+ *   throughout: every module under a `"use client"` boundary plus the Pages
+ *   Router's page components, without middleware, instrumentation or Pages
+ *   data exports, which are stripped first.
+ * - The SSR graph also holds Pages Router, middleware and instrumentation
+ *   modules, so there a module is checked only when a `"use client"` module
+ *   imports it, directly or not. It can differ from the browser graph:
+ *   resolution conditions such as `browser` pick different files.
  */
 export function createClientGraphServerApisPlugin(
   options: ClientGraphServerApisPluginOptions,
 ): Plugin {
+  // SSR build state: modules opening a "use client" boundary, and modules
+  // importing a server API, resolved against the module graph at buildEnd.
+  const ssrClientBoundaries = new Set<string>();
+  const ssrInvalidImports = new Map<string, InvalidClientImport>();
+
   return {
     name: "vinext:validate-client-graph-server-apis",
+    buildStart() {
+      if (this.environment?.name !== "ssr") return;
+      ssrClientBoundaries.clear();
+      ssrInvalidImports.clear();
+    },
     transform: {
       filter: {
         id: {
@@ -153,14 +206,56 @@ export function createClientGraphServerApisPlugin(
         code: IMPORT_KEYWORD_RE,
       },
       handler(code, id) {
-        if (this.environment?.name !== "client") return null;
+        const environment = this.environment;
+        const environmentName = options.worker ? "client" : environment?.name;
+        if (environmentName !== "client" && environmentName !== "ssr") return null;
         const appDir = options.getAppDir();
         if (!appDir) return null;
 
-        const [invalid] = findInvalidClientImports(code);
+        const { isClientBoundary, invalidImports } = analyzeClientGraphModule(code);
+        const [invalid] = invalidImports;
+        if (environmentName === "client") {
+          if (invalid) {
+            this.error(createInvalidClientImportMessage(invalid.name, id, appDir), invalid.start);
+          }
+          return null;
+        }
+
+        if (isClientBoundary) ssrClientBoundaries.add(id);
+        else ssrClientBoundaries.delete(id);
         if (!invalid) return null;
-        this.error(createInvalidClientImportMessage(invalid.name, id, appDir), invalid.start);
+        if (environment.mode === "build") {
+          ssrInvalidImports.set(id, invalid);
+          return null;
+        }
+        if (environment.mode !== "dev") return null;
+        // In dev the importer that triggered this load is already in the graph.
+        const getImporters = (moduleId: string) => {
+          const importers: string[] = [];
+          for (const importer of environment.moduleGraph.getModuleById(moduleId)?.importers ?? []) {
+            if (importer.id) importers.push(importer.id);
+          }
+          return importers;
+        };
+        if (isUnderClientBoundary(id, ssrClientBoundaries, getImporters)) {
+          this.error(createInvalidClientImportMessage(invalid.name, id, appDir), invalid.start);
+        }
+        return null;
       },
+    },
+    buildEnd() {
+      if (this.environment?.name !== "ssr" || ssrInvalidImports.size === 0) return;
+      const appDir = options.getAppDir();
+      if (!appDir) return;
+      const getImporters = (moduleId: string) => {
+        const info = this.getModuleInfo(moduleId);
+        return info ? [...info.importers, ...info.dynamicImporters] : [];
+      };
+      for (const [id, invalid] of ssrInvalidImports) {
+        if (isUnderClientBoundary(id, ssrClientBoundaries, getImporters)) {
+          this.error({ id, message: createInvalidClientImportMessage(invalid.name, id, appDir) });
+        }
+      }
     },
   };
 }

@@ -3480,6 +3480,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             plugins: () => [
               createWorkerImageImportsPlugin({ deploymentId: nextConfig.deploymentId }),
               createWorkerServerOnlyImportsPlugin(),
+              createClientGraphServerApisPlugin({
+                getAppDir: () => (hasAppDir ? canonicalize(appDir) : null),
+                worker: true,
+              }),
               ...(rscPluginModulePromise && resolvedRscPath
                 ? [
                     createWorkerUseServerPlugins({

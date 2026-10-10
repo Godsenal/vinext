@@ -209,6 +209,75 @@ describe("App Router client builds of the Node fixture", () => {
   }, 120_000);
 });
 
+describe("App Router client graphs outside the main browser build", () => {
+  it("reject next/headers that only the SSR graph resolves", async () => {
+    // The `browser` condition picks a harmless module for the browser build,
+    // but SSR evaluates the other one, where the request would be captured.
+    const root = copyFixture(APP_FIXTURE_DIR);
+    const packageJsonPath = path.join(root, "package.json");
+    const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, "utf8"));
+    packageJson.imports = {
+      "#client-graph-session": {
+        browser: "./lib/client-graph-session-browser.ts",
+        default: "./lib/client-graph-session-server.ts",
+      },
+    };
+    fs.writeFileSync(packageJsonPath, JSON.stringify(packageJson, null, 2));
+    writeProbePage(
+      root,
+      `"use client";
+
+import { readSession } from "#client-graph-session";
+
+export function ClientGraphProbe() {
+  return <p>{typeof readSession}</p>;
+}
+`,
+      {
+        "lib/client-graph-session-browser.ts": `export const readSession = () => undefined;
+`,
+        "lib/client-graph-session-server.ts": `import { cookies } from "next/headers";
+
+export const readSession = cookies;
+`,
+      },
+    );
+
+    await expect(buildFixture(root)).rejects.toThrow(
+      `depends on "next/headers". ${OUTSIDE_APP_MESSAGE}`,
+    );
+  }, 120_000);
+
+  it("reject next/headers in a Web Worker a Client Component starts", async () => {
+    const root = copyFixture(APP_FIXTURE_DIR);
+    writeProbePage(
+      root,
+      `"use client";
+
+export function ClientGraphProbe() {
+  return (
+    <button
+      onClick={() => new Worker(new URL("./probe-worker.ts", import.meta.url), { type: "module" })}
+    >
+      start
+    </button>
+  );
+}
+`,
+      {
+        "app/client-graph-probe/probe-worker.ts": `import { cookies } from "next/headers";
+
+self.postMessage(typeof cookies);
+`,
+      },
+    );
+
+    await expect(buildFixture(root)).rejects.toThrow(
+      `depends on "next/headers" ${CLIENT_COMPONENT_MESSAGE}`,
+    );
+  }, 120_000);
+});
+
 describe("App Router client builds that Next.js accepts", () => {
   it("build Server Function and cache modules that a Client Component imports", async () => {
     // Both are replaced with server reference proxies in the client graph, so
@@ -267,6 +336,11 @@ describe("App Router dev server", () => {
       await server.listen();
       const address = server.httpServer?.address();
       if (!address || typeof address !== "object") throw new Error("dev server did not listen");
+
+      // SSR evaluates the Client Component before the browser ever loads it.
+      const page = await fetch(`http://127.0.0.1:${address.port}/client-graph-probe`);
+      expect(page.status).toBe(500);
+      expect(await page.text()).toContain("into a React Client Component module");
 
       const clientModule = await fetch(
         `http://127.0.0.1:${address.port}/app/client-graph-probe/client-graph-probe.tsx`,
