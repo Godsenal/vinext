@@ -1115,31 +1115,21 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     // cache-busting `_rsc` param onto the Location. For plain (document)
     // requests, carry the original request query onto the Location so it
     // survives the redirect, mirroring Next.js resolve-routes.ts (issue #1529).
-    // A redirect to one of the app's locale domains keeps the request query
-    // (without the cache-busting param) for RSC navigations too.
+    // A redirect to one of the app's locale domains keeps the whole request
+    // query, `_rsc` included, as Next.js does; createRscRedirectLocation
+    // returns cross-origin destinations unchanged.
     const domainLocales = options.i18nConfig?.domains;
-    let location: string;
-    if (isRscRequest && request.headers.get(RSC_HEADER) === "1") {
-      if (isDomainLocaleUrl(destination, domainLocales)) {
-        const queryUrl = new URL(url);
-        stripRscCacheBustingSearchParam(queryUrl);
-        location = configMatchers.preserveRedirectDestinationQuery(
-          destination,
-          queryUrl.search,
-          redirect.destinationQuery,
-          domainLocales,
-        );
-      } else {
-        location = await createRscRedirectLocation(destination, request);
-      }
-    } else {
-      location = configMatchers.preserveRedirectDestinationQuery(
-        destination,
-        url.search,
-        redirect.destinationQuery,
-        domainLocales,
-      );
-    }
+    const location =
+      isRscRequest &&
+      request.headers.get(RSC_HEADER) === "1" &&
+      !isDomainLocaleUrl(destination, domainLocales)
+        ? await createRscRedirectLocation(destination, request)
+        : configMatchers.preserveRedirectDestinationQuery(
+            destination,
+            url.search,
+            redirect.destinationQuery,
+            domainLocales,
+          );
     return new Response(null, {
       status: redirect.permanent ? 308 : 307,
       headers: { Location: location },
