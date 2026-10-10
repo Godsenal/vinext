@@ -445,6 +445,20 @@ describe("loadNextConfig function-form defaultConfig argument", () => {
     expect(config?.compress).toBe(false);
     expect((await resolveNextConfig(config)).compress).toBe(false);
   });
+
+  it("passes the real generateEtags default to a function-form config", async () => {
+    tmpDir = makeTempDir();
+    fs.writeFileSync(
+      path.join(tmpDir, "next.config.js"),
+      `module.exports = (phase, { defaultConfig }) => ({\n` +
+        `  generateEtags: defaultConfig.generateEtags && false,\n` +
+        `});\n`,
+    );
+
+    const config = await loadNextConfig(tmpDir, PHASE_PRODUCTION_BUILD);
+    expect(config?.generateEtags).toBe(false);
+    expect((await resolveNextConfig(config)).generateEtags).toBe(false);
+  });
 });
 
 describe("loadNextConfig with CJS globals in next.config.ts", () => {

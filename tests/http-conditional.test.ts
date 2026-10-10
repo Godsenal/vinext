@@ -120,9 +120,11 @@ describe("matchesIfMatch", () => {
     expect(matchesIfMatch('"other", "asset,part"', '"asset,part"')).toBe(true);
   });
 
-  it("matches a standalone wildcard when the representation exists", () => {
-    expect(matchesIfMatch(" \t * \t ", undefined)).toBe(true);
+  it("matches a standalone wildcard when the representation has an ETag", () => {
+    expect(matchesIfMatch(" \t * \t ", '"asset"')).toBe(true);
     expect(matchesIfMatch('*, "asset"', '"asset"')).toBe(false);
+    // Next.js's `send` fails every If-Match without an ETag.
+    expect(matchesIfMatch("*", undefined)).toBe(false);
   });
 
   it("rejects malformed entity-tag lists", () => {

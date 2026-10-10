@@ -73,16 +73,19 @@ export function isPageNotModified(
   );
 }
 
-/** Test an If-Match field using Next.js's weak/strong-equivalent comparison. */
+/**
+ * Test an If-Match field using Next.js's weak/strong-equivalent comparison. As
+ * in Next.js's `send`, a representation without an ETag matches nothing, not
+ * even `*`.
+ */
 export function matchesIfMatch(ifMatch: string | undefined, etag: string | undefined): boolean {
-  if (!ifMatch) return false;
+  if (!ifMatch || !etag) return false;
 
   let index = skipOptionalWhitespace(ifMatch, 0);
   if (ifMatch[index] === "*") {
     return skipOptionalWhitespace(ifMatch, index + 1) === ifMatch.length;
   }
 
-  if (!etag) return false;
   const current = parseEntityTag(etag, 0);
   if (!current || current.end !== etag.length) return false;
   const currentOpaqueTag = etag.slice(current.opaqueStart, current.opaqueEnd);

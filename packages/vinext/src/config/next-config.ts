@@ -806,7 +806,7 @@ function warnConfigLoadFailure(filename: string, err: Error): void {
  * config that mutates it cannot leak into later loads.
  */
 function createFunctionConfigDefaults(): NextConfig {
-  return { pageExtensions: [...DEFAULT_PAGE_EXTENSIONS], compress: true };
+  return { pageExtensions: [...DEFAULT_PAGE_EXTENSIONS], compress: true, generateEtags: true };
 }
 
 /**

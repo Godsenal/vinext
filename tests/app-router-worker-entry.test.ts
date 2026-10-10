@@ -801,6 +801,12 @@ export default {
       });
       expect(conditional.status).toBe(200);
       expect(conditional.headers.get("etag")).toBeNull();
+      // Next.js's `send` fails every If-Match on a file without an ETag.
+      const ifMatch = await fetch(`http://localhost:${disabled.port}/_next/static/app.js`, {
+        headers: { "If-Match": "*" },
+      });
+      expect(ifMatch.status).toBe(412);
+      await ifMatch.arrayBuffer();
       // Its Last-Modified still validates it.
       const notModified = await fetch(`http://localhost:${disabled.port}/_next/static/app.js`, {
         headers: { "Cache-Control": "max-age=0", "If-Modified-Since": lastModified! },
