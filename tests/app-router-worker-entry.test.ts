@@ -807,6 +807,11 @@ export default {
       });
       expect(ifMatch.status).toBe(412);
       await ifMatch.arrayBuffer();
+      const ifRange = await fetch(`http://localhost:${disabled.port}/_next/static/app.js`, {
+        headers: { "If-Range": '""', Range: "bytes=0-1" },
+      });
+      expect(ifRange.status).toBe(200);
+      expect(await ifRange.text()).toBe("app();\n");
       // Its Last-Modified still validates it.
       const notModified = await fetch(`http://localhost:${disabled.port}/_next/static/app.js`, {
         headers: { "Cache-Control": "max-age=0", "If-Modified-Since": lastModified! },

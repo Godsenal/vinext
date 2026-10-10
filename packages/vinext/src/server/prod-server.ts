@@ -845,7 +845,7 @@ async function tryServeStatic(
       requestRange,
       ifRange,
       entry.original.size,
-      effectiveEtag ?? "",
+      effectiveEtag,
       effectiveMtimeMs,
       responseStatus,
     );
@@ -1017,7 +1017,7 @@ async function tryServeStatic(
     requestRange,
     ifRange,
     resolved.size,
-    effectiveEtag ?? "",
+    effectiveEtag,
     effectiveMtimeMs,
     responseStatus,
   );
@@ -1166,7 +1166,7 @@ function resolveRequestedRange(
   rangeHeader: string | undefined,
   ifRangeHeader: string | undefined,
   size: number,
-  etag: string,
+  etag: string | undefined,
   mtimeMs: number,
   responseStatus: number,
 ): ByteRange {

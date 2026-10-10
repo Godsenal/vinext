@@ -454,7 +454,7 @@ const CONFIG_SUPPORT: Record<string, { status: Status; detail?: string }> = {
   generateEtags: {
     status: "partial",
     detail:
-      "false gives pages and the Node production server's static files no ETag; Cloudflare Workers static assets keep theirs",
+      "false gives pages and the Node production server's static files no ETag; Cloudflare Workers static assets and the Vite dev server's files keep theirs",
   },
 };
 
