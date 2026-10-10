@@ -15,7 +15,12 @@ import {
   PHASE_DEVELOPMENT_SERVER,
   PHASE_PRODUCTION_BUILD,
 } from "../packages/vinext/src/shims/constants.js";
-import { PAGES_FIXTURE_DIR, buildPagesFixture, startFixtureServer } from "./helpers.js";
+import {
+  PAGES_FIXTURE_DIR,
+  buildPagesFixture,
+  expectRepeatedSlashRedirects,
+  startFixtureServer,
+} from "./helpers.js";
 import { registerFrameworkTracingIntegration } from "../packages/vinext/src/server/tracer.js";
 import type { ResolvedFrameworkSpanDescriptor } from "../packages/vinext/src/server/framework-tracer.js";
 
@@ -699,6 +704,20 @@ describe("Pages Router integration", () => {
     await server?.close();
   });
 
+  // Next.js 308s any raw path containing a backslash or a repeated slash to
+  // the collapsed path (base-server.ts / resolve-routes.ts).
+  it("redirects repeated slashes and backslashes like Next.js", async () => {
+    await expectRepeatedSlashRedirects(baseUrl, { dev: true });
+  });
+
+  it("never turns a same-origin double-slash middleware redirect protocol-relative", async () => {
+    const res = await fetch(`${baseUrl}/mw-redirect-double-slash`, { redirect: "manual" });
+    expect(res.status).toBe(307);
+    // The trailingSlash: false rule strips the redirect target to the root;
+    // it is never relativized to a protocol-relative `//`.
+    expect(res.headers.get("location")).toBe("/");
+  });
+
   it("renders the index page with correct HTML", async () => {
     const res = await fetch(`${baseUrl}/`);
     expect(res.status).toBe(200);
@@ -1020,18 +1039,15 @@ describe("Pages Router integration", () => {
   it("sets the default Cache-Control header on getServerSideProps responses", async () => {
     const res = await fetch(`${baseUrl}/ssr`);
     expect(res.status).toBe(200);
-    expect(res.headers.get("cache-control")).toBe(
-      "private, no-cache, no-store, max-age=0, must-revalidate",
-    );
+    expect(res.headers.get("cache-control")).toBe("no-cache, must-revalidate");
   });
 
-  // Regression for #1461: when getServerSideProps overrides Cache-Control via
-  // res.setHeader, the user-provided value must reach the final HTTP response
-  // instead of being clobbered by the default.
-  it("preserves res.setHeader Cache-Control overrides set in getServerSideProps", async () => {
+  // Next.js development always overrides authored cache lifetimes.
+  // Production preservation is covered in pages-router-prod/production.spec.ts.
+  it("uses the development Cache-Control even when getServerSideProps sets one", async () => {
     const res = await fetch(`${baseUrl}/ssr-cache-control`);
     expect(res.status).toBe(200);
-    expect(res.headers.get("cache-control")).toBe("public, max-age=42");
+    expect(res.headers.get("cache-control")).toBe("no-cache, must-revalidate");
   });
 
   it("getServerSideProps calling res.end() short-circuits the response", async () => {
@@ -2509,6 +2525,20 @@ export const config = { matcher: "${matcher}" };
     // The heavy component should be rendered server-side (ssr: true by default)
     expect(html).toContain("Heavy Component");
     expect(html).toContain("Loaded dynamically");
+  });
+
+  // Issue #3718 only changes the App Router: a Pages dynamic() without a
+  // loading option keeps its Suspense boundary on the server, matching the
+  // boundary the hydrating client renders. This differs from Next.js on
+  // purpose until Pages parity lands: Next's Pages next/dynamic
+  // (react-loadable) preloads before SSR and renders no boundary.
+  it("keeps the Suspense boundary for dynamic() without loading during SSR", async () => {
+    const res = await fetch(`${baseUrl}/dynamic-no-loading`);
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    expect(html).toMatch(/<!--\$\??-->/);
+    expect(html).toContain("Loaded without loading option");
   });
 
   // --- Hydration ---
@@ -5773,7 +5803,7 @@ export const config = { matcher: ["/protected"] };
     // retaining a tight guard against framework code entering the bootstrap.
     if (entryChunk) {
       const entrySize = fs.statSync(path.join(assetsDir, entryChunk)).size;
-      expect(entrySize).toBeLessThan(28 * 1024); // < 28 KB
+      expect(entrySize).toBeLessThan(34 * 1024); // < 34 KB, including storage-policy, encoded-path and config query-param fixture rules
     }
 
     const counterManifestEntry = Object.entries(manifest).find(
@@ -7348,6 +7378,20 @@ describe("Production server middleware (Pages Router)", () => {
     }
   });
 
+  // Next.js 308s any raw path containing a backslash or a repeated slash to
+  // the collapsed path (base-server.ts / resolve-routes.ts).
+  it("redirects repeated slashes and backslashes like Next.js", async () => {
+    await expectRepeatedSlashRedirects(prodUrl);
+  });
+
+  it("never turns a same-origin double-slash middleware redirect protocol-relative", async () => {
+    const res = await fetch(`${prodUrl}/mw-redirect-double-slash`, { redirect: "manual" });
+    expect(res.status).toBe(307);
+    // The trailingSlash: false rule strips the redirect target to the root;
+    // it is never relativized to a protocol-relative `//`.
+    expect(res.headers.get("location")).toBe("/");
+  });
+
   it("redirects /old-page to /about via middleware", async () => {
     const res = await fetch(`${prodUrl}/old-page`, { redirect: "manual" });
     expect(res.status).toBe(307);
@@ -8618,6 +8662,26 @@ export default class CustomDocument extends Document {
       expect(html).not.toContain('id="app-shell"');
     },
   );
+
+  it("does not watch the filesystem root for a root URL with a query in dev", async () => {
+    // Vite 8.3.3 maps transformIndexHtml("/?q") onto the project root and then
+    // watches `/` for each inline <style> proxy module, crawling the whole disk.
+    const watcher = devServer.watcher;
+    const add = watcher.add.bind(watcher);
+    const watchedPaths: unknown[] = [];
+    const addSpy = vi.spyOn(watcher, "add").mockImplementation((paths) => {
+      watchedPaths.push(paths);
+      return paths === "/" ? watcher : add(paths);
+    });
+    try {
+      const response = await fetch(`${devUrl}/?manualDocumentHtml=true`);
+      expect(response.status).toBe(200);
+      expect(await response.text()).toContain("data-manual-document-style");
+    } finally {
+      addSpy.mockRestore();
+    }
+    expect(watchedPaths).not.toContain("/");
+  });
 
   it.each(["dev", "prod"] as const)(
     // Next.js builds a base context with req/res and passes `{ ...ctx, renderPage }`

@@ -509,6 +509,28 @@ describe("middleware", () => {
     expect(result.response.headers.get("x-nextjs-matched-path")).toBe("/fr/blog/[slug]");
   });
 
+  it("canonicalizes a mixed-case explicit locale on data responses", async () => {
+    // Next.js detects the locale case-insensitively and reports the configured
+    // casing (base-server's `/${locale}${pathname}`), not the default locale.
+    const result = await runPagesRequest(
+      makeRequest("/FR/source"),
+      baseDeps({
+        i18nConfig: { locales: ["en", "fr"], defaultLocale: "en" },
+        isDataReq: true,
+        isDataRequest: true,
+        runMiddleware: makeMiddleware({ rewriteUrl: "/FR/blog/example" }),
+        matchPageRoute: vi
+          .fn()
+          .mockReturnValue({ route: { isDynamic: true, pattern: "/blog/:slug" } }),
+        renderPage: makeRenderPage(),
+      }),
+    );
+
+    expect(result.type).toBe("response");
+    if (result.type !== "response") return;
+    expect(result.response.headers.get("x-nextjs-matched-path")).toBe("/fr/blog/[slug]");
+  });
+
   it("does not add matched-path routing metadata to HTML responses", async () => {
     const result = await runPagesRequest(
       makeRequest("/ssr-page"),
@@ -1087,6 +1109,33 @@ describe("beforeFiles rewrites", () => {
     },
   );
 
+  it("marks build-time renders whose URL a rewrite changed", async () => {
+    const deps = baseDeps({
+      configRewrites: {
+        beforeFiles: [
+          { source: "/account", destination: "/login", missing: [{ type: "cookie", key: "s" }] },
+        ],
+        afterFiles: [],
+        fallback: [],
+      },
+      renderPage: makeRenderPage(),
+    });
+    const markerFor = async (pathname: string) => {
+      const result = await runPagesRequest(makeRequest(pathname), deps);
+      if (result.type !== "response") throw new Error("Expected a response");
+      return result.response.headers.get("x-vinext-prerender-rewritten");
+    };
+
+    expect(await markerFor("/account")).toBeNull();
+    vi.stubEnv("VINEXT_PRERENDER", "1");
+    try {
+      expect(await markerFor("/account")).toBe("1");
+      expect(await markerFor("/about")).toBe("0");
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("does not match decoded literal aliases from the normalized route pathname", async () => {
     const renderPage = makeRenderPage();
     const result = await runPagesRequest(
@@ -1610,6 +1659,42 @@ describe("serveFilesystemRoute", () => {
     expect(result.response.headers.get("x-from-middleware")).toBe("1");
   });
 
+  it.each([
+    { status: 206, headers: [["content-range", "bytes 0-2/10"]] as [string, string][] },
+    { status: 304, headers: [] as [string, string][] },
+  ])("keeps a $status public-file status over a middleware status", async ({ status, headers }) => {
+    const serveFilesystemRoute = vi.fn(
+      async () => new Response(status === 304 ? null : "abc", { status, headers }),
+    );
+    const result = await runPagesRequest(
+      new Request("https://example.com/file.txt"),
+      baseDeps({
+        serveFilesystemRoute,
+        runMiddleware: makeMiddleware({
+          status: 403,
+          responseHeaders: [["x-from-middleware", "1"]],
+        }),
+      }),
+    );
+    expect(result.type).toBe("response");
+    if (result.type !== "response") return;
+    expect(result.response.status).toBe(status);
+    expect(result.response.headers.get("x-from-middleware")).toBe("1");
+  });
+
+  it("applies a middleware status to a full public-file response", async () => {
+    const result = await runPagesRequest(
+      new Request("https://example.com/file.txt"),
+      baseDeps({
+        serveFilesystemRoute: vi.fn(async () => new Response("file")),
+        runMiddleware: makeMiddleware({ status: 403 }),
+      }),
+    );
+    expect(result.type).toBe("response");
+    if (result.type !== "response") return;
+    expect(result.response.status).toBe(403);
+  });
+
   it("falls through to render when serveFilesystemRoute returns false", async () => {
     const renderPage = makeRenderPage(200);
     const serveFilesystemRoute = vi.fn(async () => false);
@@ -1630,7 +1715,27 @@ describe("serveFilesystemRoute", () => {
       { "set-cookie": ["a=1"] },
       "direct",
       "/robots.txt",
+      expect.any(Request),
     );
+  });
+
+  it("passes the request with middleware's header overrides", async () => {
+    const serveFilesystemRoute = vi.fn(
+      async (..._args: Parameters<NonNullable<PagesPipelineDeps["serveFilesystemRoute"]>>) => true,
+    );
+    const middleware = makeMiddleware({
+      responseHeaders: [
+        ["x-middleware-override-headers", "if-none-match"],
+        ["x-middleware-request-if-none-match", '"override"'],
+      ],
+    });
+    await runPagesRequest(
+      makeRequest("/file.txt", { Range: "bytes=0-1", "If-None-Match": '"original"' }),
+      baseDeps({ serveFilesystemRoute, runMiddleware: middleware }),
+    );
+    const filesystemRequest = serveFilesystemRoute.mock.calls[0][4];
+    expect(filesystemRequest.headers.get("if-none-match")).toBe('"override"');
+    expect(filesystemRequest.headers.get("range")).toBeNull();
   });
 
   it.each([
@@ -1662,6 +1767,7 @@ describe("serveFilesystemRoute", () => {
       {},
       "beforeFiles",
       destination,
+      expect.any(Request),
     );
   });
 
@@ -1709,7 +1815,13 @@ describe("serveFilesystemRoute", () => {
 
     expect(result.type).toBe("handled");
     expect(serveFilesystemRoute).toHaveBeenCalledOnce();
-    expect(serveFilesystemRoute).toHaveBeenCalledWith("/file.txt", {}, "beforeFiles", "/file.txt");
+    expect(serveFilesystemRoute).toHaveBeenCalledWith(
+      "/file.txt",
+      {},
+      "beforeFiles",
+      "/file.txt",
+      expect.any(Request),
+    );
   });
 
   // Next.js runs beforeFiles rewrites before check_fs:
@@ -1748,6 +1860,7 @@ describe("serveFilesystemRoute", () => {
       {},
       "beforeFiles",
       "/api/rewritten",
+      expect.any(Request),
     );
     expect(handleApi).toHaveBeenCalledWith(
       expect.any(Request),
@@ -1787,6 +1900,7 @@ describe("serveFilesystemRoute", () => {
       {},
       "beforeFiles",
       "/api/from-middleware",
+      expect.any(Request),
     );
     expect(handleApi).toHaveBeenCalledWith(
       expect.any(Request),
@@ -1820,6 +1934,7 @@ describe("serveFilesystemRoute", () => {
       {},
       "beforeFiles",
       "/asset.txt",
+      expect.any(Request),
     );
   });
 
@@ -1930,6 +2045,7 @@ describe("afterFiles rewrites", () => {
       {},
       "afterFiles",
       "/file.txt",
+      expect.any(Request),
     );
   });
 
@@ -1957,6 +2073,7 @@ describe("afterFiles rewrites", () => {
       {},
       "direct",
       "/after-control",
+      expect.any(Request),
     );
     expect(renderPage).toHaveBeenCalledWith(
       expect.any(Request),
@@ -2249,7 +2366,13 @@ describe("fallback rewrites on 404", () => {
     expect(result.type).toBe("response");
     if (result.type !== "response") return;
     await expect(result.response.text()).resolves.toBe("worker fallback asset");
-    expect(serveFilesystemRoute).toHaveBeenLastCalledWith("/file.txt", {}, "fallback", "/file.txt");
+    expect(serveFilesystemRoute).toHaveBeenLastCalledWith(
+      "/file.txt",
+      {},
+      "fallback",
+      "/file.txt",
+      expect.any(Request),
+    );
   });
 
   it("dispatches rewritten API routes after fallback filesystem misses", async () => {

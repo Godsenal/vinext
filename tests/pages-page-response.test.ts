@@ -1,3 +1,11 @@
+import { CACHEABILITY_REQUEST_STATE } from "../packages/vinext/src/shims/cacheability-classification.js";
+import { withResponseStageCacheability } from "../packages/vinext/src/server/response-stage-cacheability.js";
+import { CloudflareCdnCacheAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
+import {
+  setCdnCacheAdapter,
+  DefaultCdnCacheAdapter,
+} from "../packages/vinext/src/shims/cdn-cache.js";
+import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
 import React from "react";
 import { describe, expect, it, vi } from "vite-plus/test";
 import {
@@ -665,6 +673,46 @@ describe("pages page response", () => {
     expect(response.headers.get("cache-control")).toBe("public, max-age=60");
   });
 
+  it("preserves an authored GSSP provider opt-in independently of its browser policy", async () => {
+    const common = createCommonOptions();
+    try {
+      const response = await withResponseStageCacheability(
+        {
+          buildId: "test",
+          cache: "shared",
+          context: { waitUntil() {} },
+          rawManifest: null,
+          request: new Request("https://example.com/page"),
+          resolvedRoutePathname: "/page",
+          registerCacheAdapters: () => setCdnCacheAdapter(new CloudflareCdnCacheAdapter()),
+        },
+        (context) => {
+          Object.assign(Reflect.get(context, CACHEABILITY_REQUEST_STATE), {
+            route: { kind: "pages-page", pattern: "/page" },
+            outcome: { cacheable: false },
+          });
+          return runWithExecutionContext(context, () =>
+            renderPagesPageResponse({
+              ...common.options,
+              gsspRes: {
+                statusCode: 200,
+                getHeaders: () => ({
+                  "Cache-Control": "private, max-age=300",
+                  "Cloudflare-CDN-Cache-Control": "max-age=60",
+                }),
+              },
+            }),
+          );
+        },
+      );
+      expect(response.headers.get("Cache-Control")).toBe("private, max-age=300");
+      expect(response.headers.get("Cloudflare-CDN-Cache-Control")).toBe("public, max-age=60");
+      expect(await response.text()).toContain("__NEXT_DATA__");
+    } finally {
+      setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+    }
+  });
+
   it("preserves user-set Cache-Control regardless of header name case", async () => {
     const common = createCommonOptions();
 
@@ -1165,6 +1213,53 @@ describe("pages page response", () => {
     expect(notModifiedResponse.headers.get("etag")).toBe(etag);
   });
 
+  it("returns the page for a matching If-None-Match when the CDN adapter sends the 304", async () => {
+    const common = createCommonOptions();
+    const etag = (
+      await renderPagesPageResponse({ ...common.options, userAgent: "Googlebot" })
+    ).headers.get("etag");
+    expect(etag).toBeTruthy();
+
+    // Next.js stores the page before it evaluates the ETag, so an adapter that
+    // stores the completed response receives the page rather than a 304.
+    setCdnCacheAdapter(
+      Object.assign(new DefaultCdnCacheAdapter(), { deferNotModifiedResponse: () => true }),
+    );
+    let response: Response;
+    try {
+      response = await renderPagesPageResponse({
+        ...createCommonOptions().options,
+        userAgent: "Googlebot",
+        ifNoneMatch: etag ?? undefined,
+      });
+    } finally {
+      setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+    }
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("etag")).toBe(etag);
+    expect(generatePagesETag(await response.text())).toBe(etag);
+  });
+
+  it("keeps the 304 for a bodiless page status when the CDN adapter sends the 304", async () => {
+    const deferNotModifiedResponse = vi.fn(() => true);
+    setCdnCacheAdapter(Object.assign(new DefaultCdnCacheAdapter(), { deferNotModifiedResponse }));
+    let response: Response;
+    try {
+      response = await renderPagesPageResponse({
+        ...createCommonOptions().options,
+        statusCode: 204,
+        userAgent: "Googlebot",
+        ifNoneMatch: "*",
+      });
+    } finally {
+      setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+    }
+
+    expect(response.status).toBe(304);
+    expect(deferNotModifiedResponse).not.toHaveBeenCalled();
+  });
+
   it("returns 200 + ETag when If-None-Match does not match on bot response", async () => {
     const common = createCommonOptions();
 
@@ -1314,6 +1409,66 @@ describe("pages page response", () => {
       expect(result.response.status).toBe(304);
       const body = await result.response.text();
       expect(body).toBe("");
+      expect(result.response.headers.get("etag")).toBe(expectedEtag);
+    }
+  });
+
+  it("returns the cached page on ISR cache-HIT when the CDN adapter sends the 304", async () => {
+    const cachedHtml =
+      '<!DOCTYPE html><html><head></head><body><div id="__next"><p>cached</p></div>' +
+      "<script>window.__NEXT_DATA__ = {}</script></body></html>";
+    const expectedEtag = generatePagesETag(cachedHtml);
+
+    const isrGetMock = vi.fn(async () => ({
+      isStale: false,
+      value: {
+        value: {
+          kind: "PAGES" as const,
+          html: cachedHtml,
+          pageData: {},
+          headers: undefined,
+          status: 200,
+        },
+        cacheControl: { revalidate: 60, expire: undefined },
+      },
+    }));
+
+    setCdnCacheAdapter(
+      Object.assign(new DefaultCdnCacheAdapter(), { deferNotModifiedResponse: () => true }),
+    );
+    const result = await resolvePagesPageData({
+      applyRequestContexts: vi.fn(),
+      buildId: "build-123",
+      isDataReq: false,
+      createGsspReqRes: vi.fn() as never,
+      createPageElement: vi.fn(),
+      fontLinkHeader: "",
+      i18n: { locale: "en", locales: ["en"], defaultLocale: "en" },
+      isrCacheKey: (_router: string, pathname: string) => `pages:${pathname}`,
+      isrGet: isrGetMock as never,
+      isrSet: vi.fn(async () => {}),
+      expireSeconds: undefined,
+      pageModule: {
+        getStaticProps: vi.fn(async () => ({ props: {}, revalidate: 60 })),
+      },
+      params: {},
+      query: {},
+      route: { isDynamic: false },
+      routePattern: "/posts",
+      routeUrl: "/posts",
+      runInFreshUnifiedContext: async (cb) => cb(),
+      safeJsonStringify: JSON.stringify,
+      sanitizeDestination: (d) => d,
+      triggerBackgroundRegeneration: vi.fn(),
+      renderIsrPassToStringAsync: vi.fn(async () => "<p>cached</p>"),
+      userAgent: "Googlebot",
+      ifNoneMatch: expectedEtag,
+    }).finally(() => setCdnCacheAdapter(new DefaultCdnCacheAdapter()));
+
+    expect(result.kind).toBe("response");
+    if (result.kind === "response") {
+      expect(result.response.status).toBe(200);
+      expect(await result.response.text()).toBe(cachedHtml);
       expect(result.response.headers.get("etag")).toBe(expectedEtag);
     }
   });

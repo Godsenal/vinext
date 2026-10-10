@@ -49,6 +49,7 @@ import {
 } from "./routing/file-matcher.js";
 import { createSSRHandler } from "./server/dev-server.js";
 import { handleApiRoute } from "./server/api-handler.js";
+import { signalFromNodeResponse } from "./server/node-response-signal.js";
 import {
   DEFAULT_DEVICE_SIZES,
   DEFAULT_IMAGE_SIZES,
@@ -104,6 +105,7 @@ import { hasBasePath, stripBasePath } from "./utils/base-path.js";
 import {
   createRscCompatibilityId,
   findNextConfigPath,
+  lightningCssFeatureNamesToMask,
   VINEXT_NEXT_CONFIG_PLUGIN_PROPERTY,
   loadNextConfig,
   resolveNextConfigInput,
@@ -145,6 +147,7 @@ import {
   INTERNAL_HEADERS,
   isOpenRedirectShaped,
   normalizeTrailingSlash,
+  sendRepeatedSlashRedirect,
   VINEXT_INTERNAL_HEADERS,
 } from "./server/request-pipeline.js";
 import {
@@ -237,6 +240,7 @@ import { createDynamicPreloadMetadataPlugin } from "./plugins/dynamic-preload-me
 import { createOgInlineFetchAssetsPlugin, createOgAssetsPlugin } from "./plugins/og-assets.js";
 import { createOgHarfbuzzPlugin } from "./plugins/og-harfbuzz.js";
 import { createUseCacheCallablePlugin } from "./plugins/use-cache-callable.js";
+import { cacheFlightCodecPlugin } from "./plugins/cache-flight-codec.js";
 import { generateRouteTypes } from "./typegen.js";
 import {
   mergeOptimizeDepsExclude,
@@ -317,7 +321,13 @@ import {
   type EmittedModuleFileNameResolver,
 } from "./plugins/import-meta-url.js";
 import { createWorkerImageImportsPlugin } from "./plugins/worker-image-imports.js";
+import { createWorkerServerOnlyImportsPlugin } from "./plugins/worker-server-only-imports.js";
+import { createWorkerUseServerPlugins } from "./plugins/worker-use-server.js";
 import { createRequireContextPlugin } from "./plugins/require-context.js";
+import {
+  commonJsEsmFacadeOptimizeDepsPlugin,
+  stripEsmCommonJsExportFacade,
+} from "./plugins/commonjs-esm-facade.js";
 import { COMMONJS_SYNTAX_CODE_FILTER } from "./plugins/commonjs-syntax.js";
 import {
   createRequireConditionResolutionPlugin,
@@ -331,7 +341,7 @@ import {
   mayFoldChangeScannedImports,
   replaceConsumerEnvironmentConditions,
 } from "./plugins/typeof-window.js";
-import { hasMdxFiles } from "./utils/mdx-scan.js";
+import { hasMdxFiles, loadMdxEsmReader, pageExtensionsIncludeMdx } from "./utils/mdx-scan.js";
 import { scanPublicFileRoutes } from "./utils/public-routes.js";
 import { publicFilePathVariants } from "./utils/public-file-path.js";
 import {
@@ -1551,7 +1561,10 @@ export type VinextOptions = {
    * Configure cache handlers declaratively, so you don't need a custom worker
    * entry that calls `setDataCacheHandler()` / `setCdnCacheAdapter()`. Each slot
    * is a `{ adapter, options }` descriptor pointing at an adapter module whose
-   * default export is a factory; the plugin registers them automatically on the
+   * default export is a factory function or a class; either receives one
+   * `{ env, options }` argument (classes are invoked with `new`, other
+   * functions are called; see `CacheAdapterDescriptor.adapter` for how
+   * classes are recognised). The plugin registers them automatically on the
    * first request, passing the host `env` (Worker bindings) so adapters that
    * need a binding — e.g. a KV namespace — can read it.
    *
@@ -1955,7 +1968,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         if (useServerIndex === -1) {
           throw new Error("vinext: Failed to locate @vitejs/plugin-rsc use-server plugin.");
         }
-        plugins.splice(useServerIndex, 0, useCachePlugin);
+        plugins.splice(useServerIndex, 0, cacheFlightCodecPlugin(), useCachePlugin);
         return plugins.map(scopeRscPlugin);
       })
       .catch((cause) => {
@@ -2244,15 +2257,23 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       const previous = transformBundledCommonJsDependencies;
       transformProjectLocalCommonJs = projectLocal && isDev;
       transformBundledCommonJsDependencies = bundledDependency;
+      let result: ReturnType<typeof commonJsTransform>;
       try {
         // Do not await here: the filter is consulted synchronously while this
         // environment-scoped flag is set. The remaining async transform work
         // does not read it, so concurrent module transforms cannot cross-talk.
-        return commonJsTransform.call(this, code, id, ...args);
+        result = commonJsTransform.call(this, code, id, ...args);
       } finally {
         transformProjectLocalCommonJs = previousProjectLocal;
         transformBundledCommonJsDependencies = previous;
       }
+      return Promise.resolve(result).then((transformed) => {
+        if (typeof transformed !== "object" || typeof transformed?.code !== "string") {
+          return transformed;
+        }
+        const stripped = stripEsmCommonJsExportFacade(transformed.code);
+        return stripped === undefined ? transformed : { ...transformed, code: stripped };
+      });
     };
     // Modules without any syntax vite-plugin-commonjs could rewrite never
     // reach JavaScript, so it does not strip and parse them for nothing.
@@ -3466,6 +3487,15 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             // plugin here rather than copying user plugins and duplicating them.
             plugins: () => [
               createWorkerImageImportsPlugin({ deploymentId: nextConfig.deploymentId }),
+              createWorkerServerOnlyImportsPlugin(),
+              ...(rscPluginModulePromise && resolvedRscPath
+                ? [
+                    createWorkerUseServerPlugins({
+                      rscPluginModule: rscPluginModulePromise,
+                      rscPluginPath: resolvedRscPath,
+                    }),
+                  ]
+                : []),
             ],
           },
           // Let OPTIONS requests pass through Vite's CORS middleware to our
@@ -3655,6 +3685,17 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                     ...(nextConfig.lightningCssFeatures.exclude
                       ? { exclude: nextConfig.lightningCssFeatures.exclude }
                       : {}),
+                    // `@custom-media` is draft syntax behind lightningcss's
+                    // `drafts.customMedia` parser flag. Like Next.js
+                    // (lightningcss-loader `drafts`), enable it only when
+                    // `custom-media-queries` is in the include mask after
+                    // `exclude` is subtracted.
+                    ...((nextConfig.lightningCssFeatures.include &
+                      ~nextConfig.lightningCssFeatures.exclude &
+                      lightningCssFeatureNamesToMask(["custom-media-queries"])) !==
+                    0
+                      ? { drafts: { customMedia: true } }
+                      : {}),
                   },
                 }
               : {}),
@@ -3784,7 +3825,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           ...depOptimizeNodeEnvOptions,
           rolldownOptions: {
             ...depOptimizeNodeEnvOptions.rolldownOptions,
-            plugins: [depOptimizeAliasPlugin],
+            // vite-plugin-commonjs's pre-bundle plugin runs in this optimizer.
+            plugins: [depOptimizeAliasPlugin, commonJsEsmFacadeOptimizeDepsPlugin],
           },
         };
         pagesOptimizeEntries = !hasAppDir
@@ -4933,6 +4975,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 inlineCss: nextConfig?.inlineCss,
                 globalNotFound: nextConfig?.globalNotFound,
                 cacheComponents: nextConfig?.cacheComponents,
+                readMdxEsm:
+                  !nextConfig?.cacheComponents &&
+                  pageExtensionsIncludeMdx(nextConfig?.pageExtensions ?? [])
+                    ? await loadMdxEsmReader(root)
+                    : null,
                 prefetchInlining: nextConfig?.prefetchInlining,
                 hasServerActions,
                 actionOwners: this.environment.config.command === "build" ? undefined : null,
@@ -5612,24 +5659,6 @@ export const loadServerActionClient = ${
           next();
         });
 
-        // Match Next.js dev behavior: allow the server to start, then reject
-        // /_next requests while public/_next exists. This runs before Vite's
-        // public-file middleware and re-checks the filesystem on every request,
-        // so creating the directory after startup cannot bypass the guard.
-        server.middlewares.use((req, _res, next) => {
-          try {
-            assertNoPublicNextRequestConflict({
-              root: server.config.root,
-              publicDir: server.config.publicDir === "" ? null : server.config.publicDir,
-              basePath: nextConfig.basePath ?? "",
-              requestUrl: req.url ?? "/",
-            });
-            next();
-          } catch (error) {
-            next(error);
-          }
-        });
-
         // Watch route files for additions/removals to invalidate route cache.
         const pageExtensions = fileMatcher.extensionRegex;
 
@@ -6098,6 +6127,34 @@ export const loadServerActionClient = ${
             return;
           }
           next();
+        });
+
+        // Like Next.js, redirect any path containing a backslash or a repeated
+        // slash once the origin check has passed (router-server.ts runs
+        // blockCrossSiteDEV before resolveRoutes) and before anything below
+        // parses it: `new URL("//", base)` throws, and `//host/x` parses as a
+        // different origin.
+        server.middlewares.use((req, res, next) => {
+          if (!sendRepeatedSlashRedirect(req.url ?? "/", res)) next();
+        });
+
+        // Match Next.js dev behavior: allow the server to start, then reject
+        // /_next requests while public/_next exists. Like next-dev-server.ts,
+        // this runs after the repeated-slash redirect but before Vite's
+        // public-file middleware, and re-checks the filesystem on every request,
+        // so creating the directory after startup cannot bypass the guard.
+        server.middlewares.use((req, _res, next) => {
+          try {
+            assertNoPublicNextRequestConflict({
+              root: server.config.root,
+              publicDir: server.config.publicDir === "" ? null : server.config.publicDir,
+              basePath: nextConfig.basePath ?? "",
+              requestUrl: req.url ?? "/",
+            });
+            next();
+          } catch (error) {
+            next(error);
+          }
         });
 
         // Vite serves public files for every method. Intercept only mutations
@@ -6709,6 +6766,7 @@ export const loadServerActionClient = ${
               const webRequest = new Request(new URL(routeUrl, requestOrigin), {
                 method,
                 headers: nodeRequestHeaders,
+                signal: signalFromNodeResponse(res),
               });
 
               const applyRequestHeadersToNodeRequest = (nextRequestHeaders: Headers) => {
@@ -6742,6 +6800,7 @@ export const loadServerActionClient = ${
                       const middlewareRequest = new Request(new URL(middlewareUrl, mwOrigin), {
                         method: req.method,
                         headers: nodeRequestHeaders,
+                        signal: webRequest.signal,
                       });
                       const result = await runMiddleware(
                         getPagesRunner(),
@@ -6870,6 +6929,7 @@ export const loadServerActionClient = ${
                     method: externalMethod,
                     // Use the pipeline's current request headers (post-middleware)
                     headers: currentRequest.headers,
+                    signal: currentRequest.signal,
                   };
                   if (hasBody) {
                     const { Readable } = await import("node:stream");
@@ -7792,7 +7852,7 @@ export const loadServerActionClient = ${
     // module IDs belong to each dynamic() boundary. The runtime resolves those
     // IDs through Vite's build manifest so it can emit boundary-scoped preload
     // hints with the request CSP nonce.
-    createDynamicPreloadMetadataPlugin(),
+    createDynamicPreloadMetadataPlugin(() => nextConfig?.turbopackTranspilePackages ?? []),
     importMetaUrlCapability.vitePlugin,
     createExtensionlessDynamicImportPlugin(),
     // Expand Webpack's build-time `require.context(...)` into a static module
@@ -7921,6 +7981,9 @@ export const loadServerActionClient = ${
           }
           const manifest = {
             prerenderSecret,
+            // next.config `compress`, read by the Node production server for
+            // every entry shape (including Worker-style facades).
+            compress: nextConfig?.compress !== false,
             ...(serverRuntimeOutputDirs.size === 0
               ? {}
               : {
@@ -8482,7 +8545,7 @@ export const loadServerActionClient = ${
     plugins.push(createRscReferenceValidationNormalizerPlugin());
     plugins.push(createRscClientReferenceLoadersPlugin());
   } else if (manualUseCachePluginPromise) {
-    plugins.push(manualUseCachePluginPromise);
+    plugins.push(cacheFlightCodecPlugin(), manualUseCachePluginPromise);
   }
   plugins.push({
     name: "vinext:plain-pages-build-config",
@@ -8549,6 +8612,13 @@ async function writeWebResponseToNodeRes(
   res: import("node:http").ServerResponse,
   response: Response,
 ): Promise<void> {
+  if (res.destroyed) {
+    // The client left while the response was produced; nobody will read it.
+    response.body?.cancel().catch(() => {
+      /* ignore cancellation failures on discarded bodies */
+    });
+    return;
+  }
   const nodeHeaders: Record<string, string | string[]> = {};
   response.headers.forEach((value, key) => {
     if (key === "set-cookie") return;
@@ -8569,13 +8639,23 @@ async function writeWebResponseToNodeRes(
   }
 
   if (response.body) {
-    const { Readable } = await import("node:stream");
+    const { Readable, pipeline } = await import("node:stream");
     const nodeStream = Readable.fromWeb(response.body as import("stream/web").ReadableStream);
+    // pipeline() destroys (and so cancels) the body when the client disconnects
+    // and reports that as ERR_STREAM_PREMATURE_CLOSE. A body that ends early
+    // reports the same code, so record whether the client closed first.
+    let clientDisconnected = false;
+    res.once("close", () => {
+      clientDisconnected = !res.writableFinished && !nodeStream.errored;
+    });
     await new Promise<void>((resolve, reject) => {
-      nodeStream.on("error", reject);
-      res.on("error", reject);
-      nodeStream.pipe(res);
-      nodeStream.on("end", resolve);
+      pipeline(nodeStream, res, (error) => {
+        if (error && !(clientDisconnected && error.code === "ERR_STREAM_PREMATURE_CLOSE")) {
+          reject(error);
+        } else {
+          resolve();
+        }
+      });
     });
   } else {
     res.end();

@@ -126,6 +126,8 @@ function rematchAppWorkerResponseStageRoute<TRoute extends AppRscHandlerRoute>(
           props.interceptionId,
         ) ?? null;
     }
+  } else if (props.matchKind === "raw-request") {
+    match = options.matchRawRequestRoute?.(props.routePathname) ?? null;
   } else if (props.matchKind === "request") {
     match = options.matchRequestRoute?.(props.routePathname) ?? null;
   } else {
@@ -146,7 +148,7 @@ export async function renderAppWorkerResponseStage<TRoute extends AppRscHandlerR
   rawRequest: Request,
   ctx: unknown,
   props: AppWorkerResponseStageProps,
-  _stageOptions?: VinextResponseStageDispatchOptions,
+  stageOptions?: VinextResponseStageDispatchOptions,
 ): Promise<Response> {
   if (
     props.protocolVersion !== APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION ||
@@ -430,6 +432,7 @@ export async function renderAppWorkerResponseStage<TRoute extends AppRscHandlerR
           searchParams,
           scriptNonce: props.scriptNonce ?? undefined,
           renderMode: normalized.renderMode,
+          renderWholeDocument: stageOptions?.renderWholeDocument === true,
         });
       },
       {

@@ -1,3 +1,4 @@
+import { testRouteHandlerStoragePolicies } from "../route-handler-storage-policy";
 import { test, expect, type APIRequestContext, type APIResponse } from "@playwright/test";
 
 function baseUrl(): string {
@@ -172,29 +173,33 @@ test.describe("App Router ISR", () => {
     expect(cc).toContain("stale-while-revalidate");
   });
 
+  // An encoded spelling of a static sibling answers with that prerendered
+  // page, as Next.js serves it from the entry cached under the decoded path.
+  test("answers an encoded static route spelling with the static route", async ({ request }) => {
+    await resetIsrPath(request, "/route-cache-identity/about");
+
+    const encoded = await request.get(`${baseUrl()}/route-cache-identity/%61bout`);
+    expect(encoded.status()).toBe(200);
+    expect(await encoded.text()).toContain("CACHE_IDENTITY_STATIC_PAGE");
+
+    const literal = await waitForCacheHit(request, "/route-cache-identity/about");
+    expect(await literal.text()).toContain("CACHE_IDENTITY_STATIC_PAGE");
+  });
+
   // A request spelling that selects a catch-all route must not publish that
   // artifact under a static sibling's ISR key. Encoded delimiters and /index
   // remain distinct cache identities.
-  for (const { attackPath, expectedVictim, label, mustBypassCache, victimPath } of [
-    {
-      attackPath: "/route-cache-identity/%61bout",
-      expectedVictim: "CACHE_IDENTITY_STATIC_PAGE",
-      label: "encoded literal route divergence",
-      mustBypassCache: true,
-      victimPath: "/route-cache-identity/about",
-    },
+  for (const { attackPath, expectedVictim, label, victimPath } of [
     {
       attackPath: "/route-cache-identity/nested%2Fabout",
       expectedVictim: "CACHE_IDENTITY_NESTED_STATIC_PAGE",
       label: "encoded separator",
-      mustBypassCache: false,
       victimPath: "/route-cache-identity/nested/about",
     },
     {
       attackPath: "/route-cache-identity/index",
       expectedVictim: "CACHE_IDENTITY_ROOT_STATIC_PAGE",
       label: "/index alias",
-      mustBypassCache: false,
       victimPath: "/route-cache-identity",
     },
   ]) {
@@ -204,9 +209,6 @@ test.describe("App Router ISR", () => {
       const attacker = await request.get(`${baseUrl()}${attackPath}`);
       expect(attacker.status()).toBe(200);
       expect(await attacker.text()).toContain("CACHE_IDENTITY_CATCH_ALL:");
-      if (mustBypassCache) {
-        expect(attacker.headers()["cache-control"]).toContain("no-store");
-      }
 
       const victim = await waitForCacheHit(request, victimPath);
       expect(await victim.text()).toContain(expectedVictim);
@@ -359,6 +361,68 @@ test.describe("App Router ISR", () => {
   });
 });
 
+// A background regeneration renders the document whole, so the title that its
+// generateMetadata() streams is in <head>, as in Next.js. A miss streams the
+// document to its request, so the title streams into <body>.
+test.describe("ISR generated metadata placement", () => {
+  function titleIndex(html: string, title: string): number {
+    const index = html.indexOf(`<title>${title}</title>`);
+    expect(index).toBeGreaterThan(-1);
+    return index;
+  }
+
+  function expectTitleInHead(html: string, title: string): void {
+    expect(titleIndex(html, title)).toBeLessThan(html.indexOf("</head>"));
+  }
+
+  function expectTitleInBody(html: string, title: string): void {
+    expect(titleIndex(html, title)).toBeGreaterThan(html.indexOf("</head>"));
+  }
+
+  function readTimestamp(html: string): string | undefined {
+    return html.match(/data-testid="timestamp">(\d+)</)?.[1];
+  }
+
+  test("streams the generated title on a miss and puts it in <head> on a regeneration", async ({
+    request,
+  }) => {
+    const id = crypto.randomUUID();
+    const path = `/isr-metadata-head/${id}`;
+    const title = `ISR metadata head ${id}`;
+
+    const miss = await request.get(`${baseUrl()}${path}`);
+    expect(miss.headers()["x-vinext-cache"]).toBe("MISS");
+    expectTitleInBody(await miss.text(), title);
+
+    const hit = await waitForCacheHit(request, path);
+    const hitHtml = await hit.text();
+    expectTitleInBody(hitHtml, title);
+    const storedTimestamp = readTimestamp(hitHtml);
+    expect(storedTimestamp).toBeDefined();
+
+    // The entry goes stale after a second, and the next request regenerates it.
+    await new Promise((resolve) => setTimeout(resolve, 1_500));
+    const stale = await request.get(`${baseUrl()}${path}`);
+    expect(stale.headers()["x-vinext-cache"]).toBe("STALE");
+    await stale.text();
+
+    // A complete regenerated document has the page's new timestamp.
+    let regeneratedHtml = "";
+    await expect
+      .poll(async () => {
+        const response = await request.get(`${baseUrl()}${path}`);
+        regeneratedHtml = await response.text();
+        const timestamp = readTimestamp(regeneratedHtml);
+        return [
+          response.headers()["x-vinext-cache"],
+          timestamp !== undefined && timestamp !== storedTimestamp,
+        ];
+      })
+      .toEqual(["HIT", true]);
+    expectTitleInHead(regeneratedHtml, title);
+  });
+});
+
 /**
  * OpenNext Compat: ISR dynamicParams cache header tests
  *
@@ -447,7 +511,6 @@ test.describe("ISR dynamicParams cache headers", () => {
  * OpenNext Compat: revalidateTag / revalidatePath E2E lifecycle tests.
  *
  * Ported from: https://github.com/opennextjs/opennextjs-cloudflare/blob/main/examples/e2e/app-router/e2e/revalidateTag.test.ts
- * Tests: ON-2 in TRACKING.md
  *
  * OpenNext verifies the full tag-based cache invalidation lifecycle:
  * 1. Load tagged ISR page -> cached (HIT)
@@ -566,7 +629,6 @@ test.describe("revalidateTag / revalidatePath lifecycle (OpenNext compat)", () =
   });
 
   // Ref: opennextjs-cloudflare revalidateTag.test.ts — "nested page shares tag"
-  // Tests: ON-2 #2 in TRACKING.md
   test("nested page sharing same tag is also invalidated", async ({ request }) => {
     test.setTimeout(30_000);
 
@@ -594,7 +656,6 @@ test.describe("revalidateTag / revalidatePath lifecycle (OpenNext compat)", () =
  * OpenNext Compat: ISR data cache (unstable_cache) separation from page cache.
  *
  * Ported from: https://github.com/opennextjs/opennextjs-cloudflare/blob/main/examples/e2e/app-router/e2e/isr.test.ts
- * Tests: ON-1 #8 in TRACKING.md
  *
  * Verifies that unstable_cache (data cache) works alongside ISR page caching.
  */
@@ -739,3 +800,5 @@ async function readDraftCacheRoute(request: APIRequestContext) {
   expect(response.status()).toBe(200);
   return (await response.json()) as { data: string; draftMode: boolean };
 }
+
+testRouteHandlerStoragePolicies();

@@ -123,7 +123,7 @@ jobs:
           COVERAGE: ${{ github.event_name == 'push' && '--coverage' || '' }}
           SHARD_INDEX: ${{ matrix.shardIndex }}
           SHARD_TOTAL: ${{ matrix.shardTotal }}
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ !cancelled() }}
         with:
           name: blob-report-${{ matrix.shardIndex }}
@@ -141,7 +141,7 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           path: .vitest-reports
           pattern: blob-report-*
@@ -149,13 +149,13 @@ jobs:
       # --coverage tells vitest to invoke coverageProvider.mergeReports() on the
       # coverage data embedded in each shard's blob, producing a unified report.
       # Only enabled on push-to-main, matching the shard config above.
-      - run: vp test run --merge-reports ${{ github.event_name == 'push' && '--coverage' || '' }}
+      - run: vp test run --merge-reports=.vitest-reports ${{ github.event_name == 'push' && '--coverage' || '' }}
         env:
           CI: true
       - name: Publish coverage matrix to job summary
         if: ${{ !cancelled() && hashFiles('coverage/coverage-summary.json') != '' }}
         run: node scripts/coverage-summary.mjs >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ !cancelled() && hashFiles('coverage/index.html') != '' }}
         with:
           name: coverage-html
@@ -558,6 +558,10 @@ jobs:
             label: cloudflare-static-export
             shardIndex: 1
             shardTotal: 1
+          - project: cloudflare-static-assets-pages
+            label: cloudflare-static-assets-pages
+            shardIndex: 1
+            shardTotal: 1
           - project: static-export-basepath
             label: static-export-basepath
             shardIndex: 1
@@ -676,7 +680,7 @@ jobs:
           CI: true
           PLAYWRIGHT_PROJECT: ${{ matrix.project }}
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: failure()
         with:
           name: playwright-report-${{ matrix.project }}-${{ matrix.shardIndex }}-${{ matrix.shardTotal }}
