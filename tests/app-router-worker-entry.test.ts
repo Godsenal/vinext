@@ -744,6 +744,75 @@ export default {
     }
   });
 
+  it("honors next.config generateEtags for static files", async () => {
+    // Next.js serves static files with `etag: config.generateEtags`
+    // (server/lib/router-server.ts), so `generateEtags: false` gives them none.
+    const outDirs: string[] = [];
+    function writeWorkerEntry(manifest: Record<string, unknown>): string {
+      const outDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-prod-worker-etags-"));
+      outDirs.push(outDir);
+      const serverDir = path.join(outDir, "server");
+      fs.mkdirSync(serverDir, { recursive: true });
+      fs.mkdirSync(path.join(outDir, "client"), { recursive: true });
+      fs.mkdirSync(path.join(outDir, "client", "_next", "static"), { recursive: true });
+      fs.writeFileSync(path.join(outDir, "client", "_next", "static", "app.js"), "app();\n");
+      fs.writeFileSync(path.join(outDir, "package.json"), JSON.stringify({ type: "module" }));
+      fs.writeFileSync(path.join(serverDir, "vinext-server.json"), JSON.stringify(manifest));
+      fs.writeFileSync(
+        path.join(serverDir, "index.js"),
+        `export default { async fetch() { return new Response("page"); } };\n`,
+      );
+      return outDir;
+    }
+
+    // fetch() sends a conditional request with Cache-Control: no-cache otherwise.
+    const servers: import("node:http").Server[] = [];
+    try {
+      const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
+      const started = await startProdServer({
+        port: 0,
+        outDir: writeWorkerEntry({ prerenderSecret: "secret" }),
+      });
+      servers.push(started.server);
+      const withEtag = await fetch(`http://localhost:${started.port}/_next/static/app.js`);
+      const etag = withEtag.headers.get("etag");
+      expect(etag).toBeTruthy();
+      expect(
+        (
+          await fetch(`http://localhost:${started.port}/_next/static/app.js`, {
+            headers: { "Cache-Control": "max-age=0", "If-None-Match": etag! },
+          })
+        ).status,
+      ).toBe(304);
+
+      const disabled = await startProdServer({
+        port: 0,
+        outDir: writeWorkerEntry({ prerenderSecret: "secret", generateEtags: false }),
+      });
+      servers.push(disabled.server);
+      const res = await fetch(`http://localhost:${disabled.port}/_next/static/app.js`);
+      expect(res.status).toBe(200);
+      expect(res.headers.get("etag")).toBeNull();
+      expect(await res.text()).toBe("app();\n");
+      const lastModified = res.headers.get("last-modified");
+      expect(lastModified).toBeTruthy();
+      const conditional = await fetch(`http://localhost:${disabled.port}/_next/static/app.js`, {
+        headers: { "Cache-Control": "max-age=0", "If-None-Match": etag! },
+      });
+      expect(conditional.status).toBe(200);
+      expect(conditional.headers.get("etag")).toBeNull();
+      // Its Last-Modified still validates it.
+      const notModified = await fetch(`http://localhost:${disabled.port}/_next/static/app.js`, {
+        headers: { "Cache-Control": "max-age=0", "If-Modified-Since": lastModified! },
+      });
+      expect(notModified.status).toBe(304);
+      expect(notModified.headers.get("etag")).toBeNull();
+    } finally {
+      for (const server of servers) server.close();
+      for (const outDir of outDirs) fs.rmSync(outDir, { recursive: true, force: true });
+    }
+  });
+
   it("reports a clear error for unsupported app router entry shapes", async () => {
     const outDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-prod-worker-invalid-"));
     const serverDir = path.join(outDir, "server");

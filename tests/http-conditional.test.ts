@@ -1,10 +1,20 @@
 import { describe, expect, it } from "vitest";
+import { generateETag as nextGenerateETag } from "next/dist/server/lib/etag.js";
 import {
   evaluateStaticPreconditions,
+  generateETag,
   isPageNotModified,
   matchesIfMatch,
   matchesIfNoneMatch,
 } from "../packages/vinext/src/server/http-conditional.js";
+
+describe("generateETag", () => {
+  it("gives a payload the ETag Next.js gives it", () => {
+    for (const payload of ["", "<html></html>", '{"pageProps":{}}', "\uFEFF\u00e9\u{1F600}"]) {
+      expect(generateETag(payload)).toBe(nextGenerateETag(payload));
+    }
+  });
+});
 
 describe("matchesIfNoneMatch", () => {
   it("matches an identical entity tag", () => {

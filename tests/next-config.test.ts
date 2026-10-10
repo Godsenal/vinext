@@ -2149,6 +2149,15 @@ describe("resolveNextConfig compress", () => {
   });
 });
 
+describe("resolveNextConfig generateEtags", () => {
+  it("defaults to true and is disabled only by generateEtags: false", async () => {
+    expect((await resolveNextConfig(null)).generateEtags).toBe(true);
+    expect((await resolveNextConfig({})).generateEtags).toBe(true);
+    expect((await resolveNextConfig({ generateEtags: true })).generateEtags).toBe(true);
+    expect((await resolveNextConfig({ generateEtags: false })).generateEtags).toBe(false);
+  });
+});
+
 describe("resolveNextConfig disableOptimizedLoading", () => {
   // Regression for #1519: `experimental.disableOptimizedLoading` defaults to
   // `false` and is read into the resolved config. The default drives the
@@ -2626,6 +2635,7 @@ describe("detectNextIntlConfig", () => {
       basePath: "",
       trailingSlash: false,
       compress: true,
+      generateEtags: true,
       skipProxyUrlNormalize: false,
       typescript: {},
       output: "",
