@@ -318,6 +318,7 @@ import {
   type EmittedModuleFileNameResolver,
 } from "./plugins/import-meta-url.js";
 import { createWorkerImageImportsPlugin } from "./plugins/worker-image-imports.js";
+import { createClientGraphServerApisPlugin } from "./plugins/client-graph-server-apis.js";
 import {
   createWorkerServerOnlyImportsPlugin,
   SERVER_ONLY_SPECIFIER_RE,
@@ -7409,6 +7410,13 @@ export const loadServerActionClient = ${
         },
       },
     },
+    // Match Next.js' compile error for request and cache APIs imported under a
+    // "use client" boundary. Runs after the Pages data-export transform for
+    // the same reason as the server-only check above.
+    createClientGraphServerApisPlugin({
+      getAppDir: () => (hasAppDir ? canonicalize(appDir) : null),
+      isUseServerModule: (code) => getLeadingReactDirective(code) === "use server",
+    }),
     // Strip console.* calls from the client bundle when compiler.removeConsole
     // is enabled in next.config. Inspired by Next.js's SWC remove_console transform.
     // NOTE: Next.js applies this to both client and server (set in

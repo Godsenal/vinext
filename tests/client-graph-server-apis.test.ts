@@ -1,0 +1,271 @@
+/**
+ * Next.js fails the build when a module under a `"use client"` boundary
+ * imports a request API (`next/headers`, `next/root-params`) or a server-only
+ * `next/server` / `next/cache` API. Those modules are also evaluated during
+ * SSR, where module-scope `cookies()`/`headers()` would capture the first
+ * request that loads them and serve it to every later visitor.
+ *
+ * These builds copy checked-in App Router apps (the Cloudflare Workers example
+ * and the Node fixture) and add a page rendering a Client Component that
+ * imports one of those APIs. Next.js 16.2.7 fails the build for each graph
+ * with both webpack and Turbopack, using the messages asserted below.
+ */
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { pathToFileURL } from "node:url";
+import { createBuilder, createLogger, createServer, type Plugin } from "vite";
+import { afterEach, describe, expect, it } from "vite-plus/test";
+import vinext from "../packages/vinext/src/index.js";
+import {
+  createInvalidClientImportMessage,
+  findInvalidClientImports,
+} from "../packages/vinext/src/plugins/client-graph-server-apis.js";
+
+const CF_EXAMPLE_DIR = path.resolve(import.meta.dirname, "../examples/app-router-cloudflare");
+const APP_FIXTURE_DIR = path.resolve(import.meta.dirname, "fixtures/app-basic");
+const WORKSPACE_NODE_MODULES = path.resolve(import.meta.dirname, "../node_modules");
+
+const CLIENT_COMPONENT_MESSAGE =
+  'into a React Client Component module. This API is only available in Server Components but one of its parents is marked with "use client", so this module is also a Client Component.';
+const OUTSIDE_APP_MESSAGE =
+  "This API is only available in Server Components in the App Router, but you are using it in the Pages Router.";
+
+const tmpDirs: string[] = [];
+
+afterEach(() => {
+  for (const dir of tmpDirs.splice(0)) {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+function writeFile(root: string, filePath: string, content: string) {
+  const absPath = path.join(root, filePath);
+  fs.mkdirSync(path.dirname(absPath), { recursive: true });
+  fs.writeFileSync(absPath, content);
+}
+
+function copyFixture(fixtureDir: string): string {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-client-graph-apis-"));
+  tmpDirs.push(root);
+  fs.cpSync(fixtureDir, root, {
+    recursive: true,
+    filter: (source) => !/[\\/](?:node_modules|dist|\.wrangler)$/.test(source),
+  });
+  // The fixture's own dependencies, plus `next`, which the checked-in copy
+  // resolves from the workspace root.
+  const nodeModules = path.join(root, "node_modules");
+  fs.mkdirSync(nodeModules);
+  for (const entry of fs.readdirSync(path.join(fixtureDir, "node_modules"))) {
+    fs.symlinkSync(
+      path.join(fixtureDir, "node_modules", entry),
+      path.join(nodeModules, entry),
+      "junction",
+    );
+  }
+  if (!fs.existsSync(path.join(nodeModules, "next"))) {
+    fs.symlinkSync(
+      path.join(WORKSPACE_NODE_MODULES, "next"),
+      path.join(nodeModules, "next"),
+      "junction",
+    );
+  }
+  return root;
+}
+
+/** A page rendering `ClientGraphProbe`, whose module (or an import of it) is invalid. */
+function writeProbePage(
+  root: string,
+  clientSource: string,
+  extraFiles: Record<string, string> = {},
+) {
+  writeFile(
+    root,
+    "app/client-graph-probe/page.tsx",
+    `import { ClientGraphProbe } from "./client-graph-probe";
+
+export default function ClientGraphProbePage() {
+  return <ClientGraphProbe />;
+}
+`,
+  );
+  writeFile(root, "app/client-graph-probe/client-graph-probe.tsx", clientSource);
+  for (const [file, source] of Object.entries(extraFiles)) writeFile(root, file, source);
+}
+
+const PROBES: Array<
+  [form: string, clientSource: string, extraFiles: Record<string, string>, message: string]
+> = [
+  [
+    "next/headers imported by a Client Component",
+    `"use client";
+
+import { cookies } from "next/headers";
+
+export function ClientGraphProbe() {
+  return <p>{typeof cookies}</p>;
+}
+`,
+    {},
+    `depends on "next/headers" ${CLIENT_COMPONENT_MESSAGE}`,
+  ],
+  [
+    "next/headers imported by a library outside app/ that a Client Component imports",
+    `"use client";
+
+import { readSession } from "../../lib/client-graph-session";
+
+export function ClientGraphProbe() {
+  return <p>{typeof readSession}</p>;
+}
+`,
+    {
+      "lib/client-graph-session.ts": `import { cookies } from "next/headers";
+
+export async function readSession() {
+  return (await cookies()).get("session")?.value;
+}
+`,
+    },
+    `depends on "next/headers". ${OUTSIDE_APP_MESSAGE}`,
+  ],
+  [
+    "after() imported by a Client Component",
+    `"use client";
+
+import { after } from "next/server";
+
+export function ClientGraphProbe() {
+  return <p>{typeof after}</p>;
+}
+`,
+    {},
+    `depends on "after" ${CLIENT_COMPONENT_MESSAGE}`,
+  ],
+];
+
+async function loadCloudflarePlugin(): Promise<Plugin> {
+  const { cloudflare } = (await import(
+    pathToFileURL(path.join(CF_EXAMPLE_DIR, "node_modules/@cloudflare/vite-plugin/dist/index.mjs"))
+      .href
+  )) as { cloudflare: (options: unknown) => Plugin };
+  // As in the example's vite.config.ts.
+  return cloudflare({ viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] } });
+}
+
+async function buildFixture(root: string, plugins: Plugin[] = []): Promise<void> {
+  const builder = await createBuilder({
+    root,
+    configFile: false,
+    plugins: [vinext({ appDir: root }), ...plugins],
+    resolve: {
+      alias: {
+        "@test/og-font": path.resolve(import.meta.dirname, "fixtures/og-font-package/lib"),
+      },
+    },
+    logLevel: "silent",
+  });
+  await builder.buildApp();
+}
+
+describe("App Router client builds of the Cloudflare Workers example", () => {
+  it.each(PROBES)(
+    "reject %s",
+    async (_form, clientSource, extraFiles, message) => {
+      const root = copyFixture(CF_EXAMPLE_DIR);
+      writeProbePage(root, clientSource, extraFiles);
+
+      await expect(buildFixture(root, [await loadCloudflarePlugin()])).rejects.toThrow(message);
+    },
+    120_000,
+  );
+});
+
+describe("App Router client builds of the Node fixture", () => {
+  it("reject next/headers imported by a Client Component", async () => {
+    const [, clientSource, extraFiles, message] = PROBES[0];
+    const root = copyFixture(APP_FIXTURE_DIR);
+    writeProbePage(root, clientSource, extraFiles);
+
+    await expect(buildFixture(root)).rejects.toThrow(message);
+  }, 120_000);
+});
+
+describe("App Router dev server", () => {
+  it("rejects a Client Component that imports next/headers", async () => {
+    const [, clientSource, extraFiles] = PROBES[0];
+    const root = copyFixture(APP_FIXTURE_DIR);
+    writeProbePage(root, clientSource, extraFiles);
+
+    const server = await createServer({
+      root,
+      configFile: false,
+      plugins: [vinext({ appDir: root })],
+      server: { host: "127.0.0.1", port: 0 },
+      customLogger: createLogger("silent"),
+    });
+    try {
+      await server.listen();
+      const address = server.httpServer?.address();
+      if (!address || typeof address !== "object") throw new Error("dev server did not listen");
+
+      const clientModule = await fetch(
+        `http://127.0.0.1:${address.port}/app/client-graph-probe/client-graph-probe.tsx`,
+      );
+      expect(clientModule.status).toBe(500);
+      expect(await clientModule.text()).toContain('depends on \\"next/headers\\" into a React');
+    } finally {
+      await server.close();
+    }
+  }, 120_000);
+});
+
+describe("findInvalidClientImports", () => {
+  it("matches Next.js' client-graph import list", () => {
+    const code = [
+      `import { cookies } from "next/headers";`,
+      `import "next/root-params";`,
+      `import { after as later, NextResponse } from "next/server";`,
+      `import { revalidatePath, revalidateTag, cacheLife, unstable_cacheLife } from "next/cache";`,
+      `import { cacheTag, unstable_cacheTag, unstable_cache, unstable_noStore } from "next/cache";`,
+    ].join("\n");
+
+    expect(findInvalidClientImports(code).map((found) => found.name)).toEqual([
+      "next/headers",
+      "next/root-params",
+      "after",
+      "revalidatePath",
+      "revalidateTag",
+      "cacheLife",
+      "unstable_cacheLife",
+      "cacheTag",
+      "unstable_cacheTag",
+    ]);
+  });
+
+  it("ignores forms Next.js does not check", () => {
+    const code = [
+      // Only top-level import declarations count.
+      `export { cookies } from "next/headers";`,
+      `export * from "next/cache";`,
+      `const headers = () => import("next/headers");`,
+      `const cache = require("next/cache");`,
+      // Library APIs match by imported name, not the local alias.
+      `import { NextResponse as after } from "next/server";`,
+      `import * as cacheApis from "next/cache";`,
+    ].join("\n");
+
+    expect(findInvalidClientImports(code)).toEqual([]);
+  });
+
+  it("picks Next.js' message by whether the module is inside app/", () => {
+    expect(createInvalidClientImportMessage("next/headers", "/repo/app/c.tsx", "/repo/app")).toBe(
+      `You're importing a module that depends on "next/headers" ${CLIENT_COMPONENT_MESSAGE}\nLearn more: https://nextjs.org/docs/app/building-your-application/rendering`,
+    );
+    expect(
+      createInvalidClientImportMessage("next/headers", "/repo/application/c.tsx", "/repo/app"),
+    ).toBe(
+      `You're importing a module that depends on "next/headers". ${OUTSIDE_APP_MESSAGE}\nLearn more: https://nextjs.org/docs/app/building-your-application/rendering/server-components`,
+    );
+  });
+});
