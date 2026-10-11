@@ -8,14 +8,16 @@
  * These builds copy checked-in App Router apps (the Cloudflare Workers example
  * and the Node fixture) and add a page rendering a Client Component that
  * imports one of those APIs. Next.js 16.2.7 fails the build for each graph
- * with both webpack and Turbopack, using the messages asserted below.
+ * with both webpack and Turbopack, using the messages asserted below. Pages
+ * Router pages are client layer too: the Pages builds copy the checked-in
+ * Pages apps and import a request API from a page's module graph.
  */
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { createBuilder, createLogger, createServer, type Plugin } from "vite";
-import { afterEach, describe, expect, it } from "vite-plus/test";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
 import {
   createInvalidClientImportMessage,
@@ -24,6 +26,11 @@ import {
 
 const CF_EXAMPLE_DIR = path.resolve(import.meta.dirname, "../examples/app-router-cloudflare");
 const APP_FIXTURE_DIR = path.resolve(import.meta.dirname, "fixtures/app-basic");
+const PAGES_CF_EXAMPLE_DIR = path.resolve(
+  import.meta.dirname,
+  "../examples/pages-router-cloudflare",
+);
+const PAGES_FIXTURE_DIR = path.resolve(import.meta.dirname, "fixtures/pages-basic");
 const WORKSPACE_NODE_MODULES = path.resolve(import.meta.dirname, "../node_modules");
 
 const CLIENT_COMPONENT_MESSAGE =
@@ -490,6 +497,220 @@ export async function getCachedProbe() {
   }, 120_000);
 });
 
+// A module that captures the request at module scope.
+const SESSION_LIB = `import { cookies } from "next/headers";
+
+export const readSession = cookies;
+`;
+
+function prependImport(root: string, file: string, specifier: string) {
+  const absPath = path.join(root, file);
+  fs.writeFileSync(
+    absPath,
+    `import ${JSON.stringify(specifier)};\n${fs.readFileSync(absPath, "utf8")}`,
+  );
+}
+
+function writeDataExportProbePage(root: string, file: string, libSpecifier: string) {
+  writeFile(
+    root,
+    file,
+    `import { readSession } from ${JSON.stringify(libSpecifier)};
+
+export async function getServerSideProps() {
+  return { props: { session: typeof readSession } };
+}
+
+export default function ClientGraphProbe({ session }: { session: string }) {
+  return <p>{session}</p>;
+}
+`,
+  );
+}
+
+// Next.js 16.2.7 (webpack and Turbopack) checks every module reachable from a
+// Pages Router page, in its SSR compile too, with or without app/.
+const PAGES_PROBES: Array<[form: string, setup: (root: string) => void]> = [
+  [
+    "a page component imports",
+    (root) => {
+      writeFile(root, "lib/client-graph-session.ts", SESSION_LIB);
+      writeFile(
+        root,
+        "pages/client-graph-probe.tsx",
+        `import { readSession } from "../lib/client-graph-session";
+
+export default function ClientGraphProbe() {
+  return <p>{typeof readSession}</p>;
+}
+`,
+      );
+    },
+  ],
+  [
+    "only getServerSideProps uses",
+    (root) => {
+      writeFile(root, "lib/client-graph-session.ts", SESSION_LIB);
+      writeDataExportProbePage(root, "pages/client-graph-probe.tsx", "../lib/client-graph-session");
+    },
+  ],
+  [
+    "only the SSR graph resolves for a page component",
+    (root) => {
+      const packageJsonPath = path.join(root, "package.json");
+      const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, "utf8"));
+      packageJson.imports = {
+        "#client-graph-session": {
+          browser: "./lib/client-graph-session-browser.ts",
+          default: "./lib/client-graph-session.ts",
+        },
+      };
+      fs.writeFileSync(packageJsonPath, JSON.stringify(packageJson, null, 2));
+      writeFile(root, "lib/client-graph-session.ts", SESSION_LIB);
+      writeFile(
+        root,
+        "lib/client-graph-session-browser.ts",
+        `export const readSession = () => undefined;
+`,
+      );
+      writeFile(
+        root,
+        "pages/client-graph-probe.tsx",
+        `import { readSession } from "#client-graph-session";
+
+export default function ClientGraphProbe() {
+  return <p>{typeof readSession}</p>;
+}
+`,
+      );
+    },
+  ],
+  [
+    "pages/_app imports",
+    (root) => {
+      writeFile(root, "lib/client-graph-session.ts", SESSION_LIB);
+      prependImport(root, "pages/_app.tsx", "../lib/client-graph-session");
+    },
+  ],
+  [
+    "pages/_document imports",
+    (root) => {
+      writeFile(root, "lib/client-graph-session.ts", SESSION_LIB);
+      prependImport(root, "pages/_document.tsx", "../lib/client-graph-session");
+    },
+  ],
+];
+
+const PAGES_ROUTER_MESSAGE = `depends on "next/headers". ${OUTSIDE_APP_MESSAGE}`;
+
+describe("Pages Router builds of the Node fixture", () => {
+  it.each(PAGES_PROBES)(
+    "reject next/headers in a module that %s",
+    async (_form, setup) => {
+      const root = copyFixture(PAGES_FIXTURE_DIR);
+      setup(root);
+
+      await expect(buildFixture(root)).rejects.toThrow(PAGES_ROUTER_MESSAGE);
+    },
+    120_000,
+  );
+
+  // Next.js compiles these in the react-server layer, or without the check.
+  const SERVER_LAYER_FILES = [
+    "pages/api/client-graph-probe.ts",
+    "middleware.ts",
+    "instrumentation.ts",
+  ];
+
+  it.each(SERVER_LAYER_FILES)(
+    "build next/headers in a module that only %s imports",
+    async (file) => {
+      const root = copyFixture(PAGES_FIXTURE_DIR);
+      writeFile(root, "lib/client-graph-session.ts", SESSION_LIB);
+      if (fs.existsSync(path.join(root, file))) {
+        prependImport(root, file, "./lib/client-graph-session");
+      } else {
+        writeFile(
+          root,
+          file,
+          `import { readSession } from "../../lib/client-graph-session";
+
+export default function handler(_req: unknown, res: { json(body: unknown): void }) {
+  res.json({ session: typeof readSession });
+}
+`,
+        );
+      }
+
+      await expect(buildFixture(root)).resolves.toBeUndefined();
+    },
+    120_000,
+  );
+});
+
+describe("Pages Router builds alongside the App Router", () => {
+  it("reject next/headers in a module only getServerSideProps uses", async () => {
+    const root = copyFixture(APP_FIXTURE_DIR);
+    writeFile(root, "lib/client-graph-session.ts", SESSION_LIB);
+    writeDataExportProbePage(root, "pages/client-graph-probe.tsx", "../lib/client-graph-session");
+
+    await expect(buildFixture(root)).rejects.toThrow(PAGES_ROUTER_MESSAGE);
+  }, 120_000);
+});
+
+describe("Pages Router builds of the Cloudflare Workers example", () => {
+  it("reject next/headers in a module only getServerSideProps uses", async () => {
+    // The Worker environment rendering the pages is not named "ssr".
+    const root = copyFixture(PAGES_CF_EXAMPLE_DIR);
+    writeFile(root, "lib/client-graph-session.ts", SESSION_LIB);
+    writeDataExportProbePage(root, "pages/client-graph-probe.tsx", "../lib/client-graph-session");
+    const { cloudflare } = (await import(
+      pathToFileURL(
+        path.join(PAGES_CF_EXAMPLE_DIR, "node_modules/@cloudflare/vite-plugin/dist/index.mjs"),
+      ).href
+    )) as { cloudflare: (options?: unknown) => Plugin };
+
+    // As in the example's vite.config.ts.
+    await expect(buildFixture(root, [cloudflare()])).rejects.toThrow(PAGES_ROUTER_MESSAGE);
+  }, 120_000);
+});
+
+describe("Pages Router dev server", () => {
+  it("rejects a page whose getServerSideProps uses next/headers", async () => {
+    const root = copyFixture(PAGES_FIXTURE_DIR);
+    writeFile(root, "lib/client-graph-session.ts", SESSION_LIB);
+    writeDataExportProbePage(root, "pages/client-graph-probe.tsx", "../lib/client-graph-session");
+
+    const server = await createServer({
+      root,
+      configFile: false,
+      plugins: [vinext({ appDir: root })],
+      server: { host: "127.0.0.1", port: 0 },
+      customLogger: createLogger("silent"),
+    });
+    try {
+      await server.listen();
+      const address = server.httpServer?.address();
+      if (!address || typeof address !== "object") throw new Error("dev server did not listen");
+
+      const errors: unknown[] = [];
+      const consoleError = vi.spyOn(console, "error").mockImplementation((...args) => {
+        errors.push(...args);
+      });
+      try {
+        const page = await fetch(`http://127.0.0.1:${address.port}/client-graph-probe`);
+        expect(page.status).toBe(500);
+      } finally {
+        consoleError.mockRestore();
+      }
+      // The Pages error page hides the message; the server logs it.
+      expect(errors.map(String).join("\n")).toContain("you are using it in the Pages Router");
+    } finally {
+      await server.close();
+    }
+  }, 120_000);
+});
+
 describe("App Router dev server", () => {
   it("rejects a Client Component that imports next/headers", async () => {
     const [, clientSource, extraFiles] = PROBES[0];
@@ -589,6 +810,10 @@ describe("findInvalidClientImports", () => {
     );
     expect(createInvalidClientImportMessage("next/headers", "/repo/lib/c.tsx", "/repo/app")).toBe(
       `You're importing a module that depends on "next/headers". ${OUTSIDE_APP_MESSAGE}\nLearn more: https://nextjs.org/docs/app/building-your-application/rendering/server-components`,
+    );
+    // Without app/, every module gets the Pages Router message.
+    expect(createInvalidClientImportMessage("next/headers", "/repo/app/c.tsx", null)).toContain(
+      OUTSIDE_APP_MESSAGE,
     );
   });
 });

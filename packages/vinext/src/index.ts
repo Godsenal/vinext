@@ -1808,6 +1808,18 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     const relativePath = fileMatcher.stripExtension(canonicalId.slice(canonicalPagesDir.length));
     return relativePath === "/api" || relativePath.startsWith("/api/");
   };
+  /** A Pages Router page module, including `_app`, `_document` and `_error`. */
+  const isPagesPageModule = (id: string): boolean => {
+    if (!hasPagesDir) return false;
+    const modulePath = stripViteModuleQuery(id);
+    if (!isWithinPagesDirectory(modulePath)) return false;
+    const canonicalId = canonicalizePageTransformPath(modulePath);
+    return (
+      isWithinPagesDirectory(canonicalId) &&
+      fileMatcher.isPageFile(canonicalId) &&
+      !isApiPage(canonicalId)
+    );
+  };
   const dynamicShimPaths: ReadonlySet<string> = new Set(
     [
       resolveShimModulePath(shimsDir, "headers"),
@@ -7414,11 +7426,12 @@ export const loadServerActionClient = ${
         },
       },
     },
-    // Match Next.js' compile error for request and cache APIs imported under a
-    // "use client" boundary. Runs after the Pages data-export transform for
-    // the same reason as the server-only check above.
+    // Match Next.js' compile error for request and cache APIs imported by
+    // client-layer modules: those under a "use client" boundary and Pages
+    // Router pages.
     createClientGraphServerApisPlugin({
       getAppDir: () => (hasAppDir ? canonicalize(appDir) : null),
+      isPagesPage: isPagesPageModule,
     }),
     // Strip console.* calls from the client bundle when compiler.removeConsole
     // is enabled in next.config. Inspired by Next.js's SWC remove_console transform.

@@ -1,4 +1,5 @@
 import { parseAst, type Plugin } from "vite";
+import { isServerEnvironment } from "./environment.js";
 
 // Ported from Next.js `assert_client_graph`:
 // crates/next-custom-transforms/src/transforms/react_server_components.rs
@@ -115,9 +116,9 @@ export function findInvalidClientImports(code: string): InvalidClientImport[] {
 export function createInvalidClientImportMessage(
   name: string,
   moduleId: string,
-  appDir: string,
+  appDir: string | null,
 ): string {
-  if (moduleId.startsWith(appDir)) {
+  if (appDir && moduleId.startsWith(appDir)) {
     return `You're importing a module that depends on "${name}" into a React Client Component module. This API is only available in Server Components but one of its parents is marked with "use client", so this module is also a Client Component.\nLearn more: https://nextjs.org/docs/app/building-your-application/rendering`;
   }
   return `You're importing a module that depends on "${name}". This API is only available in Server Components in the App Router, but you are using it in the Pages Router.\nLearn more: https://nextjs.org/docs/app/building-your-application/rendering/server-components`;
@@ -127,16 +128,21 @@ type ClientGraphServerApisPluginOptions = {
   /** Canonical, slash-separated App Router directory, or null without one. */
   getAppDir: () => string | null;
   /**
+   * Whether a module id is a Pages Router page, including `_app`,
+   * `_document` and `_error` but not `pages/api` routes.
+   */
+  isPagesPage?: (id: string) => boolean;
+  /**
    * For a browser Web Worker's plugin container (`worker.plugins`). Vite
    * bundles every worker separately, and a worker is browser code throughout.
    */
   worker?: boolean;
 };
 
-/** Whether `id` is, or is imported (at any depth) by, a `"use client"` module. */
-function isUnderClientBoundary(
+/** Whether `id` is, or is imported (at any depth) by, a client-layer root. */
+function isReachableFromClientRoot(
   id: string,
-  clientBoundaries: ReadonlySet<string>,
+  isClientRoot: (id: string) => boolean,
   getImporters: (id: string) => Iterable<string>,
 ): boolean {
   const seen = new Set<string>();
@@ -144,37 +150,72 @@ function isUnderClientBoundary(
   for (let next = pending.pop(); next !== undefined; next = pending.pop()) {
     if (seen.has(next)) continue;
     seen.add(next);
-    if (clientBoundaries.has(next)) return true;
+    if (isClientRoot(next)) return true;
     pending.push(...getImporters(next));
   }
   return false;
 }
 
+type ServerGraphState = {
+  /** Modules opening a "use client" boundary. */
+  clientBoundaries: Set<string>;
+  /** Modules importing a server API, resolved against the graph at buildEnd. */
+  invalidImports: Map<string, InvalidClientImport>;
+};
+
+type GraphKind = "browser" | "server";
+
+/**
+ * The browser graph is client layer throughout. The RSC environment is the
+ * react-server layer, which Next.js checks differently. Every other server
+ * environment (SSR, or the Worker or Node environment rendering Pages
+ * Router pages) mixes client-layer modules with middleware, instrumentation
+ * and API routes.
+ */
+function getGraphKind(
+  environment: { name: string; config: { consumer?: string } } | undefined,
+  hasAppDir: boolean,
+): GraphKind | null {
+  if (!environment) return null;
+  if (environment.name === "client") return "browser";
+  if (!isServerEnvironment(environment)) return null;
+  if (hasAppDir && environment.name === "rsc") return null;
+  return "server";
+}
+
 /**
  * Fail the build when a module in the client layer imports a request API
  * (`next/headers`, `next/root-params`) or a server-only cache/`after` API,
- * matching Next.js' compile error for modules under a `"use client"`
- * boundary. Those modules are also evaluated during SSR, where module-scope
- * `cookies()` or `headers()` would capture the first request that loads them.
+ * matching Next.js' compile error. Client-layer modules are evaluated during
+ * SSR, where module-scope `cookies()` or `headers()` would capture the first
+ * request that loads them.
  *
- * Like Next.js, the check needs an App Router and skips `node_modules`.
+ * Like Next.js, the check skips `node_modules`.
  *
  * - The browser graph (and every Web Worker bundle) is client layer
  *   throughout: every module under a `"use client"` boundary plus the Pages
  *   Router's page components, without middleware, instrumentation or Pages
  *   data exports, which are stripped first.
- * - The SSR graph also holds Pages Router, middleware and instrumentation
- *   modules, so there a module is checked only when a `"use client"` module
- *   imports it, directly or not. It can differ from the browser graph:
- *   resolution conditions such as `browser` pick different files.
+ * - A server graph (SSR, or the environment rendering Pages Router pages)
+ *   also holds middleware, instrumentation and API routes, so there a module
+ *   is checked only when a `"use client"` module or a Pages Router page
+ *   (including `_app`, `_document` and `_error`) imports it, directly or not.
+ *   That includes modules only Pages data exports use, and modules that
+ *   resolution conditions such as `browser` keep out of the browser graph.
  */
 export function createClientGraphServerApisPlugin(
   options: ClientGraphServerApisPluginOptions,
 ): Plugin {
-  // SSR build state: modules opening a "use client" boundary, and modules
-  // importing a server API, resolved against the module graph at buildEnd.
-  const ssrClientBoundaries = new Set<string>();
-  const ssrInvalidImports = new Map<string, InvalidClientImport>();
+  const serverGraphs = new Map<string, ServerGraphState>();
+  const getServerGraph = (environmentName: string): ServerGraphState => {
+    let state = serverGraphs.get(environmentName);
+    if (!state) {
+      state = { clientBoundaries: new Set(), invalidImports: new Map() };
+      serverGraphs.set(environmentName, state);
+    }
+    return state;
+  };
+  const isPagesPage = options.isPagesPage ?? (() => false);
 
   return {
     name: "vinext:validate-client-graph-server-apis",
@@ -183,39 +224,39 @@ export function createClientGraphServerApisPlugin(
     // rewrites specifiers.
     enforce: "post",
     buildStart() {
-      if (this.environment?.name !== "ssr") return;
-      ssrClientBoundaries.clear();
-      ssrInvalidImports.clear();
+      const environment = this.environment;
+      if (getGraphKind(environment, options.getAppDir() !== null) !== "server") return;
+      serverGraphs.delete(environment.name);
     },
     transform: {
+      // Any module id: plugins may serve JavaScript under virtual or
+      // extensionless ids, and code that does not parse is skipped. vinext's
+      // own virtual modules only import request APIs in the RSC entry.
       filter: {
-        // Any module id: plugins may serve JavaScript under virtual or
-        // extensionless ids, and code that does not parse is skipped. vinext's
-        // own virtual modules only import request APIs in the RSC entry.
         id: { exclude: /\/node_modules\// },
         code: CANDIDATE_MODULE_RE,
       },
       handler(code, id) {
         const environment = this.environment;
-        const environmentName = options.worker ? "client" : environment?.name;
-        if (environmentName !== "client" && environmentName !== "ssr") return null;
         const appDir = options.getAppDir();
-        if (!appDir) return null;
+        const graphKind = options.worker ? "browser" : getGraphKind(environment, appDir !== null);
+        if (!graphKind) return null;
 
         const { isClientBoundary, invalidImports } = analyzeClientGraphModule(code);
         const [invalid] = invalidImports;
-        if (environmentName === "client") {
+        if (graphKind === "browser") {
           if (invalid) {
             this.error(createInvalidClientImportMessage(invalid.name, id, appDir), invalid.start);
           }
           return null;
         }
 
-        if (isClientBoundary) ssrClientBoundaries.add(id);
-        else ssrClientBoundaries.delete(id);
+        const graph = getServerGraph(environment.name);
+        if (isClientBoundary) graph.clientBoundaries.add(id);
+        else graph.clientBoundaries.delete(id);
         if (!invalid) return null;
         if (environment.mode === "build") {
-          ssrInvalidImports.set(id, invalid);
+          graph.invalidImports.set(id, invalid);
           return null;
         }
         if (environment.mode !== "dev") return null;
@@ -227,22 +268,27 @@ export function createClientGraphServerApisPlugin(
           }
           return importers;
         };
-        if (isUnderClientBoundary(id, ssrClientBoundaries, getImporters)) {
+        const isClientRoot = (moduleId: string) =>
+          graph.clientBoundaries.has(moduleId) || isPagesPage(moduleId);
+        if (isReachableFromClientRoot(id, isClientRoot, getImporters)) {
           this.error(createInvalidClientImportMessage(invalid.name, id, appDir), invalid.start);
         }
         return null;
       },
     },
     buildEnd() {
-      if (this.environment?.name !== "ssr" || ssrInvalidImports.size === 0) return;
+      const environment = this.environment;
+      const graph = environment ? serverGraphs.get(environment.name) : undefined;
+      if (!graph || graph.invalidImports.size === 0) return;
       const appDir = options.getAppDir();
-      if (!appDir) return;
       const getImporters = (moduleId: string) => {
         const info = this.getModuleInfo(moduleId);
         return info ? [...info.importers, ...info.dynamicImporters] : [];
       };
-      for (const [id, invalid] of ssrInvalidImports) {
-        if (isUnderClientBoundary(id, ssrClientBoundaries, getImporters)) {
+      const isClientRoot = (moduleId: string) =>
+        graph.clientBoundaries.has(moduleId) || isPagesPage(moduleId);
+      for (const [id, invalid] of graph.invalidImports) {
+        if (isReachableFromClientRoot(id, isClientRoot, getImporters)) {
           this.error({ id, message: createInvalidClientImportMessage(invalid.name, id, appDir) });
         }
       }
