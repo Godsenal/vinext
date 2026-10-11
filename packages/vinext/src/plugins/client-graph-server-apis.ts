@@ -1,5 +1,5 @@
 import { parseAst, type Plugin } from "vite";
-import { VIRTUAL_MODULE_ID_RE } from "../utils/virtual-module.js";
+import { isUseCacheTransformTarget } from "./use-cache-callable.js";
 
 // Ported from Next.js `assert_client_graph`:
 // crates/next-custom-transforms/src/transforms/react_server_components.rs
@@ -27,8 +27,6 @@ const INVALID_CLIENT_LIB_APIS: ReadonlyMap<string, ReadonlySet<string>> = new Ma
 // all come from `import` or `export` declarations, so matching both also sees
 // a boundary that only re-exports, and an edit that removes its directive.
 const CANDIDATE_MODULE_RE = /\b(?:import|export)\b/;
-// Vite transforms a module loaded with a query (`./x.ts?v=1`) as its file type.
-const SOURCE_MODULE_ID_RE = /\.(?:[cm]?tsx?|[cm]?jsx?|mdx)(?:[?#].*)?$/;
 
 type InvalidClientImport = {
   /** The module specifier, or the imported API name for library APIs. */
@@ -71,8 +69,9 @@ type ClientGraphModuleInfo = {
  * Server Function and cache modules are replaced with server reference
  * proxies in the client graph (by @vitejs/plugin-rsc and
  * `vinext:use-cache-callable`, after this check runs), so their imports never
- * reach it; Next.js skips them too. Web Worker bundles only replace
- * `"use server"` modules, so they keep checking cache modules.
+ * reach it; Next.js skips them too. Cache modules are only skipped where the
+ * cache transform replaces them: not in Web Worker bundles, and not for ids it
+ * excludes, such as plugin virtual modules.
  */
 function analyzeClientGraphModule(
   code: string,
@@ -200,12 +199,10 @@ export function createClientGraphServerApisPlugin(
     },
     transform: {
       filter: {
-        id: {
-          // Plugin-provided virtual modules are app code too; vinext's own
-          // only import request APIs in the RSC entry, which is not checked.
-          include: [SOURCE_MODULE_ID_RE, VIRTUAL_MODULE_ID_RE],
-          exclude: /\/node_modules\//,
-        },
+        // Any module id: plugins may serve JavaScript under virtual or
+        // extensionless ids, and code that does not parse is skipped. vinext's
+        // own virtual modules only import request APIs in the RSC entry.
+        id: { exclude: /\/node_modules\// },
         code: CANDIDATE_MODULE_RE,
       },
       handler(code, id) {
@@ -216,7 +213,7 @@ export function createClientGraphServerApisPlugin(
         if (!appDir) return null;
 
         const { isClientBoundary, invalidImports } = analyzeClientGraphModule(code, {
-          skipCacheModules: !options.worker,
+          skipCacheModules: !options.worker && isUseCacheTransformTarget(id),
         });
         const [invalid] = invalidImports;
         if (environmentName === "client") {

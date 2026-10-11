@@ -337,11 +337,46 @@ export async function getProbeValue() {
       `depends on "cacheLife" ${CLIENT_COMPONENT_MESSAGE}`,
     );
   }, 120_000);
-  it("reject next/headers in a plugin's virtual module that a Client Component imports", async () => {
-    const root = copyFixture(APP_FIXTURE_DIR);
-    writeProbePage(
-      root,
-      `"use client";
+  const VIRTUAL_SESSION_MODULES: Array<[form: string, resolvedId: string, source: string]> = [
+    [
+      "\\0 virtual module",
+      "\0virtual:client-graph-session",
+      `import { cookies } from "next/headers";
+
+export const readSession = cookies;
+`,
+    ],
+    [
+      "unprefixed, extensionless module",
+      "virtual:client-graph-session",
+      `import { cookies } from "next/headers";
+
+export const readSession = cookies;
+`,
+    ],
+    [
+      // The cache transform does not replace virtual modules, so the module's
+      // own imports would reach the client graph.
+      '\\0 virtual "use cache" module',
+      "\0virtual:client-graph-session",
+      `"use cache";
+
+import { cookies } from "next/headers";
+
+export async function readSession() {
+  return (await cookies()).get("session")?.value;
+}
+`,
+    ],
+  ];
+
+  it.each(VIRTUAL_SESSION_MODULES)(
+    "reject next/headers in a plugin's %s that a Client Component imports",
+    async (_form, resolvedId, source) => {
+      const root = copyFixture(APP_FIXTURE_DIR);
+      writeProbePage(
+        root,
+        `"use client";
 
 import { readSession } from "virtual:client-graph-session";
 
@@ -349,25 +384,23 @@ export function ClientGraphProbe() {
   return <p>{typeof readSession}</p>;
 }
 `,
-    );
-    const virtualSessionPlugin: Plugin = {
-      name: "test:virtual-client-graph-session",
-      resolveId(id) {
-        return id === "virtual:client-graph-session" ? "\0virtual:client-graph-session" : null;
-      },
-      load(id) {
-        if (id !== "\0virtual:client-graph-session") return null;
-        return `import { cookies } from "next/headers";
+      );
+      const virtualSessionPlugin: Plugin = {
+        name: "test:virtual-client-graph-session",
+        resolveId(id) {
+          return id === "virtual:client-graph-session" ? resolvedId : null;
+        },
+        load(id) {
+          return id === resolvedId ? source : null;
+        },
+      };
 
-export const readSession = cookies;
-`;
-      },
-    };
-
-    await expect(buildFixture(root, [virtualSessionPlugin])).rejects.toThrow(
-      `depends on "next/headers". ${OUTSIDE_APP_MESSAGE}`,
-    );
-  }, 120_000);
+      await expect(buildFixture(root, [virtualSessionPlugin])).rejects.toThrow(
+        `depends on "next/headers". ${OUTSIDE_APP_MESSAGE}`,
+      );
+    },
+    120_000,
+  );
 });
 
 describe("App Router client builds that Next.js accepts", () => {
