@@ -337,6 +337,37 @@ export async function getProbeValue() {
       `depends on "cacheLife" ${CLIENT_COMPONENT_MESSAGE}`,
     );
   }, 120_000);
+  it("reject next/headers in a plugin's virtual module that a Client Component imports", async () => {
+    const root = copyFixture(APP_FIXTURE_DIR);
+    writeProbePage(
+      root,
+      `"use client";
+
+import { readSession } from "virtual:client-graph-session";
+
+export function ClientGraphProbe() {
+  return <p>{typeof readSession}</p>;
+}
+`,
+    );
+    const virtualSessionPlugin: Plugin = {
+      name: "test:virtual-client-graph-session",
+      resolveId(id) {
+        return id === "virtual:client-graph-session" ? "\0virtual:client-graph-session" : null;
+      },
+      load(id) {
+        if (id !== "\0virtual:client-graph-session") return null;
+        return `import { cookies } from "next/headers";
+
+export const readSession = cookies;
+`;
+      },
+    };
+
+    await expect(buildFixture(root, [virtualSessionPlugin])).rejects.toThrow(
+      `depends on "next/headers". ${OUTSIDE_APP_MESSAGE}`,
+    );
+  }, 120_000);
 });
 
 describe("App Router client builds that Next.js accepts", () => {

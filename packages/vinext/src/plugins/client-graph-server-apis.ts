@@ -201,8 +201,10 @@ export function createClientGraphServerApisPlugin(
     transform: {
       filter: {
         id: {
-          include: SOURCE_MODULE_ID_RE,
-          exclude: [VIRTUAL_MODULE_ID_RE, /\/node_modules\//],
+          // Plugin-provided virtual modules are app code too; vinext's own
+          // only import request APIs in the RSC entry, which is not checked.
+          include: [SOURCE_MODULE_ID_RE, VIRTUAL_MODULE_ID_RE],
+          exclude: /\/node_modules\//,
         },
         code: CANDIDATE_MODULE_RE,
       },
