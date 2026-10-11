@@ -1,3 +1,4 @@
+import { toSlash } from "pathslash";
 import { parseAst, type Plugin } from "vite";
 import { stripViteModuleQuery } from "../utils/path.js";
 import { isServerEnvironment } from "./environment.js";
@@ -49,10 +50,10 @@ function readImportedName(specifier: unknown): string | null {
   return typeof name === "string" ? name : null;
 }
 
-function hasUseClientDirective(body: ModuleItem[]): boolean {
+function hasDirective(body: ModuleItem[], matches: (directive: string) => boolean): boolean {
   for (const item of body) {
     if (item.type !== "ExpressionStatement" || typeof item.directive !== "string") return false;
-    if (item.directive === "use client") return true;
+    if (matches(item.directive)) return true;
   }
   return false;
 }
@@ -60,6 +61,8 @@ function hasUseClientDirective(body: ModuleItem[]): boolean {
 type ClientGraphModuleInfo = {
   /** Whether the module starts a `"use client"` boundary. */
   isClientBoundary: boolean;
+  /** Whether the module has a module-level `"use server"` or `"use cache"` directive. */
+  isServerModule: boolean;
   invalidImports: InvalidClientImport[];
 };
 
@@ -71,7 +74,11 @@ type ClientGraphModuleInfo = {
  * virtual module, or added by a later plugin) still reaches the browser.
  */
 function analyzeClientGraphModule(code: string): ClientGraphModuleInfo {
-  const none: ClientGraphModuleInfo = { isClientBoundary: false, invalidImports: [] };
+  const none: ClientGraphModuleInfo = {
+    isClientBoundary: false,
+    isServerModule: false,
+    invalidImports: [],
+  };
   if (!CANDIDATE_MODULE_RE.test(code)) return none;
 
   let body: ModuleItem[];
@@ -99,7 +106,14 @@ function analyzeClientGraphModule(code: string): ClientGraphModuleInfo {
       }
     }
   }
-  return { isClientBoundary: hasUseClientDirective(body), invalidImports };
+  return {
+    isClientBoundary: hasDirective(body, (directive) => directive === "use client"),
+    isServerModule: hasDirective(
+      body,
+      (directive) => directive === "use server" || directive.startsWith("use cache"),
+    ),
+    invalidImports,
+  };
 }
 
 /**
@@ -134,6 +148,8 @@ type ClientGraphServerApisPluginOptions = {
    * and its root `_app`, `_document` and `_error`, as the router scanned them.
    */
   getPagesPages?: () => Promise<ReadonlySet<string>>;
+  /** The generated module that imports the Pages Router's pages. */
+  pagesEntryId?: string;
   /**
    * For a browser Web Worker's plugin container (`worker.plugins`). Vite
    * bundles every worker separately, and a worker is browser code throughout.
@@ -221,24 +237,24 @@ export function createClientGraphServerApisPlugin(
   // module only does in App Router SSR: Pages-only apps have no Client
   // Components, so there an inert directive in a module that only an API
   // route or middleware imports (graphs Next.js leaves unchecked) is ignored.
-  // Pages are matched by the ids their files resolve to in this environment,
-  // which follow `resolve.alias` and `resolve.preserveSymlinks`.
+  // Pages are matched by the exact ids the generated Pages entry imports them
+  // under in this environment, which follow `resolve.alias` and
+  // `resolve.preserveSymlinks`.
   const getClientRootPredicate = async (
     graph: ServerGraphState,
     hasAppDir: boolean,
-    resolve: (source: string) => Promise<{ id: string } | null>,
+    resolve: (source: string, importer?: string) => Promise<{ id: string } | null>,
   ): Promise<(moduleId: string) => boolean> => {
     const pagesPages = (await options.getPagesPages?.()) ?? new Set<string>();
     const pageIds = new Set<string>();
     await Promise.all(
       [...pagesPages].map(async (pagePath) => {
-        const resolved = await resolve(pagePath);
-        pageIds.add(resolved ? stripViteModuleQuery(resolved.id) : pagePath);
+        const resolved = await resolve(pagePath, options.pagesEntryId);
+        pageIds.add(resolved?.id ?? pagePath);
       }),
     );
     return (moduleId) =>
-      (hasAppDir && graph.clientBoundaries.has(moduleId)) ||
-      pageIds.has(stripViteModuleQuery(moduleId));
+      (hasAppDir && graph.clientBoundaries.has(moduleId)) || pageIds.has(moduleId);
   };
 
   return {
@@ -257,9 +273,10 @@ export function createClientGraphServerApisPlugin(
     // changes; the next transform adds them back if the directive is still
     // there.
     watchChange(id) {
+      const file = toSlash(id);
       for (const graph of serverGraphs.values()) {
         for (const boundary of graph.clientBoundaries) {
-          if (stripViteModuleQuery(boundary) === id) graph.clientBoundaries.delete(boundary);
+          if (stripViteModuleQuery(boundary) === file) graph.clientBoundaries.delete(boundary);
         }
       }
     },
@@ -285,7 +302,11 @@ export function createClientGraphServerApisPlugin(
           return null;
         }
 
-        const { isClientBoundary, invalidImports } = analyzeClientGraphModule(code);
+        const { isClientBoundary, isServerModule, invalidImports } = analyzeClientGraphModule(code);
+        // Like Next.js, skip Server Function and cache modules. With an App
+        // Router, any that reach here were not replaced by server reference
+        // proxies, so they are checked; Pages-only apps never replace them.
+        if (appDir === null && isServerModule) return null;
         const [invalid] = invalidImports;
         if (graphKind === "browser") {
           if (invalid) {
@@ -311,8 +332,10 @@ export function createClientGraphServerApisPlugin(
           }
           return importers;
         };
-        const isClientRoot = await getClientRootPredicate(graph, appDir !== null, (source) =>
-          this.resolve(source),
+        const isClientRoot = await getClientRootPredicate(
+          graph,
+          appDir !== null,
+          (source, importer) => this.resolve(source, importer),
         );
         if (isReachableFromClientRoot(id, isClientRoot, getImporters)) {
           this.error(createInvalidClientImportMessage(invalid.name, id, appDir), invalid.start);
@@ -329,8 +352,10 @@ export function createClientGraphServerApisPlugin(
         const info = this.getModuleInfo(moduleId);
         return info ? [...info.importers, ...info.dynamicImporters] : [];
       };
-      const isClientRoot = await getClientRootPredicate(graph, appDir !== null, (source) =>
-        this.resolve(source),
+      const isClientRoot = await getClientRootPredicate(
+        graph,
+        appDir !== null,
+        (source, importer) => this.resolve(source, importer),
       );
       for (const [id, invalid] of graph.invalidImports) {
         if (isReachableFromClientRoot(id, isClientRoot, getImporters)) {

@@ -690,6 +690,42 @@ describe("Pages Router builds of the Node fixture", () => {
     await expect(buildFixture(root, [aliasPlugin])).rejects.toThrow(PAGES_ROUTER_MESSAGE);
   }, 120_000);
 
+  it("reject next/headers that only the SSR graph resolves for a page redirected from the Pages entry", async () => {
+    // A resolveId hook that only redirects the generated entry's import.
+    const root = copyFixture(PAGES_FIXTURE_DIR);
+    const [, setupConditionalProbe] = PAGES_PROBES[2];
+    setupConditionalProbe(root);
+    fs.mkdirSync(path.join(root, "page-sources"));
+    fs.renameSync(
+      path.join(root, "pages/client-graph-probe.tsx"),
+      path.join(root, "page-sources/client-graph-probe.tsx"),
+    );
+    writeFile(
+      root,
+      "pages/client-graph-probe.tsx",
+      `export default function ClientGraphProbe() {
+  return null;
+}
+`,
+    );
+    const replacement = path.join(root, "page-sources/client-graph-probe.tsx");
+    const redirectPlugin: Plugin = {
+      name: "test:redirect-entry-page",
+      enforce: "pre",
+      resolveId(source, importer) {
+        if (
+          importer === "\0virtual:vinext-server-entry" &&
+          source.endsWith("/pages/client-graph-probe.tsx")
+        ) {
+          return replacement;
+        }
+        return null;
+      },
+    };
+
+    await expect(buildFixture(root, [redirectPlugin])).rejects.toThrow(PAGES_ROUTER_MESSAGE);
+  }, 120_000);
+
   // Next.js compiles these in the react-server layer, or without the check.
   const SERVER_LAYER_FILES = [
     "pages/api/client-graph-probe.ts",
@@ -756,6 +792,42 @@ export default function handler(_req: unknown, res: { json(body: unknown): void 
 
 export default function handler(_req: unknown, res: { json(body: unknown): void }) {
   res.json({ session: typeof readSession });
+}
+`,
+      );
+
+      await expect(buildFixture(root)).resolves.toBeUndefined();
+    },
+    120_000,
+  );
+});
+
+describe("Pages Router directive modules that Next.js skips", () => {
+  // Pages-only apps have no RSC transform to replace these modules, and
+  // Next.js skips the check for them in every layer.
+  it.each(["use server", "use cache"])(
+    'build next/headers in a "%s" module that a page imports',
+    async (directive) => {
+      const root = copyFixture(PAGES_FIXTURE_DIR);
+      writeFile(
+        root,
+        "lib/client-graph-session.ts",
+        `"${directive}";
+
+import { cookies } from "next/headers";
+
+export async function readSession() {
+  return (await cookies()).get("session")?.value;
+}
+`,
+      );
+      writeFile(
+        root,
+        "pages/client-graph-probe.tsx",
+        `import { readSession } from "../lib/client-graph-session";
+
+export default function ClientGraphProbe() {
+  return <p>{typeof readSession}</p>;
 }
 `,
       );
