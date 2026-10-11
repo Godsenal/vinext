@@ -23,10 +23,10 @@ const INVALID_CLIENT_LIB_APIS: ReadonlyMap<string, ReadonlySet<string>> = new Ma
 
 // An import declaration always spells `import` literally (escaped keywords
 // are syntax errors), while its specifier may use escapes such as
-// "next\u002fheaders" that only the parsed AST decodes. A directive only counts
-// when spelled literally too. A boundary may hold only re-exports, so a
-// `"use client"` module is a candidate even without imports.
-const CANDIDATE_MODULE_RE = /\bimport\b|\buse client\b/;
+// "next\u002fheaders" that only the parsed AST decodes. A module's graph edges
+// all come from `import` or `export` declarations, so matching both also sees
+// a boundary that only re-exports, and an edit that removes its directive.
+const CANDIDATE_MODULE_RE = /\b(?:import|export)\b/;
 // Vite transforms a module loaded with a query (`./x.ts?v=1`) as its file type.
 const SOURCE_MODULE_ID_RE = /\.(?:[cm]?tsx?|[cm]?jsx?|mdx)(?:[?#].*)?$/;
 
