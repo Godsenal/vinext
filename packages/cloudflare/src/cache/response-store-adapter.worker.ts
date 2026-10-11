@@ -387,8 +387,9 @@ function notModifiedResponse(response: Response): Response {
  * Whether Next.js sends this stored response with an ETag, which answers a
  * conditional request. `sendRenderResult` gives a page's HTML one, but not its
  * RSC payload or a Pages data request's JSON: it sends those from a Buffer,
- * which it treats as dynamic. A Pages redirect is sent without an ETag, as is
- * a route handler's response. A Pages API response is never stored.
+ * which it treats as dynamic. It gives a Pages page one whatever its status,
+ * but a Pages redirect is sent without an ETag, as is a route handler's
+ * response. A Pages API response is never stored.
  */
 function answersConditionalRequest(responseStageProps: unknown, status: number): boolean {
   if (responseStageProps === null || typeof responseStageProps !== "object") return false;
@@ -409,7 +410,7 @@ function answersConditionalRequest(responseStageProps: unknown, status: number):
   } else {
     return false;
   }
-  return !isDataRequest && ((status >= 200 && status < 300) || status === 404);
+  return !isDataRequest && (status < 300 || isStoredErrorStatus(status));
 }
 
 /**
@@ -445,7 +446,11 @@ async function forStorage(response: Response, responseStageProps: unknown): Prom
   });
 }
 
-/** Send a stored response as Next.js sends a cached one, answering a page's conditional request. */
+/**
+ * Send a stored response as Next.js sends a cached one, answering a page's
+ * conditional request. With `generateEtags: false`, Next.js keeps an ETag the
+ * page set but never answers a conditional request with it.
+ */
 function storedForRequest(
   stored: Response,
   request: Request,
@@ -463,6 +468,7 @@ function storedForRequest(
   }
   const etag = stored.headers.get("ETag");
   return etag &&
+    generatesETags() &&
     answersConditionalRequest(responseStageProps, stored.status) &&
     isPageNotModified(
       {

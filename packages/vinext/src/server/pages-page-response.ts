@@ -793,7 +793,8 @@ export async function renderPagesPageResponse(
         headers: responseHeaders,
       });
     }
-    return new Response(fullHtml, {
+    const hasBody = finalStatus !== 204 && finalStatus !== 205 && finalStatus !== 304;
+    return new Response(hasBody ? fullHtml : null, {
       status: finalStatus,
       headers: responseHeaders,
     });

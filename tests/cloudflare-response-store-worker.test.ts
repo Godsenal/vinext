@@ -1052,6 +1052,36 @@ describe("Cloudflare Response Store Worker query-free cache identity", () => {
     expect(await hit.text()).toBe("payload");
   });
 
+  // Next.js gives a Pages page its ETag whatever its status.
+  it.each([401, 403])("stores a Pages page with status %i with its ETag", async (status) => {
+    dispatchWithIdentity(true, {
+      isDataRequest: false,
+      kind: "hybrid-pages",
+      resourceKind: "page",
+    });
+    stages.response.mockImplementation(
+      async () =>
+        new Response("denied", { headers: { "Cache-Control": "public, max-age=60" }, status }),
+    );
+    const { entries, store } = createMemoryStore();
+    const handler = createVinextResponseStoreHandler(store);
+
+    await (
+      await handler.fetch(new Request("https://example.com/a"), {} as never, context())
+    ).text();
+    expect([...entries.values()][0]?.headers.get("ETag")).toBe(generateETag("denied"));
+
+    const hit = await handler.fetch(
+      new Request("https://example.com/a", {
+        headers: { "Cache-Control": "max-age=0", "If-None-Match": generateETag("denied") },
+      }),
+      {} as never,
+      context(),
+    );
+    expect(hit.headers.get("X-Vinext-Cache")).toBe("HIT");
+    expect(hit.status).toBe(304);
+  });
+
   // With `generateEtags: false`, Next.js sends a page without an ETag, so it
   // never answers a conditional request with a 304.
   it("gives a page no ETag with generateEtags: false", async () => {
@@ -1088,6 +1118,38 @@ describe("Cloudflare Response Store Worker query-free cache identity", () => {
       expect(hit.status).toBe(200);
       expect(hit.headers.get("X-Vinext-Cache")).toBe("HIT");
       expect(hit.headers.has("ETag")).toBe(false);
+      expect(await hit.text()).toBe("page");
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("keeps a page's own ETag with generateEtags: false but never sends a 304", async () => {
+    vi.stubEnv("__VINEXT_GENERATE_ETAGS", "false");
+    try {
+      dispatchWithIdentity();
+      stages.response.mockImplementation(
+        async () =>
+          new Response("page", {
+            headers: { "Cache-Control": "public, max-age=60", ETag: '"own"' },
+          }),
+      );
+      const { store } = createMemoryStore();
+      const handler = createVinextResponseStoreHandler(store);
+
+      await (
+        await handler.fetch(new Request("https://example.com/page"), {} as never, context())
+      ).text();
+      const hit = await handler.fetch(
+        new Request("https://example.com/page", {
+          headers: { "Cache-Control": "max-age=0", "If-None-Match": '"own"' },
+        }),
+        {} as never,
+        context(),
+      );
+      expect(hit.status).toBe(200);
+      expect(hit.headers.get("X-Vinext-Cache")).toBe("HIT");
+      expect(hit.headers.get("ETag")).toBe('"own"');
       expect(await hit.text()).toBe("page");
     } finally {
       vi.unstubAllEnvs();

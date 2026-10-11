@@ -1278,6 +1278,27 @@ describe("pages page response", () => {
     expect(deferNotModifiedResponse).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["with ETags", "true", undefined],
+    ["with generateEtags: false", "false", "*"],
+  ])("sends a bodiless page status to a crawler %s", async (_name, generateEtags, ifNoneMatch) => {
+    vi.stubEnv("__VINEXT_GENERATE_ETAGS", generateEtags);
+    let response: Response;
+    try {
+      response = await renderPagesPageResponse({
+        ...createCommonOptions().options,
+        statusCode: 204,
+        userAgent: "Googlebot",
+        ifNoneMatch,
+      });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+
+    expect(response.status).toBe(204);
+    expect(response.body).toBeNull();
+  });
+
   it("returns 200 + ETag when If-None-Match does not match on bot response", async () => {
     const common = createCommonOptions();
 
