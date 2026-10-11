@@ -1,4 +1,5 @@
 import { parseAst, type Plugin } from "vite";
+import { stripViteModuleQuery } from "../utils/path.js";
 import { isServerEnvironment } from "./environment.js";
 
 // Ported from Next.js `assert_client_graph`:
@@ -21,12 +22,12 @@ const INVALID_CLIENT_LIB_APIS: ReadonlyMap<string, ReadonlySet<string>> = new Ma
   ],
 ]);
 
-// An import declaration always spells `import` literally (escaped keywords
-// are syntax errors), while its specifier may use escapes such as
-// "next\u002fheaders" that only the parsed AST decodes. A module's graph edges
-// all come from `import` or `export` declarations, so matching both also sees
-// a boundary that only re-exports, and an edit that removes its directive.
-const CANDIDATE_MODULE_RE = /\b(?:import|export)\b/;
+// Every checked specifier starts with "next/", unless it is spelled with
+// escapes ("next\u002fheaders", "next\/headers") that only the parsed AST
+// decodes; any escape needs a backslash.
+const SERVER_API_CANDIDATE_RE = /next\/|\\/;
+const USE_CLIENT_CANDIDATE_RE = /\buse client\b/;
+const CANDIDATE_MODULE_RE = /next\/|\\|\buse client\b/;
 
 type InvalidClientImport = {
   /** The module specifier, or the imported API name for library APIs. */
@@ -128,10 +129,10 @@ type ClientGraphServerApisPluginOptions = {
   /** Canonical, slash-separated App Router directory, or null without one. */
   getAppDir: () => string | null;
   /**
-   * Whether a module id is a Pages Router page, including `_app`,
-   * `_document` and `_error` but not `pages/api` routes.
+   * Canonical paths of the Pages Router's pages (not API routes) and its root
+   * `_app`, `_document` and `_error`.
    */
-  isPagesPage?: (id: string) => boolean;
+  getPagesPages?: () => Promise<ReadonlySet<string>>;
   /**
    * For a browser Web Worker's plugin container (`worker.plugins`). Vite
    * bundles every worker separately, and a worker is browser code throughout.
@@ -215,16 +216,19 @@ export function createClientGraphServerApisPlugin(
     }
     return state;
   };
-  const isPagesPage = options.isPagesPage ?? (() => false);
   // Pages pages open the client layer in every server graph. A "use client"
   // module only does in App Router SSR: Pages-only apps have no Client
   // Components, so there an inert directive in a module that only an API
   // route or middleware imports (graphs Next.js leaves unchecked) is ignored.
-  const isServerGraphClientRoot = (
+  const getClientRootPredicate = async (
     graph: ServerGraphState,
-    moduleId: string,
     hasAppDir: boolean,
-  ): boolean => (hasAppDir && graph.clientBoundaries.has(moduleId)) || isPagesPage(moduleId);
+  ): Promise<(moduleId: string) => boolean> => {
+    const pagesPages = (await options.getPagesPages?.()) ?? new Set<string>();
+    return (moduleId) =>
+      (hasAppDir && graph.clientBoundaries.has(moduleId)) ||
+      pagesPages.has(stripViteModuleQuery(moduleId));
+  };
 
   return {
     name: "vinext:validate-client-graph-server-apis",
@@ -237,6 +241,12 @@ export function createClientGraphServerApisPlugin(
       if (getGraphKind(environment, options.getAppDir() !== null) !== "server") return;
       serverGraphs.delete(environment.name);
     },
+    // A module that loses its "use client" directive may no longer match the
+    // code filter, so drop its boundary when it changes; the next transform
+    // adds it back if the directive is still there.
+    watchChange(id) {
+      for (const graph of serverGraphs.values()) graph.clientBoundaries.delete(id);
+    },
     transform: {
       // Any module id: plugins may serve JavaScript under virtual or
       // extensionless ids, and code that does not parse is skipped. vinext's
@@ -245,11 +255,19 @@ export function createClientGraphServerApisPlugin(
         id: { exclude: /\/node_modules\// },
         code: CANDIDATE_MODULE_RE,
       },
-      handler(code, id) {
+      async handler(code, id) {
         const environment = this.environment;
         const appDir = options.getAppDir();
         const graphKind = options.worker ? "browser" : getGraphKind(environment, appDir !== null);
         if (!graphKind) return null;
+        // Only App Router server graphs track "use client" boundaries.
+        const tracksBoundaries = graphKind === "server" && appDir !== null;
+        if (
+          !SERVER_API_CANDIDATE_RE.test(code) &&
+          !(tracksBoundaries && USE_CLIENT_CANDIDATE_RE.test(code))
+        ) {
+          return null;
+        }
 
         const { isClientBoundary, invalidImports } = analyzeClientGraphModule(code);
         const [invalid] = invalidImports;
@@ -277,15 +295,14 @@ export function createClientGraphServerApisPlugin(
           }
           return importers;
         };
-        const isClientRoot = (moduleId: string) =>
-          isServerGraphClientRoot(graph, moduleId, appDir !== null);
+        const isClientRoot = await getClientRootPredicate(graph, appDir !== null);
         if (isReachableFromClientRoot(id, isClientRoot, getImporters)) {
           this.error(createInvalidClientImportMessage(invalid.name, id, appDir), invalid.start);
         }
         return null;
       },
     },
-    buildEnd() {
+    async buildEnd() {
       const environment = this.environment;
       const graph = environment ? serverGraphs.get(environment.name) : undefined;
       if (!graph || graph.invalidImports.size === 0) return;
@@ -294,8 +311,7 @@ export function createClientGraphServerApisPlugin(
         const info = this.getModuleInfo(moduleId);
         return info ? [...info.importers, ...info.dynamicImporters] : [];
       };
-      const isClientRoot = (moduleId: string) =>
-        isServerGraphClientRoot(graph, moduleId, appDir !== null);
+      const isClientRoot = await getClientRootPredicate(graph, appDir !== null);
       for (const [id, invalid] of graph.invalidImports) {
         if (isReachableFromClientRoot(id, isClientRoot, getImporters)) {
           this.error({ id, message: createInvalidClientImportMessage(invalid.name, id, appDir) });

@@ -615,6 +615,24 @@ describe("Pages Router builds of the Node fixture", () => {
     120_000,
   );
 
+  it("reject next/headers that only the SSR graph resolves for a symlinked page", async () => {
+    // The page's module id is its real path, outside pages/.
+    const root = copyFixture(PAGES_FIXTURE_DIR);
+    const [, setupConditionalProbe] = PAGES_PROBES[2];
+    setupConditionalProbe(root);
+    fs.mkdirSync(path.join(root, "page-sources"));
+    fs.renameSync(
+      path.join(root, "pages/client-graph-probe.tsx"),
+      path.join(root, "page-sources/client-graph-probe.tsx"),
+    );
+    fs.symlinkSync(
+      path.join(root, "page-sources/client-graph-probe.tsx"),
+      path.join(root, "pages/client-graph-probe.tsx"),
+    );
+
+    await expect(buildFixture(root)).rejects.toThrow(PAGES_ROUTER_MESSAGE);
+  }, 120_000);
+
   // Next.js compiles these in the react-server layer, or without the check.
   const SERVER_LAYER_FILES = [
     "pages/api/client-graph-probe.ts",
@@ -668,7 +686,7 @@ export default function handler(_req: unknown, res: { json(body: unknown): void 
     await expect(buildFixture(root)).resolves.toBeUndefined();
   }, 120_000);
 
-  it.each(["pages/admin/_app/index.tsx", "pages/docs/[...slug]/edit.tsx"])(
+  it.each(["pages/admin/_app/index.tsx", "pages/docs/[...slug]/edit.tsx", "pages/.session.tsx"])(
     "build next/headers in %s, which the Pages Router does not serve, imported only by an API route",
     async (file) => {
       const root = copyFixture(PAGES_FIXTURE_DIR);

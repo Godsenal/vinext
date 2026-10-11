@@ -23,7 +23,6 @@ import {
   pagesRouter,
   apiRouter,
   invalidateRouteCache,
-  isPagesEntryFile,
   matchRoute,
 } from "./routing/pages-router.js";
 import {
@@ -1810,16 +1809,23 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     return relativePath === "/api" || relativePath.startsWith("/api/");
   };
   /**
-   * A page the Pages Router serves (not an API route), or the root `_app`,
-   * `_document` or `_error`.
+   * Canonical paths of the pages the Pages Router serves (not API routes) and
+   * its root `_app`, `_document` and `_error`. A symlinked page is listed by
+   * its real path, which is its module id.
    */
-  const isPagesPageModule = (id: string): boolean => {
-    if (!hasPagesDir) return false;
-    const modulePath = stripViteModuleQuery(id);
-    if (!isWithinPagesDirectory(modulePath)) return false;
-    const canonicalId = canonicalizePageTransformPath(modulePath);
-    if (!canonicalId.startsWith(`${canonicalPagesDir}/`) || isApiPage(canonicalId)) return false;
-    return isPagesEntryFile(canonicalId.slice(canonicalPagesDir.length + 1), fileMatcher);
+  const getPagesClientRoots = async (): Promise<ReadonlySet<string>> => {
+    if (!hasPagesDir) return new Set();
+    const routes = await pagesRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher);
+    const roots = new Set<string>();
+    for (const route of routes) {
+      if (route.pattern === "/api" || route.pattern.startsWith("/api/")) continue;
+      roots.add(canonicalize(route.filePath));
+    }
+    for (const name of ["_app", "_document", "_error"]) {
+      const filePath = findFileWithExts(pagesDir, name, fileMatcher);
+      if (filePath) roots.add(canonicalize(filePath));
+    }
+    return roots;
   };
   const dynamicShimPaths: ReadonlySet<string> = new Set(
     [
@@ -7432,7 +7438,7 @@ export const loadServerActionClient = ${
     // Router pages.
     createClientGraphServerApisPlugin({
       getAppDir: () => (hasAppDir ? canonicalize(appDir) : null),
-      isPagesPage: isPagesPageModule,
+      getPagesPages: getPagesClientRoots,
     }),
     // Strip console.* calls from the client bundle when compiler.removeConsole
     // is enabled in next.config. Inspired by Next.js's SWC remove_console transform.
