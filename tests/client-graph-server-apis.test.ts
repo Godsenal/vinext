@@ -634,6 +634,9 @@ describe("Pages Router builds of the Node fixture", () => {
       );
 
       if (preserveSymlinks) {
+        // The og plugin resolves satori from @vercel/og's module id, which
+        // only works on the realpath.
+        fs.rmSync(path.join(root, "pages/api/og.tsx"));
         // Logical package paths only resolve dependencies hoisted beside them.
         const hoisted = path.join(WORKSPACE_NODE_MODULES, ".pnpm/node_modules");
         for (const entry of fs.readdirSync(hoisted)) {
