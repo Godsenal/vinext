@@ -50,10 +50,14 @@ function readImportedName(specifier: unknown): string | null {
   return typeof name === "string" ? name : null;
 }
 
+/** Directives match by decoded value, as Next.js does (`"use\u0020client"` counts). */
 function hasDirective(body: ModuleItem[], matches: (directive: string) => boolean): boolean {
   for (const item of body) {
     if (item.type !== "ExpressionStatement" || typeof item.directive !== "string") return false;
-    if (matches(item.directive)) return true;
+    const { expression } = item;
+    if (expression.type === "Literal" && typeof expression.value === "string") {
+      if (matches(expression.value)) return true;
+    }
   }
   return false;
 }
@@ -151,11 +155,8 @@ type ClientGraphServerApisPluginOptions = {
    * and its root `_app`, `_document` and `_error`, as the router scanned them.
    */
   getPagesPages?: () => Promise<ReadonlySet<string>>;
-  /**
-   * The generated modules importing the Pages Router's pages that an
-   * environment loaded (none in dev, which loads pages directly).
-   */
-  getPagesEntryIds?: (environmentName: string) => readonly string[];
+  /** The generated modules that import the Pages Router's pages. */
+  pagesEntryIds?: readonly string[];
   /**
    * For a browser Web Worker's plugin container (`worker.plugins`). Vite
    * bundles every worker separately, and a worker is browser code throughout.
@@ -249,13 +250,14 @@ export function createClientGraphServerApisPlugin(
   const getClientRootPredicate = async (
     graph: ServerGraphState,
     hasAppDir: boolean,
-    environmentName: string,
+    isLoaded: (moduleId: string) => boolean,
     resolve: (source: string, importer?: string) => Promise<{ id: string } | null>,
   ): Promise<(moduleId: string) => boolean> => {
     const pagesPages = (await options.getPagesPages?.()) ?? new Set<string>();
     const pageIds = new Set<string>();
-    // The dev server loads pages directly, without a generated entry.
-    const entryIds = options.getPagesEntryIds?.(environmentName) ?? [];
+    // Only entries this build loaded import pages; the dev server loads
+    // pages directly, without a generated entry.
+    const entryIds = (options.pagesEntryIds ?? []).filter(isLoaded);
     const importers = entryIds.length > 0 ? entryIds : [undefined];
     await Promise.all(
       [...pagesPages].flatMap((pagePath) =>
@@ -349,7 +351,7 @@ export function createClientGraphServerApisPlugin(
         const isClientRoot = await getClientRootPredicate(
           graph,
           appDir !== null,
-          environment.name,
+          (moduleId) => Boolean(environment.moduleGraph.getModuleById(moduleId)),
           (source, importer) => this.resolve(source, importer),
         );
         if (isReachableFromClientRoot(id, isClientRoot, getImporters)) {
@@ -370,7 +372,7 @@ export function createClientGraphServerApisPlugin(
       const isClientRoot = await getClientRootPredicate(
         graph,
         appDir !== null,
-        environment.name,
+        (moduleId) => Boolean(this.getModuleInfo(moduleId)),
         (source, importer) => this.resolve(source, importer),
       );
       for (const [id, invalid] of graph.invalidImports) {

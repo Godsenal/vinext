@@ -880,15 +880,20 @@ export default function ClientGraphProbe() {
     },
     120_000,
   );
-  it.each(["use server", "use cache"])(
-    'reject next/headers in a "use client" module that also says "%s"',
-    async (directive) => {
+  it.each([
+    ["use client", "use server"],
+    ["use client", "use cache"],
+    // Next.js matches directives by decoded value.
+    ["use\\u0020client", "use server"],
+  ])(
+    'reject next/headers in a "%s" module that also says "%s"',
+    async (clientDirective, serverDirective) => {
       // Next.js rejects the directive conflict, so no exemption applies.
       const root = copyFixture(PAGES_FIXTURE_DIR);
       writeFile(
         root,
         "lib/client-graph-session.ts",
-        `"use client";\n"${directive}";\n\n${SESSION_LIB}`,
+        `"${clientDirective}";\n"${serverDirective}";\n\n${SESSION_LIB}`,
       );
       writeFile(
         root,
