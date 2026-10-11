@@ -151,8 +151,11 @@ type ClientGraphServerApisPluginOptions = {
    * and its root `_app`, `_document` and `_error`, as the router scanned them.
    */
   getPagesPages?: () => Promise<ReadonlySet<string>>;
-  /** The generated modules that import the Pages Router's pages. */
-  pagesEntryIds?: readonly string[];
+  /**
+   * The generated modules importing the Pages Router's pages that an
+   * environment loaded (none in dev, which loads pages directly).
+   */
+  getPagesEntryIds?: (environmentName: string) => readonly string[];
   /**
    * For a browser Web Worker's plugin container (`worker.plugins`). Vite
    * bundles every worker separately, and a worker is browser code throughout.
@@ -246,11 +249,14 @@ export function createClientGraphServerApisPlugin(
   const getClientRootPredicate = async (
     graph: ServerGraphState,
     hasAppDir: boolean,
+    environmentName: string,
     resolve: (source: string, importer?: string) => Promise<{ id: string } | null>,
   ): Promise<(moduleId: string) => boolean> => {
     const pagesPages = (await options.getPagesPages?.()) ?? new Set<string>();
     const pageIds = new Set<string>();
-    const importers = options.pagesEntryIds ?? [undefined];
+    // The dev server loads pages directly, without a generated entry.
+    const entryIds = options.getPagesEntryIds?.(environmentName) ?? [];
+    const importers = entryIds.length > 0 ? entryIds : [undefined];
     await Promise.all(
       [...pagesPages].flatMap((pagePath) =>
         importers.map(async (importer) => {
@@ -312,7 +318,9 @@ export function createClientGraphServerApisPlugin(
         // Like Next.js, skip Server Function and cache modules. With an App
         // Router, any that reach here were not replaced by server reference
         // proxies, so they are checked; Pages-only apps never replace them.
-        if (appDir === null && isServerModule) return null;
+        // Next.js rejects a module that also says "use client", so that one
+        // is still checked.
+        if (appDir === null && isServerModule && !isClientBoundary) return null;
         const [invalid] = invalidImports;
         if (graphKind === "browser") {
           if (invalid) {
@@ -341,6 +349,7 @@ export function createClientGraphServerApisPlugin(
         const isClientRoot = await getClientRootPredicate(
           graph,
           appDir !== null,
+          environment.name,
           (source, importer) => this.resolve(source, importer),
         );
         if (isReachableFromClientRoot(id, isClientRoot, getImporters)) {
@@ -361,6 +370,7 @@ export function createClientGraphServerApisPlugin(
       const isClientRoot = await getClientRootPredicate(
         graph,
         appDir !== null,
+        environment.name,
         (source, importer) => this.resolve(source, importer),
       );
       for (const [id, invalid] of graph.invalidImports) {

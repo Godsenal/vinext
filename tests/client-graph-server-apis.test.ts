@@ -761,6 +761,38 @@ export default function handler(_req: unknown, res: { json(body: unknown): void 
 });
 
 describe("Pages Router builds that Next.js accepts", () => {
+  it("build next/headers in a module that an API route imports, when only an entry this build never loads redirects a page to it", async () => {
+    const root = copyFixture(PAGES_FIXTURE_DIR);
+    writeFile(root, "lib/client-graph-session.ts", SESSION_LIB);
+    writeFile(
+      root,
+      "pages/api/client-graph-probe.ts",
+      `import { readSession } from "../../lib/client-graph-session";
+
+export default function handler(_req: unknown, res: { json(body: unknown): void }) {
+  res.json({ session: typeof readSession });
+}
+`,
+    );
+    const session = fs.realpathSync(path.join(root, "lib/client-graph-session.ts"));
+    // The Node build loads only the server entry, not the response entry.
+    const redirectPlugin: Plugin = {
+      name: "test:redirect-inactive-entry-page",
+      enforce: "pre",
+      resolveId(source, importer) {
+        if (
+          importer === "\0virtual:vinext-pages-response-entry" &&
+          source.endsWith("/pages/index.tsx")
+        ) {
+          return session;
+        }
+        return null;
+      },
+    };
+
+    await expect(buildFixture(root, [redirectPlugin])).resolves.toBeUndefined();
+  }, 120_000);
+
   it('build next/headers in a "use client" module that only an API route imports', async () => {
     // Pages-only apps have no Client Components; Next.js compiles API routes
     // without the check, whatever their modules' directives.
@@ -845,6 +877,31 @@ export default function ClientGraphProbe() {
       } else {
         await expect(buildFixture(root)).rejects.toThrow(PAGES_ROUTER_MESSAGE);
       }
+    },
+    120_000,
+  );
+  it.each(["use server", "use cache"])(
+    'reject next/headers in a "use client" module that also says "%s"',
+    async (directive) => {
+      // Next.js rejects the directive conflict, so no exemption applies.
+      const root = copyFixture(PAGES_FIXTURE_DIR);
+      writeFile(
+        root,
+        "lib/client-graph-session.ts",
+        `"use client";\n"${directive}";\n\n${SESSION_LIB}`,
+      );
+      writeFile(
+        root,
+        "pages/client-graph-probe.tsx",
+        `import { readSession } from "../lib/client-graph-session";
+
+export default function ClientGraphProbe() {
+  return <p>{typeof readSession}</p>;
+}
+`,
+      );
+
+      await expect(buildFixture(root)).rejects.toThrow(PAGES_ROUTER_MESSAGE);
     },
     120_000,
   );

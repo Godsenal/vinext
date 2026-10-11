@@ -7439,7 +7439,12 @@ export const loadServerActionClient = ${
     createClientGraphServerApisPlugin({
       getAppDir: () => (hasAppDir ? canonicalize(appDir) : null),
       getPagesPages: getPagesClientRoots,
-      pagesEntryIds: [RESOLVED_SERVER_ENTRY, RESOLVED_PAGES_RESPONSE_ENTRY],
+      getPagesEntryIds: (environmentName) => {
+        const loaded = serverEntryKindsByEnvironment.get(environmentName);
+        return [RESOLVED_SERVER_ENTRY, RESOLVED_PAGES_RESPONSE_ENTRY].filter((id) =>
+          loaded?.has(id),
+        );
+      },
     }),
     // Strip console.* calls from the client bundle when compiler.removeConsole
     // is enabled in next.config. Inspired by Next.js's SWC remove_console transform.
