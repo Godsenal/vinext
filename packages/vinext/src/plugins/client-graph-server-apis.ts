@@ -250,15 +250,16 @@ export function createClientGraphServerApisPlugin(
   const getClientRootPredicate = async (
     graph: ServerGraphState,
     hasAppDir: boolean,
+    isDev: boolean,
     isLoaded: (moduleId: string) => boolean,
     resolve: (source: string, importer?: string) => Promise<{ id: string } | null>,
   ): Promise<(moduleId: string) => boolean> => {
     const pagesPages = (await options.getPagesPages?.()) ?? new Set<string>();
     const pageIds = new Set<string>();
-    // Only entries this build loaded import pages; the dev server loads
-    // pages directly, without a generated entry.
-    const entryIds = (options.pagesEntryIds ?? []).filter(isLoaded);
-    const importers = entryIds.length > 0 ? entryIds : [undefined];
+    // In a build, only the generated entries it loaded import pages. The dev
+    // server also loads each page directly, without an importer.
+    const entryIds: Array<string | undefined> = (options.pagesEntryIds ?? []).filter(isLoaded);
+    const importers = isDev || entryIds.length === 0 ? [...entryIds, undefined] : entryIds;
     await Promise.all(
       [...pagesPages].flatMap((pagePath) =>
         importers.map(async (importer) => {
@@ -351,6 +352,7 @@ export function createClientGraphServerApisPlugin(
         const isClientRoot = await getClientRootPredicate(
           graph,
           appDir !== null,
+          true,
           (moduleId) => Boolean(environment.moduleGraph.getModuleById(moduleId)),
           (source, importer) => this.resolve(source, importer),
         );
@@ -372,6 +374,7 @@ export function createClientGraphServerApisPlugin(
       const isClientRoot = await getClientRootPredicate(
         graph,
         appDir !== null,
+        false,
         (moduleId) => Boolean(this.getModuleInfo(moduleId)),
         (source, importer) => this.resolve(source, importer),
       );
