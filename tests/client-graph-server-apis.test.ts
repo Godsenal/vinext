@@ -20,6 +20,7 @@ import { createBuilder, createLogger, createServer, type Plugin } from "vite";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
 import {
+  createClientGraphServerApisPlugin,
   createInvalidClientImportMessage,
   findInvalidClientImports,
 } from "../packages/vinext/src/plugins/client-graph-server-apis.js";
@@ -657,6 +658,38 @@ describe("Pages Router builds of the Node fixture", () => {
     120_000,
   );
 
+  it("reject next/headers that only the SSR graph resolves for an aliased page", async () => {
+    // The page's module id is the alias replacement, outside pages/.
+    const root = copyFixture(PAGES_FIXTURE_DIR);
+    const [, setupConditionalProbe] = PAGES_PROBES[2];
+    setupConditionalProbe(root);
+    fs.mkdirSync(path.join(root, "page-sources"));
+    fs.renameSync(
+      path.join(root, "pages/client-graph-probe.tsx"),
+      path.join(root, "page-sources/client-graph-probe.tsx"),
+    );
+    writeFile(
+      root,
+      "pages/client-graph-probe.tsx",
+      `export default function ClientGraphProbe() {
+  return null;
+}
+`,
+    );
+    const pagePath = path.join(root, "pages/client-graph-probe.tsx");
+    const replacement = path.join(root, "page-sources/client-graph-probe.tsx");
+    const aliasPlugin: Plugin = {
+      name: "test:alias-page",
+      config: () => ({
+        resolve: {
+          alias: [pagePath, fs.realpathSync(pagePath)].map((find) => ({ find, replacement })),
+        },
+      }),
+    };
+
+    await expect(buildFixture(root, [aliasPlugin])).rejects.toThrow(PAGES_ROUTER_MESSAGE);
+  }, 120_000);
+
   // Next.js compiles these in the react-server layer, or without the check.
   const SERVER_LAYER_FILES = [
     "pages/api/client-graph-probe.ts",
@@ -828,6 +861,46 @@ describe("App Router dev server", () => {
       await server.close();
     }
   }, 120_000);
+});
+
+describe("client-graph dev boundaries", () => {
+  it("drops a boundary loaded with a query when its file changes", async () => {
+    const plugin = createClientGraphServerApisPlugin({ getAppDir: () => "/repo/app" });
+    const boundaryId = "/repo/app/client.tsx?variant";
+    const environment = {
+      name: "ssr",
+      mode: "dev",
+      config: { consumer: "server" },
+      moduleGraph: {
+        getModuleById: (id: string) =>
+          id === "/repo/lib/session.ts" ? { importers: [{ id: boundaryId }] } : undefined,
+      },
+    };
+    const error = vi.fn((message: unknown) => {
+      throw new Error(String(message));
+    });
+    const context = { environment, error, resolve: async () => null };
+    const transform = plugin.transform as unknown as {
+      handler: (this: typeof context, code: string, id: string) => Promise<unknown>;
+    };
+    const watchChange = plugin.watchChange as unknown as (this: typeof context, id: string) => void;
+
+    await transform.handler.call(
+      context,
+      `"use client";\nimport { readSession } from "../lib/session";\nexport { readSession };\n`,
+      boundaryId,
+    );
+    // The edit removes the directive, and the boundary's next transform no
+    // longer matches the code filter.
+    watchChange.call(context, "/repo/app/client.tsx");
+    await transform.handler.call(
+      context,
+      `import { cookies } from "next/headers";\nexport const readSession = cookies;\n`,
+      "/repo/lib/session.ts",
+    );
+
+    expect(error).not.toHaveBeenCalled();
+  });
 });
 
 describe("findInvalidClientImports", () => {

@@ -130,8 +130,8 @@ type ClientGraphServerApisPluginOptions = {
   /** Canonical, slash-separated App Router directory, or null without one. */
   getAppDir: () => string | null;
   /**
-   * Canonical paths of the Pages Router's pages (not API routes) and its root
-   * `_app`, `_document` and `_error`.
+   * Slash-separated file paths of the Pages Router's pages (not API routes)
+   * and its root `_app`, `_document` and `_error`, as the router scanned them.
    */
   getPagesPages?: () => Promise<ReadonlySet<string>>;
   /**
@@ -221,14 +221,24 @@ export function createClientGraphServerApisPlugin(
   // module only does in App Router SSR: Pages-only apps have no Client
   // Components, so there an inert directive in a module that only an API
   // route or middleware imports (graphs Next.js leaves unchecked) is ignored.
+  // Pages are matched by the ids their files resolve to in this environment,
+  // which follow `resolve.alias` and `resolve.preserveSymlinks`.
   const getClientRootPredicate = async (
     graph: ServerGraphState,
     hasAppDir: boolean,
+    resolve: (source: string) => Promise<{ id: string } | null>,
   ): Promise<(moduleId: string) => boolean> => {
     const pagesPages = (await options.getPagesPages?.()) ?? new Set<string>();
+    const pageIds = new Set<string>();
+    await Promise.all(
+      [...pagesPages].map(async (pagePath) => {
+        const resolved = await resolve(pagePath);
+        pageIds.add(resolved ? stripViteModuleQuery(resolved.id) : pagePath);
+      }),
+    );
     return (moduleId) =>
       (hasAppDir && graph.clientBoundaries.has(moduleId)) ||
-      pagesPages.has(stripViteModuleQuery(moduleId));
+      pageIds.has(stripViteModuleQuery(moduleId));
   };
 
   return {
@@ -243,10 +253,15 @@ export function createClientGraphServerApisPlugin(
       serverGraphs.delete(environment.name);
     },
     // A module that loses its "use client" directive may no longer match the
-    // code filter, so drop its boundary when it changes; the next transform
-    // adds it back if the directive is still there.
+    // code filter, so drop its boundaries (under any query) when the file
+    // changes; the next transform adds them back if the directive is still
+    // there.
     watchChange(id) {
-      for (const graph of serverGraphs.values()) graph.clientBoundaries.delete(id);
+      for (const graph of serverGraphs.values()) {
+        for (const boundary of graph.clientBoundaries) {
+          if (stripViteModuleQuery(boundary) === id) graph.clientBoundaries.delete(boundary);
+        }
+      }
     },
     transform: {
       // Any module id: plugins may serve JavaScript under virtual or
@@ -296,7 +311,9 @@ export function createClientGraphServerApisPlugin(
           }
           return importers;
         };
-        const isClientRoot = await getClientRootPredicate(graph, appDir !== null);
+        const isClientRoot = await getClientRootPredicate(graph, appDir !== null, (source) =>
+          this.resolve(source),
+        );
         if (isReachableFromClientRoot(id, isClientRoot, getImporters)) {
           this.error(createInvalidClientImportMessage(invalid.name, id, appDir), invalid.start);
         }
@@ -312,7 +329,9 @@ export function createClientGraphServerApisPlugin(
         const info = this.getModuleInfo(moduleId);
         return info ? [...info.importers, ...info.dynamicImporters] : [];
       };
-      const isClientRoot = await getClientRootPredicate(graph, appDir !== null);
+      const isClientRoot = await getClientRootPredicate(graph, appDir !== null, (source) =>
+        this.resolve(source),
+      );
       for (const [id, invalid] of graph.invalidImports) {
         if (isReachableFromClientRoot(id, isClientRoot, getImporters)) {
           this.error({ id, message: createInvalidClientImportMessage(invalid.name, id, appDir) });
