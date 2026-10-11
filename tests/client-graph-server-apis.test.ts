@@ -401,11 +401,21 @@ export function ClientGraphProbe() {
     },
     120_000,
   );
-  it("reject next/headers that a later app plugin adds under a Client Component", async () => {
-    const root = copyFixture(APP_FIXTURE_DIR);
-    writeProbePage(
-      root,
-      `"use client";
+  // Server reference transforms have already run, so a directive a later
+  // plugin adds does not stop the module from reaching the client graph.
+  const LATE_DIRECTIVES: Array<[form: string, prologue: string]> = [
+    ["a plain module", ""],
+    ['a "use cache" module', '"use cache";\n\n'],
+    ['a "use server" module', '"use server";\n\n'],
+  ];
+
+  it.each(LATE_DIRECTIVES)(
+    "reject next/headers in %s that a later app plugin adds under a Client Component",
+    async (_form, prologue) => {
+      const root = copyFixture(APP_FIXTURE_DIR);
+      writeProbePage(
+        root,
+        `"use client";
 
 import { readSession } from "./probe-session";
 
@@ -413,26 +423,30 @@ export function ClientGraphProbe() {
   return <p>{typeof readSession}</p>;
 }
 `,
-      {
-        "app/client-graph-probe/probe-session.ts": `export const readSession = () => undefined;
+        {
+          "app/client-graph-probe/probe-session.ts": `export const readSession = async () => undefined;
 `,
-      },
-    );
-    const injectSessionPlugin: Plugin = {
-      name: "test:inject-client-graph-session",
-      transform(code, id) {
-        if (!id.endsWith("/probe-session.ts")) return null;
-        return `import { cookies } from "next/headers";
+        },
+      );
+      const injectSessionPlugin: Plugin = {
+        name: "test:inject-client-graph-session",
+        transform(_code, id) {
+          if (!id.endsWith("/probe-session.ts")) return null;
+          return `${prologue}import { cookies } from "next/headers";
 
-export const readSession = cookies;
+export async function readSession() {
+  return (await cookies()).get("session")?.value;
+}
 `;
-      },
-    };
+        },
+      };
 
-    await expect(buildFixture(root, [injectSessionPlugin])).rejects.toThrow(
-      `depends on "next/headers" ${CLIENT_COMPONENT_MESSAGE}`,
-    );
-  }, 120_000);
+      await expect(buildFixture(root, [injectSessionPlugin])).rejects.toThrow(
+        `depends on "next/headers" ${CLIENT_COMPONENT_MESSAGE}`,
+      );
+    },
+    120_000,
+  );
 });
 
 describe("App Router client builds that Next.js accepts", () => {
@@ -556,19 +570,17 @@ describe("findInvalidClientImports", () => {
     expect(findInvalidClientImports(code)).toEqual([]);
   });
 
-  it("skips Server Function and cache modules, as Next.js does", () => {
+  it("checks a module whatever its directive", () => {
+    // The check runs on final code: a Server Function or cache module that
+    // was replaced with server reference proxies no longer has these imports,
+    // and one that was not would ship them.
     const imports = `import { cookies } from "next/headers";\nimport { cacheLife } from "next/cache";`;
 
-    for (const directive of ["use server", "use cache", "use cache: remote"]) {
-      expect(findInvalidClientImports(`"${directive}";\n${imports}`)).toEqual([]);
+    for (const directive of ["use client", "use server", "use cache", "use cache: remote"]) {
+      expect(
+        findInvalidClientImports(`"${directive}";\n${imports}`).map((found) => found.name),
+      ).toEqual(["next/headers", "cacheLife"]);
     }
-    expect(
-      findInvalidClientImports(`"use client";\n${imports}`).map((found) => found.name),
-    ).toEqual(["next/headers", "cacheLife"]);
-    // Only the prologue marks a module.
-    expect(
-      findInvalidClientImports(`${imports}\n"use server";`).map((found) => found.name),
-    ).toEqual(["next/headers", "cacheLife"]);
   });
 
   it("picks Next.js' message by whether the module path starts with app/", () => {

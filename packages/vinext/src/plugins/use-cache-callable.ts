@@ -33,18 +33,6 @@ const RESOLVED_VIRTUAL_MODULE_ID_RE = new RegExp(`^${String.fromCharCode(0)}`);
 const USE_CACHE_DIRECTIVE = /^use cache(?:: ([^\s].*))?$/;
 const USE_CACHE_DIRECTIVE_CANDIDATE = /^use cache.*$/;
 
-/**
- * Whether the transform below replaces a `"use cache"` module with this id by
- * server reference proxies outside the RSC graph.
- */
-export function isUseCacheTransformTarget(id: string): boolean {
-  return (
-    SOURCE_MODULE_ID_RE.test(id) &&
-    !NODE_MODULES_PATH_RE.test(id) &&
-    !RESOLVED_VIRTUAL_MODULE_ID_RE.test(id)
-  );
-}
-
 function resolvePluginRscModule(projectRoot: string, specifier: string): string {
   try {
     return createRequire(path.join(projectRoot, "package.json")).resolve(specifier);

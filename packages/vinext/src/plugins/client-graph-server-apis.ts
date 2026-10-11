@@ -1,5 +1,4 @@
 import { parseAst, type Plugin } from "vite";
-import { isUseCacheTransformTarget } from "./use-cache-callable.js";
 
 // Ported from Next.js `assert_client_graph`:
 // crates/next-custom-transforms/src/transforms/react_server_components.rs
@@ -47,16 +46,12 @@ function readImportedName(specifier: unknown): string | null {
   return typeof name === "string" ? name : null;
 }
 
-type ModuleDirective = "use client" | "use server" | "use cache" | null;
-
-function readModuleDirective(body: ModuleItem[]): ModuleDirective {
+function hasUseClientDirective(body: ModuleItem[]): boolean {
   for (const item of body) {
-    if (item.type !== "ExpressionStatement" || typeof item.directive !== "string") return null;
-    const directive = item.directive;
-    if (directive === "use client" || directive === "use server") return directive;
-    if (directive === "use cache" || directive.startsWith("use cache: ")) return "use cache";
+    if (item.type !== "ExpressionStatement" || typeof item.directive !== "string") return false;
+    if (item.directive === "use client") return true;
   }
-  return null;
+  return false;
 }
 
 type ClientGraphModuleInfo = {
@@ -66,17 +61,13 @@ type ClientGraphModuleInfo = {
 };
 
 /**
- * Server Function and cache modules are replaced with server reference
- * proxies in the client graph (by @vitejs/plugin-rsc and
- * `vinext:use-cache-callable`), so their imports never reach it; Next.js skips
- * them too. Cache modules are only skipped where the
- * cache transform replaces them: not in Web Worker bundles, and not for ids it
- * excludes, such as plugin virtual modules.
+ * Runs on final module code. Server Function and cache modules (which Next.js
+ * skips) need no exemption: @vitejs/plugin-rsc and `vinext:use-cache-callable`
+ * have already replaced them with server reference proxies that keep none of
+ * their imports, while one they did not replace (in a Web Worker bundle, a
+ * virtual module, or added by a later plugin) still reaches the browser.
  */
-function analyzeClientGraphModule(
-  code: string,
-  options: { skipCacheModules: boolean } = { skipCacheModules: true },
-): ClientGraphModuleInfo {
+function analyzeClientGraphModule(code: string): ClientGraphModuleInfo {
   const none: ClientGraphModuleInfo = { isClientBoundary: false, invalidImports: [] };
   if (!CANDIDATE_MODULE_RE.test(code)) return none;
 
@@ -86,10 +77,6 @@ function analyzeClientGraphModule(
   } catch {
     return none;
   }
-  const directive = readModuleDirective(body);
-  if (directive === "use server") return none;
-  if (directive === "use cache" && options.skipCacheModules) return none;
-
   const invalidImports: InvalidClientImport[] = [];
   for (const item of body) {
     if (item.type !== "ImportDeclaration") continue;
@@ -109,14 +96,13 @@ function analyzeClientGraphModule(
       }
     }
   }
-  return { isClientBoundary: directive === "use client", invalidImports };
+  return { isClientBoundary: hasUseClientDirective(body), invalidImports };
 }
 
 /**
  * Find the server-only APIs a module imports, in source order. Like Next.js,
  * only top-level static `import` declarations count, the source must match
- * exactly, library APIs match by imported (not local) name, and `"use server"`
- * and `"use cache"` modules are skipped.
+ * exactly, and library APIs match by imported (not local) name.
  */
 export function findInvalidClientImports(code: string): InvalidClientImport[] {
   return analyzeClientGraphModule(code).invalidImports;
@@ -216,9 +202,7 @@ export function createClientGraphServerApisPlugin(
         const appDir = options.getAppDir();
         if (!appDir) return null;
 
-        const { isClientBoundary, invalidImports } = analyzeClientGraphModule(code, {
-          skipCacheModules: !options.worker && isUseCacheTransformTarget(id),
-        });
+        const { isClientBoundary, invalidImports } = analyzeClientGraphModule(code);
         const [invalid] = invalidImports;
         if (environmentName === "client") {
           if (invalid) {
