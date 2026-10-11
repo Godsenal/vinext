@@ -401,6 +401,38 @@ export function ClientGraphProbe() {
     },
     120_000,
   );
+  it("reject next/headers that a later app plugin adds under a Client Component", async () => {
+    const root = copyFixture(APP_FIXTURE_DIR);
+    writeProbePage(
+      root,
+      `"use client";
+
+import { readSession } from "./probe-session";
+
+export function ClientGraphProbe() {
+  return <p>{typeof readSession}</p>;
+}
+`,
+      {
+        "app/client-graph-probe/probe-session.ts": `export const readSession = () => undefined;
+`,
+      },
+    );
+    const injectSessionPlugin: Plugin = {
+      name: "test:inject-client-graph-session",
+      transform(code, id) {
+        if (!id.endsWith("/probe-session.ts")) return null;
+        return `import { cookies } from "next/headers";
+
+export const readSession = cookies;
+`;
+      },
+    };
+
+    await expect(buildFixture(root, [injectSessionPlugin])).rejects.toThrow(
+      `depends on "next/headers" ${CLIENT_COMPONENT_MESSAGE}`,
+    );
+  }, 120_000);
 });
 
 describe("App Router client builds that Next.js accepts", () => {

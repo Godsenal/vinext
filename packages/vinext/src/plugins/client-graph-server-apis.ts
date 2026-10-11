@@ -68,8 +68,8 @@ type ClientGraphModuleInfo = {
 /**
  * Server Function and cache modules are replaced with server reference
  * proxies in the client graph (by @vitejs/plugin-rsc and
- * `vinext:use-cache-callable`, after this check runs), so their imports never
- * reach it; Next.js skips them too. Cache modules are only skipped where the
+ * `vinext:use-cache-callable`), so their imports never reach it; Next.js skips
+ * them too. Cache modules are only skipped where the
  * cache transform replaces them: not in Web Worker bundles, and not for ids it
  * excludes, such as plugin virtual modules.
  */
@@ -192,6 +192,10 @@ export function createClientGraphServerApisPlugin(
 
   return {
     name: "vinext:validate-client-graph-server-apis",
+    // Check the final module code, after every other plugin's transform (an
+    // app plugin may add imports), but before Vite's dev import analysis
+    // rewrites specifiers.
+    enforce: "post",
     buildStart() {
       if (this.environment?.name !== "ssr") return;
       ssrClientBoundaries.clear();
