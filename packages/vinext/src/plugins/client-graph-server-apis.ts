@@ -110,7 +110,10 @@ function analyzeClientGraphModule(code: string): ClientGraphModuleInfo {
     isClientBoundary: hasDirective(body, (directive) => directive === "use client"),
     isServerModule: hasDirective(
       body,
-      (directive) => directive === "use server" || directive.startsWith("use cache"),
+      (directive) =>
+        directive === "use server" ||
+        directive === "use cache" ||
+        directive.startsWith("use cache: "),
     ),
     invalidImports,
   };
@@ -148,8 +151,8 @@ type ClientGraphServerApisPluginOptions = {
    * and its root `_app`, `_document` and `_error`, as the router scanned them.
    */
   getPagesPages?: () => Promise<ReadonlySet<string>>;
-  /** The generated module that imports the Pages Router's pages. */
-  pagesEntryId?: string;
+  /** The generated modules that import the Pages Router's pages. */
+  pagesEntryIds?: readonly string[];
   /**
    * For a browser Web Worker's plugin container (`worker.plugins`). Vite
    * bundles every worker separately, and a worker is browser code throughout.
@@ -237,7 +240,7 @@ export function createClientGraphServerApisPlugin(
   // module only does in App Router SSR: Pages-only apps have no Client
   // Components, so there an inert directive in a module that only an API
   // route or middleware imports (graphs Next.js leaves unchecked) is ignored.
-  // Pages are matched by the exact ids the generated Pages entry imports them
+  // Pages are matched by the exact ids the generated Pages entries import them
   // under in this environment, which follow `resolve.alias` and
   // `resolve.preserveSymlinks`.
   const getClientRootPredicate = async (
@@ -247,11 +250,14 @@ export function createClientGraphServerApisPlugin(
   ): Promise<(moduleId: string) => boolean> => {
     const pagesPages = (await options.getPagesPages?.()) ?? new Set<string>();
     const pageIds = new Set<string>();
+    const importers = options.pagesEntryIds ?? [undefined];
     await Promise.all(
-      [...pagesPages].map(async (pagePath) => {
-        const resolved = await resolve(pagePath, options.pagesEntryId);
-        pageIds.add(resolved?.id ?? pagePath);
-      }),
+      [...pagesPages].flatMap((pagePath) =>
+        importers.map(async (importer) => {
+          const resolved = await resolve(pagePath, importer);
+          pageIds.add(resolved?.id ?? pagePath);
+        }),
+      ),
     );
     return (moduleId) =>
       (hasAppDir && graph.clientBoundaries.has(moduleId)) || pageIds.has(moduleId);

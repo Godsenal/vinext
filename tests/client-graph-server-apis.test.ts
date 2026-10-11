@@ -602,6 +602,34 @@ export default function ClientGraphProbe() {
   ],
 ];
 
+/**
+ * Move the probe page's source out of pages/, leaving a harmless page, and
+ * return a resolveId hook that redirects only `entryId`'s import of it.
+ */
+function redirectProbePageFrom(root: string, entryId: string): Plugin {
+  fs.mkdirSync(path.join(root, "page-sources"));
+  const replacement = path.join(root, "page-sources/client-graph-probe.tsx");
+  fs.renameSync(path.join(root, "pages/client-graph-probe.tsx"), replacement);
+  writeFile(
+    root,
+    "pages/client-graph-probe.tsx",
+    `export default function ClientGraphProbe() {
+  return null;
+}
+`,
+  );
+  return {
+    name: "test:redirect-entry-page",
+    enforce: "pre",
+    resolveId(source, importer) {
+      if (importer === entryId && source.endsWith("/pages/client-graph-probe.tsx")) {
+        return replacement;
+      }
+      return null;
+    },
+  };
+}
+
 const PAGES_ROUTER_MESSAGE = `depends on "next/headers". ${OUTSIDE_APP_MESSAGE}`;
 
 describe("Pages Router builds of the Node fixture", () => {
@@ -691,37 +719,10 @@ describe("Pages Router builds of the Node fixture", () => {
   }, 120_000);
 
   it("reject next/headers that only the SSR graph resolves for a page redirected from the Pages entry", async () => {
-    // A resolveId hook that only redirects the generated entry's import.
     const root = copyFixture(PAGES_FIXTURE_DIR);
     const [, setupConditionalProbe] = PAGES_PROBES[2];
     setupConditionalProbe(root);
-    fs.mkdirSync(path.join(root, "page-sources"));
-    fs.renameSync(
-      path.join(root, "pages/client-graph-probe.tsx"),
-      path.join(root, "page-sources/client-graph-probe.tsx"),
-    );
-    writeFile(
-      root,
-      "pages/client-graph-probe.tsx",
-      `export default function ClientGraphProbe() {
-  return null;
-}
-`,
-    );
-    const replacement = path.join(root, "page-sources/client-graph-probe.tsx");
-    const redirectPlugin: Plugin = {
-      name: "test:redirect-entry-page",
-      enforce: "pre",
-      resolveId(source, importer) {
-        if (
-          importer === "\0virtual:vinext-server-entry" &&
-          source.endsWith("/pages/client-graph-probe.tsx")
-        ) {
-          return replacement;
-        }
-        return null;
-      },
-    };
+    const redirectPlugin = redirectProbePageFrom(root, "\0virtual:vinext-server-entry");
 
     await expect(buildFixture(root, [redirectPlugin])).rejects.toThrow(PAGES_ROUTER_MESSAGE);
   }, 120_000);
@@ -805,9 +806,16 @@ export default function handler(_req: unknown, res: { json(body: unknown): void 
 describe("Pages Router directive modules that Next.js skips", () => {
   // Pages-only apps have no RSC transform to replace these modules, and
   // Next.js skips the check for them in every layer.
-  it.each(["use server", "use cache"])(
-    'build next/headers in a "%s" module that a page imports',
-    async (directive) => {
+  it.each([
+    ["use server", "resolves"],
+    ["use cache", "resolves"],
+    ["use cache: remote", "resolves"],
+    // Next.js does not recognize these as cache directives.
+    ["use cachex", "rejects"],
+    ["use cache:remote", "rejects"],
+  ] as const)(
+    'check next/headers in a "%s" module that a page imports (build %s)',
+    async (directive, outcome) => {
       const root = copyFixture(PAGES_FIXTURE_DIR);
       writeFile(
         root,
@@ -832,7 +840,11 @@ export default function ClientGraphProbe() {
 `,
       );
 
-      await expect(buildFixture(root)).resolves.toBeUndefined();
+      if (outcome === "resolves") {
+        await expect(buildFixture(root)).resolves.toBeUndefined();
+      } else {
+        await expect(buildFixture(root)).rejects.toThrow(PAGES_ROUTER_MESSAGE);
+      }
     },
     120_000,
   );
@@ -862,6 +874,23 @@ describe("Pages Router builds of the Cloudflare Workers example", () => {
 
     // As in the example's vite.config.ts.
     await expect(buildFixture(root, [cloudflare()])).rejects.toThrow(PAGES_ROUTER_MESSAGE);
+  }, 120_000);
+
+  it("reject next/headers that only the SSR graph resolves for a page redirected from the response entry", async () => {
+    // The Worker imports pages through the multi-stage response entry.
+    const root = copyFixture(PAGES_CF_EXAMPLE_DIR);
+    writeFile(root, "lib/client-graph-session.ts", SESSION_LIB);
+    writeDataExportProbePage(root, "pages/client-graph-probe.tsx", "../lib/client-graph-session");
+    const redirectPlugin = redirectProbePageFrom(root, "\0virtual:vinext-pages-response-entry");
+    const { cloudflare } = (await import(
+      pathToFileURL(
+        path.join(PAGES_CF_EXAMPLE_DIR, "node_modules/@cloudflare/vite-plugin/dist/index.mjs"),
+      ).href
+    )) as { cloudflare: (options?: unknown) => Plugin };
+
+    await expect(buildFixture(root, [redirectPlugin, cloudflare()])).rejects.toThrow(
+      PAGES_ROUTER_MESSAGE,
+    );
   }, 120_000);
 });
 
