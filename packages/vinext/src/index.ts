@@ -374,6 +374,7 @@ import { getReactUpgradeDeps } from "./utils/react-version.js";
 import {
   isPathInside,
   isPathInsideOrEqual,
+  NODE_MODULES_PATH_RE,
   stripJsExtension,
   stripViteModuleQuery,
 } from "./utils/path.js";
@@ -1356,6 +1357,56 @@ function isVirtualEntryFacade(id: string | null | undefined, virtualId: string):
 }
 
 /**
+ * The string literal directives in a module's prologue, in order, after
+ * stripping leading comments, hashbang, and whitespace.
+ */
+function readLeadingDirectives(code: string): string[] {
+  const directives: string[] = [];
+  let i = 0;
+  const len = code.length;
+  // Strip BOM.
+  if (code.charCodeAt(0) === 0xfeff) i = 1;
+  // Strip hashbang.
+  if (code[i] === "#" && code[i + 1] === "!") {
+    const nl = code.indexOf("\n", i);
+    if (nl === -1) return directives;
+    i = nl + 1;
+  }
+  while (i < len) {
+    // Skip whitespace.
+    while (i < len && /\s/.test(code[i] ?? "")) i++;
+    if (i >= len) return directives;
+    // Skip line comments.
+    if (code[i] === "/" && code[i + 1] === "/") {
+      const nl = code.indexOf("\n", i + 2);
+      if (nl === -1) return directives;
+      i = nl + 1;
+      continue;
+    }
+    // Skip block comments.
+    if (code[i] === "/" && code[i + 1] === "*") {
+      const end = code.indexOf("*/", i + 2);
+      if (end === -1) return directives;
+      i = end + 2;
+      continue;
+    }
+    // At first non-comment, non-whitespace token. Must be a string literal
+    // directive to qualify (per ECMA-262 Directive Prologue grammar).
+    const quote = code[i];
+    if (quote !== '"' && quote !== "'") return directives;
+    const closing = code.indexOf(quote, i + 1);
+    if (closing === -1) return directives;
+    const directive = code.slice(i + 1, closing);
+    directives.push(directive);
+    // Continue scanning past the statement-terminating `;` or newline.
+    i = closing + 1;
+    while (i < len && (code[i] === ";" || code[i] === " " || code[i] === "\t")) i++;
+    if (code[i] === "\n") i++;
+  }
+  return directives;
+}
+
+/**
  * Returns the leading React `"use client"` or `"use server"` directive after
  * stripping leading comments, hashbang, and whitespace.
  *
@@ -1365,47 +1416,9 @@ function isVirtualEntryFacade(id: string | null | undefined, virtualId: string):
  * alone would match incidental occurrences in template literals or comments.
  */
 function getLeadingReactDirective(code: string): "use client" | "use server" | null {
-  let i = 0;
-  const len = code.length;
-  // Strip BOM.
-  if (code.charCodeAt(0) === 0xfeff) i = 1;
-  // Strip hashbang.
-  if (code[i] === "#" && code[i + 1] === "!") {
-    const nl = code.indexOf("\n", i);
-    if (nl === -1) return null;
-    i = nl + 1;
-  }
-  while (i < len) {
-    // Skip whitespace.
-    while (i < len && /\s/.test(code[i] ?? "")) i++;
-    if (i >= len) return null;
-    // Skip line comments.
-    if (code[i] === "/" && code[i + 1] === "/") {
-      const nl = code.indexOf("\n", i + 2);
-      if (nl === -1) return null;
-      i = nl + 1;
-      continue;
-    }
-    // Skip block comments.
-    if (code[i] === "/" && code[i + 1] === "*") {
-      const end = code.indexOf("*/", i + 2);
-      if (end === -1) return null;
-      i = end + 2;
-      continue;
-    }
-    // At first non-comment, non-whitespace token. Must be a string literal
-    // directive to qualify (per ECMA-262 Directive Prologue grammar).
-    const quote = code[i];
-    if (quote !== '"' && quote !== "'") return null;
-    const closing = code.indexOf(quote, i + 1);
-    if (closing === -1) return null;
-    const directive = code.slice(i + 1, closing);
+  // Other directives (e.g., "use strict") may precede the React directive.
+  for (const directive of readLeadingDirectives(code)) {
     if (directive === "use client" || directive === "use server") return directive;
-    // Other directives (e.g., "use strict") may precede the React directive.
-    // Continue scanning past the statement-terminating `;` or newline.
-    i = closing + 1;
-    while (i < len && (code[i] === ";" || code[i] === " " || code[i] === "\t")) i++;
-    if (code[i] === "\n") i++;
   }
   return null;
 }
@@ -7398,13 +7411,23 @@ export const loadServerActionClient = ${
           },
           code: "server-only",
         },
-        handler(code) {
+        handler(code, id) {
           if (this.environment?.name !== "client" || !hasAppDir) return null;
           // @vitejs/plugin-rsc replaces a "use server" module in the client
           // graph with server reference proxies, so its server-only imports
           // never reach the browser. Pages-only builds have no such transform,
           // which is why they are guarded at resolution above instead.
           if (getLeadingReactDirective(code) === "use server") return null;
+          // vinext:use-cache-callable does the same for "use cache" modules
+          // outside node_modules, as Next.js does.
+          if (
+            !NODE_MODULES_PATH_RE.test(id) &&
+            readLeadingDirectives(code).some(
+              (directive) => directive === "use cache" || directive.startsWith("use cache: "),
+            )
+          ) {
+            return null;
+          }
           if (!hasServerOnlyMarkerImport(code)) return null;
 
           throw new Error(
