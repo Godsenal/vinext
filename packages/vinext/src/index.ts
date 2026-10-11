@@ -1765,6 +1765,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let rscActionOwnerRoutes: Awaited<ReturnType<typeof appRouter>> | null = null;
   let rscActionOwnerSharedRoots: string[] = [];
   const serverEntryKindsByEnvironment = new Map<string, Set<string>>();
+  // The dev environment whose runner loads Pages Router pages directly.
+  let pagesDevEnvironmentName: string | null = null;
   const serverRuntimeOutputDirs = new Set<string>();
 
   function recordServerEntryLoad(environmentName: string | undefined, id: string): void {
@@ -5745,6 +5747,7 @@ export const loadServerActionClient = ${
               server.environments["ssr"] ??
               Object.values(server.environments).find((e) => e !== server.environments["rsc"]) ??
               Object.values(server.environments)[0];
+            pagesDevEnvironmentName = env.name;
             pagesRunner = createDirectRunner(env);
           }
           return pagesRunner;
@@ -7440,6 +7443,7 @@ export const loadServerActionClient = ${
       getAppDir: () => (hasAppDir ? canonicalize(appDir) : null),
       getPagesPages: getPagesClientRoots,
       pagesEntryIds: [RESOLVED_SERVER_ENTRY, RESOLVED_PAGES_RESPONSE_ENTRY],
+      getPagesDevEnvironmentName: () => pagesDevEnvironmentName,
     }),
     // Strip console.* calls from the client bundle when compiler.removeConsole
     // is enabled in next.config. Inspired by Next.js's SWC remove_console transform.

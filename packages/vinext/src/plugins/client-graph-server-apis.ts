@@ -157,6 +157,8 @@ type ClientGraphServerApisPluginOptions = {
   getPagesPages?: () => Promise<ReadonlySet<string>>;
   /** The generated modules that import the Pages Router's pages. */
   pagesEntryIds?: readonly string[];
+  /** The dev environment that loads Pages Router pages directly, once known. */
+  getPagesDevEnvironmentName?: () => string | null;
   /**
    * For a browser Web Worker's plugin container (`worker.plugins`). Vite
    * bundles every worker separately, and a worker is browser code throughout.
@@ -257,18 +259,18 @@ export function createClientGraphServerApisPlugin(
   const getClientRootPredicate = async (
     graph: ServerGraphState,
     tracksBoundaries: boolean,
-    isDev: boolean,
+    loadsPagesDirectly: boolean,
     isLoaded: (moduleId: string) => boolean,
     resolve: (source: string, importer?: string) => Promise<{ id: string } | null>,
   ): Promise<(moduleId: string) => boolean> => {
     const pagesPages = (await options.getPagesPages?.()) ?? new Set<string>();
     const pageIds = new Set<string>();
-    // In a build, only the generated entries it loaded import pages, so an
-    // environment without one (such as an auxiliary Worker) has no Pages
-    // roots. The dev server also loads each page directly, without an
+    // Only the generated entries an environment loaded import pages, so one
+    // without any (such as an auxiliary Worker) has no Pages roots. The dev
+    // server's Pages environment also loads each page directly, without an
     // importer.
     const entryIds: Array<string | undefined> = (options.pagesEntryIds ?? []).filter(isLoaded);
-    const importers = isDev ? [...entryIds, undefined] : entryIds;
+    const importers = loadsPagesDirectly ? [...entryIds, undefined] : entryIds;
     await Promise.all(
       [...pagesPages].flatMap((pagePath) =>
         importers.map(async (importer) => {
@@ -287,20 +289,20 @@ export function createClientGraphServerApisPlugin(
     // app plugin may add imports), but before Vite's dev import analysis
     // rewrites specifiers.
     enforce: "post",
-    buildStart() {
-      const environment = this.environment;
-      if (getGraphKind(environment, options.getAppDir() !== null) !== "server") return;
-      serverGraphs.delete(environment.name);
-    },
-    // A module that loses its "use client" directive may no longer match the
-    // code filter, so drop its boundaries (under any query) when the file
-    // changes; the next transform adds them back if the directive is still
-    // there.
+    // Graph state outlives a build: a watch rebuild reuses cached transforms
+    // of unchanged modules, so their boundaries and invalid imports are not
+    // recorded again. A changed file drops its entries (under any query); its
+    // next transform records them again if they still apply. A module that
+    // loses its "use client" directive may no longer match the code filter
+    // at all.
     watchChange(id) {
       const file = toSlash(id);
       for (const graph of serverGraphs.values()) {
         for (const boundary of graph.clientBoundaries) {
           if (stripViteModuleQuery(boundary) === file) graph.clientBoundaries.delete(boundary);
+        }
+        for (const moduleId of graph.invalidImports.keys()) {
+          if (stripViteModuleQuery(moduleId) === file) graph.invalidImports.delete(moduleId);
         }
       }
     },
@@ -360,7 +362,7 @@ export function createClientGraphServerApisPlugin(
         const isClientRoot = await getClientRootPredicate(
           graph,
           tracksBoundaries,
-          true,
+          options.getPagesDevEnvironmentName?.() === environment.name,
           (moduleId) => Boolean(environment.moduleGraph.getModuleById(moduleId)),
           (source, importer) => this.resolve(source, importer),
         );
@@ -387,6 +389,8 @@ export function createClientGraphServerApisPlugin(
         (source, importer) => this.resolve(source, importer),
       );
       for (const [id, invalid] of graph.invalidImports) {
+        // Skip modules an earlier build had that this one dropped.
+        if (!this.getModuleInfo(id)) continue;
         if (isReachableFromClientRoot(id, isClientRoot, getImporters)) {
           this.error({ id, message: createInvalidClientImportMessage(invalid.name, id, appDir) });
         }
