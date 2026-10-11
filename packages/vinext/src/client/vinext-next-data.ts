@@ -68,12 +68,15 @@ export function extractVinextNextDataJson(html: string): string | null {
   if (canonical.length > 1 && typeof DOMParser !== "undefined") {
     // Text inside a custom Document's raw <script> can spell out a
     // __NEXT_DATA__ tag. Only then pay for a parse that finds the element.
-    // Node-side build steps have no DOMParser and keep the first match.
-    return (
-      new DOMParser()
-        .parseFromString(html, "text/html")
-        .querySelector('script#__NEXT_DATA__[type="application/json"]')?.textContent ?? null
-    );
+    // Node-side build steps have no DOMParser, and Trusted Types enforcement
+    // forbids parsing a string; both keep the first match.
+    try {
+      return (
+        new DOMParser()
+          .parseFromString(html, "text/html")
+          .querySelector('script#__NEXT_DATA__[type="application/json"]')?.textContent ?? null
+      );
+    } catch {}
   }
   if (canonical[0]) return canonical[0][1];
 

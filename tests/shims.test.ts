@@ -102,6 +102,28 @@ describe("vinext next data client helpers", () => {
       vi.unstubAllGlobals();
     }
   });
+
+  it("keeps the first __NEXT_DATA__ match when Trusted Types forbids parsing a string", () => {
+    const json = '{"props":{},"page":"/","query":{}}';
+    vi.stubGlobal(
+      "DOMParser",
+      class {
+        parseFromString(): never {
+          throw new TypeError("This document requires 'TrustedHTML' assignment.");
+        }
+      },
+    );
+    try {
+      expect(
+        extractVinextNextDataJson(
+          `<script id="__NEXT_DATA__" type="application/json">${json}</script>` +
+            `<script>window.x = "<script id='__NEXT_DATA__' type='application/json'>{}";</script>`,
+        ),
+      ).toBe(json);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
 });
 
 describe("dynamic route href interpolation", () => {
