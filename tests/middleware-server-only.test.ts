@@ -211,9 +211,7 @@ export default function Comp() {
   await builder.buildApp();
 }
 
-async function buildAppServerActionServerOnlyFixture(
-  directive: "use server" | "use cache",
-): Promise<void> {
+async function buildAppServerActionServerOnlyFixture(prologue: string): Promise<void> {
   const workspaceRoot = path.resolve(import.meta.dirname, "..");
   const workspaceNodeModules = path.join(workspaceRoot, "node_modules");
   const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-action-server-only-"));
@@ -230,7 +228,7 @@ async function buildAppServerActionServerOnlyFixture(
   // both run in the server layer — not the client layer that server-only guards.
   await writeFile(
     path.join(tmpDir, "app", "actions.ts"),
-    `'${directive}'
+    `${prologue}
 
 import 'server-only'
 
@@ -377,12 +375,25 @@ describe("App Router Server Actions can import server-only", () => {
     // The validate-server-only-client-imports guard (added in #1697) must not
     // false-positive on these or it breaks the whole client build — regression
     // test for the actions/app-basepath deploy-suite failures.
-    await expect(buildAppServerActionServerOnlyFixture("use server")).resolves.toBeUndefined();
+    await expect(buildAppServerActionServerOnlyFixture("'use server'")).resolves.toBeUndefined();
   }, 120_000);
 
   it("builds when a 'use cache' module imports server-only", async () => {
     // Next.js replaces a cache module in the client graph with server
     // references too, so its server-only import never reaches the browser.
-    await expect(buildAppServerActionServerOnlyFixture("use cache")).resolves.toBeUndefined();
+    await expect(buildAppServerActionServerOnlyFixture("'use cache'")).resolves.toBeUndefined();
+    // Another directive (with a comment) may precede it in the prologue.
+    await expect(
+      buildAppServerActionServerOnlyFixture(`"use strict" /* keep */;\n"use cache";`),
+    ).resolves.toBeUndefined();
+  }, 120_000);
+
+  it("errors when a 'use cache' expression that is not a directive precedes server-only", async () => {
+    // Not a directive, so the module is not replaced with server references
+    // and its server-only import must fail the build (the SSR environment's
+    // guard reports it first).
+    await expect(buildAppServerActionServerOnlyFixture(`"use cache" + String();`)).rejects.toThrow(
+      /server-only/,
+    );
   }, 120_000);
 });
