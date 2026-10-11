@@ -615,23 +615,44 @@ describe("Pages Router builds of the Node fixture", () => {
     120_000,
   );
 
-  it("reject next/headers that only the SSR graph resolves for a symlinked page", async () => {
-    // The page's module id is its real path, outside pages/.
-    const root = copyFixture(PAGES_FIXTURE_DIR);
-    const [, setupConditionalProbe] = PAGES_PROBES[2];
-    setupConditionalProbe(root);
-    fs.mkdirSync(path.join(root, "page-sources"));
-    fs.renameSync(
-      path.join(root, "pages/client-graph-probe.tsx"),
-      path.join(root, "page-sources/client-graph-probe.tsx"),
-    );
-    fs.symlinkSync(
-      path.join(root, "page-sources/client-graph-probe.tsx"),
-      path.join(root, "pages/client-graph-probe.tsx"),
-    );
+  it.each([false, true])(
+    "reject next/headers that only the SSR graph resolves for a symlinked page (preserveSymlinks: %s)",
+    async (preserveSymlinks) => {
+      // The page's module id is its real path, outside pages/, unless
+      // preserveSymlinks keeps the logical path.
+      const root = copyFixture(PAGES_FIXTURE_DIR);
+      const [, setupConditionalProbe] = PAGES_PROBES[2];
+      setupConditionalProbe(root);
+      fs.mkdirSync(path.join(root, "page-sources"));
+      fs.renameSync(
+        path.join(root, "pages/client-graph-probe.tsx"),
+        path.join(root, "page-sources/client-graph-probe.tsx"),
+      );
+      fs.symlinkSync(
+        path.join(root, "page-sources/client-graph-probe.tsx"),
+        path.join(root, "pages/client-graph-probe.tsx"),
+      );
 
-    await expect(buildFixture(root)).rejects.toThrow(PAGES_ROUTER_MESSAGE);
-  }, 120_000);
+      if (preserveSymlinks) {
+        // Logical package paths only resolve dependencies hoisted beside them.
+        const hoisted = path.join(WORKSPACE_NODE_MODULES, ".pnpm/node_modules");
+        for (const entry of fs.readdirSync(hoisted)) {
+          const target = path.join(root, "node_modules", entry);
+          if (!fs.existsSync(target)) {
+            fs.symlinkSync(path.join(hoisted, entry), target, "junction");
+          }
+        }
+      }
+      const preserveSymlinksPlugin: Plugin = {
+        name: "test:preserve-symlinks",
+        config: () => ({ resolve: { preserveSymlinks } }),
+      };
+      await expect(buildFixture(root, [preserveSymlinksPlugin])).rejects.toThrow(
+        PAGES_ROUTER_MESSAGE,
+      );
+    },
+    120_000,
+  );
 
   // Next.js compiles these in the react-server layer, or without the check.
   const SERVER_LAYER_FILES = [

@@ -22,12 +22,13 @@ const INVALID_CLIENT_LIB_APIS: ReadonlyMap<string, ReadonlySet<string>> = new Ma
   ],
 ]);
 
-// Every checked specifier starts with "next/", unless it is spelled with
-// escapes ("next\u002fheaders", "next\/headers") that only the parsed AST
-// decodes; any escape needs a backslash.
-const SERVER_API_CANDIDATE_RE = /next\/|\\/;
+// Every checked specifier is a string literal starting with "next/", unless
+// it is spelled with escapes ("next\u002fheaders", "next\/headers") that only
+// the parsed AST decodes; any escape needs a backslash. The quote matters:
+// paths such as dev JSX `fileName`s often contain "vinext/".
+const SERVER_API_CANDIDATE_RE = /["']next\/|\\/;
 const USE_CLIENT_CANDIDATE_RE = /\buse client\b/;
-const CANDIDATE_MODULE_RE = /next\/|\\|\buse client\b/;
+const CANDIDATE_MODULE_RE = /["']next\/|\\|\buse client\b/;
 
 type InvalidClientImport = {
   /** The module specifier, or the imported API name for library APIs. */

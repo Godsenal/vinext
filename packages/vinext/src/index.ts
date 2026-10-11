@@ -1816,14 +1816,20 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   const getPagesClientRoots = async (): Promise<ReadonlySet<string>> => {
     if (!hasPagesDir) return new Set();
     const routes = await pagesRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher);
+    // Module ids are realpaths unless `resolve.preserveSymlinks` keeps the
+    // logical path, so keep both.
     const roots = new Set<string>();
+    const addRoot = (filePath: string) => {
+      roots.add(toSlash(filePath));
+      roots.add(canonicalize(filePath));
+    };
     for (const route of routes) {
       if (route.pattern === "/api" || route.pattern.startsWith("/api/")) continue;
-      roots.add(canonicalize(route.filePath));
+      addRoot(route.filePath);
     }
     for (const name of ["_app", "_document", "_error"]) {
       const filePath = findFileWithExts(pagesDir, name, fileMatcher);
-      if (filePath) roots.add(canonicalize(filePath));
+      if (filePath) addRoot(filePath);
     }
     return roots;
   };
