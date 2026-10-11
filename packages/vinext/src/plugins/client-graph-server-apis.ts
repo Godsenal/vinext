@@ -263,10 +263,12 @@ export function createClientGraphServerApisPlugin(
   ): Promise<(moduleId: string) => boolean> => {
     const pagesPages = (await options.getPagesPages?.()) ?? new Set<string>();
     const pageIds = new Set<string>();
-    // In a build, only the generated entries it loaded import pages. The dev
-    // server also loads each page directly, without an importer.
+    // In a build, only the generated entries it loaded import pages, so an
+    // environment without one (such as an auxiliary Worker) has no Pages
+    // roots. The dev server also loads each page directly, without an
+    // importer.
     const entryIds: Array<string | undefined> = (options.pagesEntryIds ?? []).filter(isLoaded);
-    const importers = isDev || entryIds.length === 0 ? [...entryIds, undefined] : entryIds;
+    const importers = isDev ? [...entryIds, undefined] : entryIds;
     await Promise.all(
       [...pagesPages].flatMap((pagePath) =>
         importers.map(async (importer) => {

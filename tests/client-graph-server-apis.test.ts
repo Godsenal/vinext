@@ -1113,6 +1113,39 @@ describe("client-graph server environments", () => {
   );
 });
 
+describe("client-graph Pages roots", () => {
+  it("are not built for an environment that loaded no Pages entry", async () => {
+    // An auxiliary Worker that imports a Pages route file for shared code.
+    const pagePath = "/repo/pages/shared.tsx";
+    const plugin = createClientGraphServerApisPlugin({
+      getAppDir: () => null,
+      getPagesPages: async () => new Set([pagePath]),
+      pagesEntryIds: ["\0virtual:vinext-server-entry"],
+    });
+    const context = {
+      environment: { name: "aux_worker", mode: "build", config: { consumer: "server" } },
+      error: (message: unknown) => {
+        throw new Error(String(message));
+      },
+      resolve: async (source: string) => ({ id: source }),
+      getModuleInfo: (id: string) =>
+        id === pagePath ? { importers: ["/repo/worker/index.ts"], dynamicImporters: [] } : null,
+    };
+    const transform = plugin.transform as unknown as {
+      handler: (this: typeof context, code: string, id: string) => Promise<unknown>;
+    };
+    const buildEnd = plugin.buildEnd as unknown as (this: typeof context) => Promise<void>;
+
+    await transform.handler.call(
+      context,
+      `import { cookies } from "next/headers";\nexport const readSession = cookies;\n`,
+      pagePath,
+    );
+
+    await expect(buildEnd.call(context)).resolves.toBeUndefined();
+  });
+});
+
 describe("findInvalidClientImports", () => {
   it("matches Next.js' client-graph import list", () => {
     const code = [
