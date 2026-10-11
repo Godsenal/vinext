@@ -23,8 +23,10 @@ const INVALID_CLIENT_LIB_APIS: ReadonlyMap<string, ReadonlySet<string>> = new Ma
 
 // An import declaration always spells `import` literally (escaped keywords
 // are syntax errors), while its specifier may use escapes such as
-// "next\u002fheaders" that only the parsed AST decodes.
-const IMPORT_KEYWORD_RE = /\bimport\b/;
+// "next\u002fheaders" that only the parsed AST decodes. A directive only counts
+// when spelled literally too. A boundary may hold only re-exports, so a
+// `"use client"` module is a candidate even without imports.
+const CANDIDATE_MODULE_RE = /\bimport\b|\buse client\b/;
 // Vite transforms a module loaded with a query (`./x.ts?v=1`) as its file type.
 const SOURCE_MODULE_ID_RE = /\.(?:[cm]?tsx?|[cm]?jsx?|mdx)(?:[?#].*)?$/;
 
@@ -47,26 +49,14 @@ function readImportedName(specifier: unknown): string | null {
   return typeof name === "string" ? name : null;
 }
 
-type ModuleDirective = "use client" | "server-reference" | null;
+type ModuleDirective = "use client" | "use server" | "use cache" | null;
 
-/**
- * Read the module prologue. `"server-reference"` marks a Server Function or
- * cache module: those are replaced with server reference proxies in the
- * client graph (by @vitejs/plugin-rsc and `vinext:use-cache-callable`, after
- * this check runs), so their imports never reach it; Next.js skips them too.
- */
 function readModuleDirective(body: ModuleItem[]): ModuleDirective {
   for (const item of body) {
     if (item.type !== "ExpressionStatement" || typeof item.directive !== "string") return null;
     const directive = item.directive;
-    if (directive === "use client") return "use client";
-    if (
-      directive === "use server" ||
-      directive === "use cache" ||
-      directive.startsWith("use cache: ")
-    ) {
-      return "server-reference";
-    }
+    if (directive === "use client" || directive === "use server") return directive;
+    if (directive === "use cache" || directive.startsWith("use cache: ")) return "use cache";
   }
   return null;
 }
@@ -77,9 +67,19 @@ type ClientGraphModuleInfo = {
   invalidImports: InvalidClientImport[];
 };
 
-function analyzeClientGraphModule(code: string): ClientGraphModuleInfo {
+/**
+ * Server Function and cache modules are replaced with server reference
+ * proxies in the client graph (by @vitejs/plugin-rsc and
+ * `vinext:use-cache-callable`, after this check runs), so their imports never
+ * reach it; Next.js skips them too. Web Worker bundles only replace
+ * `"use server"` modules, so they keep checking cache modules.
+ */
+function analyzeClientGraphModule(
+  code: string,
+  options: { skipCacheModules: boolean } = { skipCacheModules: true },
+): ClientGraphModuleInfo {
   const none: ClientGraphModuleInfo = { isClientBoundary: false, invalidImports: [] };
-  if (!IMPORT_KEYWORD_RE.test(code)) return none;
+  if (!CANDIDATE_MODULE_RE.test(code)) return none;
 
   let body: ModuleItem[];
   try {
@@ -88,7 +88,8 @@ function analyzeClientGraphModule(code: string): ClientGraphModuleInfo {
     return none;
   }
   const directive = readModuleDirective(body);
-  if (directive === "server-reference") return none;
+  if (directive === "use server") return none;
+  if (directive === "use cache" && options.skipCacheModules) return none;
 
   const invalidImports: InvalidClientImport[] = [];
   for (const item of body) {
@@ -203,7 +204,7 @@ export function createClientGraphServerApisPlugin(
           include: SOURCE_MODULE_ID_RE,
           exclude: [VIRTUAL_MODULE_ID_RE, /\/node_modules\//],
         },
-        code: IMPORT_KEYWORD_RE,
+        code: CANDIDATE_MODULE_RE,
       },
       handler(code, id) {
         const environment = this.environment;
@@ -212,7 +213,9 @@ export function createClientGraphServerApisPlugin(
         const appDir = options.getAppDir();
         if (!appDir) return null;
 
-        const { isClientBoundary, invalidImports } = analyzeClientGraphModule(code);
+        const { isClientBoundary, invalidImports } = analyzeClientGraphModule(code, {
+          skipCacheModules: !options.worker,
+        });
         const [invalid] = invalidImports;
         if (environmentName === "client") {
           if (invalid) {

@@ -210,21 +210,11 @@ describe("App Router client builds of the Node fixture", () => {
 });
 
 describe("App Router client graphs outside the main browser build", () => {
-  it("reject next/headers that only the SSR graph resolves", async () => {
-    // The `browser` condition picks a harmless module for the browser build,
-    // but SSR evaluates the other one, where the request would be captured.
-    const root = copyFixture(APP_FIXTURE_DIR);
-    const packageJsonPath = path.join(root, "package.json");
-    const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, "utf8"));
-    packageJson.imports = {
-      "#client-graph-session": {
-        browser: "./lib/client-graph-session-browser.ts",
-        default: "./lib/client-graph-session-server.ts",
-      },
-    };
-    fs.writeFileSync(packageJsonPath, JSON.stringify(packageJson, null, 2));
-    writeProbePage(
-      root,
+  // The `browser` condition picks a harmless module for the browser build, but
+  // SSR evaluates the other one, where the request would be captured.
+  const SSR_ONLY_BOUNDARIES: Array<[form: string, clientSource: string]> = [
+    [
+      "imports",
       `"use client";
 
 import { readSession } from "#client-graph-session";
@@ -233,20 +223,52 @@ export function ClientGraphProbe() {
   return <p>{typeof readSession}</p>;
 }
 `,
-      {
-        "lib/client-graph-session-browser.ts": `export const readSession = () => undefined;
+    ],
+    [
+      "only re-exports",
+      `"use client";
+
+export { ClientGraphProbe } from "#client-graph-session";
 `,
-        "lib/client-graph-session-server.ts": `import { cookies } from "next/headers";
+    ],
+  ];
+
+  it.each(SSR_ONLY_BOUNDARIES)(
+    "reject next/headers that only the SSR graph resolves, from a boundary that %s",
+    async (_form, clientSource) => {
+      const root = copyFixture(APP_FIXTURE_DIR);
+      const packageJsonPath = path.join(root, "package.json");
+      const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, "utf8"));
+      packageJson.imports = {
+        "#client-graph-session": {
+          browser: "./lib/client-graph-session-browser.tsx",
+          default: "./lib/client-graph-session-server.tsx",
+        },
+      };
+      fs.writeFileSync(packageJsonPath, JSON.stringify(packageJson, null, 2));
+      writeProbePage(root, clientSource, {
+        "lib/client-graph-session-browser.tsx": `export const readSession = () => undefined;
+
+export function ClientGraphProbe() {
+  return <p>browser</p>;
+}
+`,
+        "lib/client-graph-session-server.tsx": `import { cookies } from "next/headers";
 
 export const readSession = cookies;
-`,
-      },
-    );
 
-    await expect(buildFixture(root)).rejects.toThrow(
-      `depends on "next/headers". ${OUTSIDE_APP_MESSAGE}`,
-    );
-  }, 120_000);
+export function ClientGraphProbe() {
+  return <p>{typeof cookies}</p>;
+}
+`,
+      });
+
+      await expect(buildFixture(root)).rejects.toThrow(
+        `depends on "next/headers". ${OUTSIDE_APP_MESSAGE}`,
+      );
+    },
+    120_000,
+  );
 
   it("reject next/headers in a Web Worker a Client Component starts", async () => {
     const root = copyFixture(APP_FIXTURE_DIR);
@@ -274,6 +296,45 @@ self.postMessage(typeof cookies);
 
     await expect(buildFixture(root)).rejects.toThrow(
       `depends on "next/headers" ${CLIENT_COMPONENT_MESSAGE}`,
+    );
+  }, 120_000);
+  it("reject a cache API in a cache module a Web Worker imports", async () => {
+    // Worker bundles do not replace "use cache" modules with server
+    // references, so the module's own imports would reach the browser.
+    const root = copyFixture(APP_FIXTURE_DIR);
+    writeProbePage(
+      root,
+      `"use client";
+
+export function ClientGraphProbe() {
+  return (
+    <button
+      onClick={() => new Worker(new URL("./probe-worker.ts", import.meta.url), { type: "module" })}
+    >
+      start
+    </button>
+  );
+}
+`,
+      {
+        "app/client-graph-probe/probe-worker.ts": `import { getProbeValue } from "./probe-worker-cache";
+
+void getProbeValue().then((value) => self.postMessage(value));
+`,
+        "app/client-graph-probe/probe-worker-cache.ts": `"use cache";
+
+import { cacheLife } from "next/cache";
+
+export async function getProbeValue() {
+  cacheLife("hours");
+  return 1;
+}
+`,
+      },
+    );
+
+    await expect(buildFixture(root)).rejects.toThrow(
+      `depends on "cacheLife" ${CLIENT_COMPONENT_MESSAGE}`,
     );
   }, 120_000);
 });
