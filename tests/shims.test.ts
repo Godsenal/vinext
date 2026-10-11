@@ -59,6 +59,49 @@ describe("vinext next data client helpers", () => {
       json,
     );
   });
+
+  it("reads a single __NEXT_DATA__ match without parsing the document", () => {
+    const json = '{"props":{},"page":"/","query":{}}';
+    const parseFromString = vi.fn();
+    vi.stubGlobal(
+      "DOMParser",
+      class {
+        parseFromString = parseFromString;
+      },
+    );
+    try {
+      expect(
+        extractVinextNextDataJson(
+          `<div>page</div><script id="__NEXT_DATA__" type="application/json">${json}</script>`,
+        ),
+      ).toBe(json);
+      expect(parseFromString).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("parses the document to pick the real script when Document text spells out another", () => {
+    const json = '{"props":{},"page":"/","query":{}}';
+    const html =
+      `<script>window.x = "<script id='__NEXT_DATA__' type='application/json'>{}";</script>` +
+      `<script id="__NEXT_DATA__" type="application/json">${json}</script>`;
+    const querySelector = vi.fn(() => ({ textContent: json }));
+    const parseFromString = vi.fn(() => ({ querySelector }));
+    vi.stubGlobal(
+      "DOMParser",
+      class {
+        parseFromString = parseFromString;
+      },
+    );
+    try {
+      expect(extractVinextNextDataJson(html)).toBe(json);
+      expect(parseFromString).toHaveBeenCalledWith(html, "text/html");
+      expect(querySelector).toHaveBeenCalledWith('script#__NEXT_DATA__[type="application/json"]');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
 });
 
 describe("dynamic route href interpolation", () => {

@@ -60,12 +60,21 @@ type VinextLocaleGlobalTarget = {
   __VINEXT_DEFAULT_LOCALE__: string | undefined;
 };
 
+const NEXT_DATA_SCRIPT_PATTERN =
+  /<script\b(?=[^>]*\bid=["']__NEXT_DATA__["'])(?=[^>]*\btype=["']application\/json["'])[^>]*>([\s\S]*?)<\/script>/g;
+
 export function extractVinextNextDataJson(html: string): string | null {
-  const canonical =
-    /<script\b(?=[^>]*\bid=["']__NEXT_DATA__["'])(?=[^>]*\btype=["']application\/json["'])[^>]*>([\s\S]*?)<\/script>/.exec(
-      html,
+  const canonical = [...html.matchAll(NEXT_DATA_SCRIPT_PATTERN)];
+  if (canonical.length === 1) return canonical[0][1];
+  if (canonical.length > 1) {
+    // Text inside a custom Document's raw <script> can spell out a
+    // __NEXT_DATA__ tag. Only then pay for a parse that finds the element.
+    return (
+      new DOMParser()
+        .parseFromString(html, "text/html")
+        .querySelector('script#__NEXT_DATA__[type="application/json"]')?.textContent ?? null
     );
-  if (canonical) return canonical[1];
+  }
 
   const assignment = /<script(?:\s[^>]*)?>\s*window\.__NEXT_DATA__\s*=\s*/.exec(html);
   if (!assignment || assignment.index === undefined) return null;
