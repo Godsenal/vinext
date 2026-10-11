@@ -216,6 +216,15 @@ export function createClientGraphServerApisPlugin(
     return state;
   };
   const isPagesPage = options.isPagesPage ?? (() => false);
+  // Pages pages open the client layer in every server graph. A "use client"
+  // module only does in App Router SSR: Pages-only apps have no Client
+  // Components, so there an inert directive in a module that only an API
+  // route or middleware imports (graphs Next.js leaves unchecked) is ignored.
+  const isServerGraphClientRoot = (
+    graph: ServerGraphState,
+    moduleId: string,
+    hasAppDir: boolean,
+  ): boolean => (hasAppDir && graph.clientBoundaries.has(moduleId)) || isPagesPage(moduleId);
 
   return {
     name: "vinext:validate-client-graph-server-apis",
@@ -269,7 +278,7 @@ export function createClientGraphServerApisPlugin(
           return importers;
         };
         const isClientRoot = (moduleId: string) =>
-          graph.clientBoundaries.has(moduleId) || isPagesPage(moduleId);
+          isServerGraphClientRoot(graph, moduleId, appDir !== null);
         if (isReachableFromClientRoot(id, isClientRoot, getImporters)) {
           this.error(createInvalidClientImportMessage(invalid.name, id, appDir), invalid.start);
         }
@@ -286,7 +295,7 @@ export function createClientGraphServerApisPlugin(
         return info ? [...info.importers, ...info.dynamicImporters] : [];
       };
       const isClientRoot = (moduleId: string) =>
-        graph.clientBoundaries.has(moduleId) || isPagesPage(moduleId);
+        isServerGraphClientRoot(graph, moduleId, appDir !== null);
       for (const [id, invalid] of graph.invalidImports) {
         if (isReachableFromClientRoot(id, isClientRoot, getImporters)) {
           this.error({ id, message: createInvalidClientImportMessage(invalid.name, id, appDir) });

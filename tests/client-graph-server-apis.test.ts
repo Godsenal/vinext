@@ -648,6 +648,27 @@ export default function handler(_req: unknown, res: { json(body: unknown): void 
   );
 });
 
+describe("Pages Router builds that Next.js accepts", () => {
+  it('build next/headers in a "use client" module that only an API route imports', async () => {
+    // Pages-only apps have no Client Components; Next.js compiles API routes
+    // without the check, whatever their modules' directives.
+    const root = copyFixture(PAGES_FIXTURE_DIR);
+    writeFile(root, "lib/client-graph-session.ts", `"use client";\n\n${SESSION_LIB}`);
+    writeFile(
+      root,
+      "pages/api/client-graph-probe.ts",
+      `import { readSession } from "../../lib/client-graph-session";
+
+export default function handler(_req: unknown, res: { json(body: unknown): void }) {
+  res.json({ session: typeof readSession });
+}
+`,
+    );
+
+    await expect(buildFixture(root)).resolves.toBeUndefined();
+  }, 120_000);
+});
+
 describe("Pages Router builds alongside the App Router", () => {
   it("reject next/headers in a module only getServerSideProps uses", async () => {
     const root = copyFixture(APP_FIXTURE_DIR);
