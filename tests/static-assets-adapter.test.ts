@@ -251,6 +251,48 @@ describe("staticAssetsAdapter", () => {
     },
   );
 
+  it("packages Pages HTML whose Document script text spells out another __NEXT_DATA__ tag", async () => {
+    const root = createRoot();
+    const props = { pageProps: { slug: "first" }, __N_SSG: true };
+    const html =
+      `<html><script id="__NEXT_DATA__" type="application/json">${JSON.stringify({ props, gsp: true })}</script>` +
+      `<script>window.x = "<script id='__NEXT_DATA__' type='application/json'>{}";</script></html>`;
+    write(
+      root,
+      "dist/server/vinext-prerender.json",
+      JSON.stringify({
+        buildId: "build-a",
+        routes: [
+          {
+            route: "/posts/:slug",
+            path: "/posts/first",
+            status: "rendered",
+            revalidate: 1,
+            router: "pages",
+          },
+        ],
+      }),
+    );
+    write(root, "dist/server/prerendered-routes/posts/first.html", html);
+
+    await finalizeCacheAdapterPrerenderOutput({ cdn: staticAssetsAdapter() }, root);
+    const adapter = createStaticAssetsCacheAdapter({
+      env: {
+        ASSETS: {
+          async fetch(input: string) {
+            const file = path.join(root, "dist/client", new URL(input).pathname);
+            return fs.existsSync(file)
+              ? new Response(fs.readFileSync(file))
+              : new Response(null, { status: 404 });
+          },
+        },
+      },
+    });
+    expect(await adapter.get(pagesIsrCacheKey("/posts/first", "build-a"))).toMatchObject({
+      value: { kind: "PAGES", html, pageData: props },
+    });
+  });
+
   it.each([
     {
       name: "redirect",

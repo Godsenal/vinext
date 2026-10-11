@@ -65,16 +65,17 @@ const NEXT_DATA_SCRIPT_PATTERN =
 
 export function extractVinextNextDataJson(html: string): string | null {
   const canonical = [...html.matchAll(NEXT_DATA_SCRIPT_PATTERN)];
-  if (canonical.length === 1) return canonical[0][1];
-  if (canonical.length > 1) {
+  if (canonical.length > 1 && typeof DOMParser !== "undefined") {
     // Text inside a custom Document's raw <script> can spell out a
     // __NEXT_DATA__ tag. Only then pay for a parse that finds the element.
+    // Node-side build steps have no DOMParser and keep the first match.
     return (
       new DOMParser()
         .parseFromString(html, "text/html")
         .querySelector('script#__NEXT_DATA__[type="application/json"]')?.textContent ?? null
     );
   }
+  if (canonical[0]) return canonical[0][1];
 
   const assignment = /<script(?:\s[^>]*)?>\s*window\.__NEXT_DATA__\s*=\s*/.exec(html);
   if (!assignment || assignment.index === undefined) return null;
