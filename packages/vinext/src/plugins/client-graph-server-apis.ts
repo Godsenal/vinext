@@ -208,6 +208,11 @@ function getGraphKind(
   return "server";
 }
 
+/** Only App Router SSR renders Client Components in a server graph. */
+function tracksClientBoundaries(environmentName: string, appDir: string | null): boolean {
+  return appDir !== null && environmentName === "ssr";
+}
+
 /**
  * Fail the build when a module in the client layer imports a request API
  * (`next/headers`, `next/root-params`) or a server-only cache/`after` API,
@@ -241,15 +246,17 @@ export function createClientGraphServerApisPlugin(
     return state;
   };
   // Pages pages open the client layer in every server graph. A "use client"
-  // module only does in App Router SSR: Pages-only apps have no Client
-  // Components, so there an inert directive in a module that only an API
-  // route or middleware imports (graphs Next.js leaves unchecked) is ignored.
+  // module only does in App Router SSR (the "ssr" environment): Pages-only
+  // apps and other server environments, such as auxiliary Workers, have no
+  // Client Components, so there an inert directive in a module that only an
+  // API route, middleware or Worker imports (graphs Next.js leaves
+  // unchecked) is ignored.
   // Pages are matched by the exact ids the generated Pages entries import them
   // under in this environment, which follow `resolve.alias` and
   // `resolve.preserveSymlinks`.
   const getClientRootPredicate = async (
     graph: ServerGraphState,
-    hasAppDir: boolean,
+    tracksBoundaries: boolean,
     isDev: boolean,
     isLoaded: (moduleId: string) => boolean,
     resolve: (source: string, importer?: string) => Promise<{ id: string } | null>,
@@ -269,7 +276,7 @@ export function createClientGraphServerApisPlugin(
       ),
     );
     return (moduleId) =>
-      (hasAppDir && graph.clientBoundaries.has(moduleId)) || pageIds.has(moduleId);
+      (tracksBoundaries && graph.clientBoundaries.has(moduleId)) || pageIds.has(moduleId);
   };
 
   return {
@@ -308,8 +315,7 @@ export function createClientGraphServerApisPlugin(
         const appDir = options.getAppDir();
         const graphKind = options.worker ? "browser" : getGraphKind(environment, appDir !== null);
         if (!graphKind) return null;
-        // Only App Router server graphs track "use client" boundaries.
-        const tracksBoundaries = graphKind === "server" && appDir !== null;
+        const tracksBoundaries = tracksClientBoundaries(environment.name, appDir);
         if (
           !SERVER_API_CANDIDATE_RE.test(code) &&
           !(tracksBoundaries && USE_CLIENT_CANDIDATE_RE.test(code))
@@ -351,7 +357,7 @@ export function createClientGraphServerApisPlugin(
         };
         const isClientRoot = await getClientRootPredicate(
           graph,
-          appDir !== null,
+          tracksBoundaries,
           true,
           (moduleId) => Boolean(environment.moduleGraph.getModuleById(moduleId)),
           (source, importer) => this.resolve(source, importer),
@@ -373,7 +379,7 @@ export function createClientGraphServerApisPlugin(
       };
       const isClientRoot = await getClientRootPredicate(
         graph,
-        appDir !== null,
+        tracksClientBoundaries(environment.name, appDir),
         false,
         (moduleId) => Boolean(this.getModuleInfo(moduleId)),
         (source, importer) => this.resolve(source, importer),

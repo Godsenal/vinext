@@ -1066,6 +1066,53 @@ describe("client-graph dev boundaries", () => {
   });
 });
 
+describe("client-graph server environments", () => {
+  it.each([
+    ["ssr", true],
+    // An auxiliary Worker renders no Client Components.
+    ["aux_worker", false],
+  ])(
+    'treats a "use client" module in the %s environment as a client root: %s',
+    async (name, rejects) => {
+      const plugin = createClientGraphServerApisPlugin({ getAppDir: () => "/repo/app" });
+      const boundaryId = "/repo/worker/client.ts";
+      const environment = {
+        name,
+        mode: "dev",
+        config: { consumer: "server" },
+        moduleGraph: {
+          getModuleById: (id: string) =>
+            id === "/repo/lib/session.ts" ? { importers: [{ id: boundaryId }] } : undefined,
+        },
+      };
+      const context = {
+        environment,
+        error: (message: unknown) => {
+          throw new Error(String(message));
+        },
+        resolve: async () => null,
+      };
+      const transform = plugin.transform as unknown as {
+        handler: (this: typeof context, code: string, id: string) => Promise<unknown>;
+      };
+
+      await transform.handler.call(
+        context,
+        `"use client";\nimport { readSession } from "../lib/session";\nexport { readSession };\n`,
+        boundaryId,
+      );
+      const check = transform.handler.call(
+        context,
+        `import { cookies } from "next/headers";\nexport const readSession = cookies;\n`,
+        "/repo/lib/session.ts",
+      );
+
+      if (rejects) await expect(check).rejects.toThrow('depends on "next/headers"');
+      else await expect(check).resolves.toBeNull();
+    },
+  );
+});
+
 describe("findInvalidClientImports", () => {
   it("matches Next.js' client-graph import list", () => {
     const code = [
