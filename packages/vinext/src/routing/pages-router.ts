@@ -89,6 +89,23 @@ async function scanPageRoutes(pagesDir: string, matcher: ValidFileMatcher): Prom
 }
 
 /**
+ * Whether a file relative to pages/ (forward slashes) is a page
+ * `pagesRouter()` serves, or one of the root `_app`, `_document` and `_error`
+ * files.
+ */
+export function isPagesEntryFile(file: string, matcher: ValidFileMatcher): boolean {
+  const withoutExt = matcher.stripExtension(file);
+  if (withoutExt === file) return false;
+  const segments = withoutExt.split("/");
+  if (segments.length === 1 && RESERVED_PAGE_NAMES.has(segments[0])) return true;
+  // Directories the scan does not descend into.
+  if (segments.slice(0, -1).some((name) => name === "api" || RESERVED_PAGE_NAMES.has(name))) {
+    return false;
+  }
+  return fileToRoute(file, "", matcher) !== null;
+}
+
+/**
  * Convert a file path relative to pages/ into a Route.
  */
 function fileToRoute(file: string, pagesDir: string, matcher: ValidFileMatcher): Route | null {

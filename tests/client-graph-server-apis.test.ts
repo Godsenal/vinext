@@ -667,6 +667,28 @@ export default function handler(_req: unknown, res: { json(body: unknown): void 
 
     await expect(buildFixture(root)).resolves.toBeUndefined();
   }, 120_000);
+
+  it.each(["pages/admin/_app/index.tsx", "pages/docs/[...slug]/edit.tsx"])(
+    "build next/headers in %s, which the Pages Router does not serve, imported only by an API route",
+    async (file) => {
+      const root = copyFixture(PAGES_FIXTURE_DIR);
+      writeFile(root, file, SESSION_LIB);
+      const importPath = path.relative(path.join(root, "pages/api"), path.join(root, file));
+      writeFile(
+        root,
+        "pages/api/client-graph-probe.ts",
+        `import { readSession } from ${JSON.stringify(importPath.replace(/\.tsx$/, ""))};
+
+export default function handler(_req: unknown, res: { json(body: unknown): void }) {
+  res.json({ session: typeof readSession });
+}
+`,
+      );
+
+      await expect(buildFixture(root)).resolves.toBeUndefined();
+    },
+    120_000,
+  );
 });
 
 describe("Pages Router builds alongside the App Router", () => {

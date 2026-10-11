@@ -23,6 +23,7 @@ import {
   pagesRouter,
   apiRouter,
   invalidateRouteCache,
+  isPagesEntryFile,
   matchRoute,
 } from "./routing/pages-router.js";
 import {
@@ -1808,17 +1809,17 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     const relativePath = fileMatcher.stripExtension(canonicalId.slice(canonicalPagesDir.length));
     return relativePath === "/api" || relativePath.startsWith("/api/");
   };
-  /** A Pages Router page module, including `_app`, `_document` and `_error`. */
+  /**
+   * A page the Pages Router serves (not an API route), or the root `_app`,
+   * `_document` or `_error`.
+   */
   const isPagesPageModule = (id: string): boolean => {
     if (!hasPagesDir) return false;
     const modulePath = stripViteModuleQuery(id);
     if (!isWithinPagesDirectory(modulePath)) return false;
     const canonicalId = canonicalizePageTransformPath(modulePath);
-    return (
-      isWithinPagesDirectory(canonicalId) &&
-      fileMatcher.isPageFile(canonicalId) &&
-      !isApiPage(canonicalId)
-    );
+    if (!canonicalId.startsWith(`${canonicalPagesDir}/`) || isApiPage(canonicalId)) return false;
+    return isPagesEntryFile(canonicalId.slice(canonicalPagesDir.length + 1), fileMatcher);
   };
   const dynamicShimPaths: ReadonlySet<string> = new Set(
     [
