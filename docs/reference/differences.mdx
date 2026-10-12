@@ -34,7 +34,7 @@ Next.js also treats an otherwise static route as SSG when a layout above its las
 
 ## Rewrites and redirects
 
-A param in the host of an external rewrite destination, such as `https://:tenant.example.com/`, must be a host label. vinext percent-encodes it, so a value containing `/`, `?`, `#`, `@`, `\` or `:` makes the destination invalid and the request gets a 500. Next.js inserts the value as is, so a request-controlled `has` capture can move the proxy, and the request headers it forwards, to another host. Ordinary host labels behave the same in both. Put path segments in the destination path (`https://:host/:prefix/api`) rather than in a host param.
+A param in the host of an external rewrite or redirect destination, such as `https://:tenant.example.com/`, can only supply hostname characters. vinext percent-encodes it, so a value containing `/`, `?`, `#`, `@`, `\` or `:` makes the destination invalid: a rewrite gets a 500, and a redirect's `Location` has an invalid host the browser won't follow. Next.js inserts the value as is, so a request-controlled `has` capture can send a redirect, or a rewrite's proxy along with the request headers it forwards, to another host. Ordinary host labels behave the same in both. Put path segments in the destination path (`https://:host/:prefix/api`) rather than in a host param.
 
 ## Compatibility
 

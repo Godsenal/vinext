@@ -15345,6 +15345,88 @@ describe("matchRedirect destination param substitution", () => {
       });
     }
   });
+
+  it("percent-encodes has captures substituted into an external redirect host", async () => {
+    const { matchRedirect } = await import("../packages/vinext/src/config/config-matchers.js");
+    const redirects = [
+      {
+        source: "/go",
+        has: [{ type: "query" as const, key: "tenant", value: "(?<tenant>.*)" }],
+        destination: "https://:tenant.example.com/:tenant?t=:tenant",
+        permanent: false,
+      },
+    ];
+    const match = (tenant: string) =>
+      matchRedirect("/go", redirects, { ...emptyCtx, query: new URLSearchParams({ tenant }) });
+
+    expect(match("acme")?.destination).toBe("https://acme.example.com/acme?t=acme");
+    // A decoded capture must not be able to end the authority and move the
+    // Location to another host. Path and query keep their verbatim rules.
+    for (const tenant of ["attacker.test#", "attacker.test/", "@attacker.test/", "a:1"]) {
+      const destination = match(tenant)!.destination;
+      expect(destination.startsWith("https://")).toBe(true);
+      expect(URL.canParse(destination)).toBe(false);
+    }
+    expect(match("attacker.test#")?.destination).toBe(
+      "https://attacker.test%23.example.com/attacker.test#?t=attacker.test#",
+    );
+  });
+
+  it("encodes a host capture after a scheme supplied by a param", async () => {
+    const { matchRedirect } = await import("../packages/vinext/src/config/config-matchers.js");
+    const result = matchRedirect(
+      "/go",
+      [
+        {
+          source: "/go",
+          has: [
+            { type: "query" as const, key: "proto", value: "(?<proto>.*)" },
+            { type: "query" as const, key: "h", value: "(?<h>.*)" },
+          ],
+          destination: ":proto::h.example.com/",
+          permanent: false,
+        },
+      ],
+      { ...emptyCtx, query: new URLSearchParams({ proto: "http", h: "attacker.test#" }) },
+    );
+
+    expect(result?.destination).toBe("http:attacker.test%23.example.com/");
+    expect(URL.canParse(result!.destination)).toBe(false);
+  });
+
+  it("substitutes params verbatim after a non-special scheme without an authority", async () => {
+    const { matchRedirect } = await import("../packages/vinext/src/config/config-matchers.js");
+    const redirects = [
+      { source: "/mail/:email", destination: "mailto::email", permanent: false },
+      { source: "/call/:n", destination: "tel::n", permanent: false },
+    ];
+
+    expect(matchRedirect("/mail/team@example.com", redirects, emptyCtx)?.destination).toBe(
+      "mailto:team@example.com",
+    );
+    expect(matchRedirect("/call/+15550100", redirects, emptyCtx)?.destination).toBe(
+      "tel:+15550100",
+    );
+  });
+
+  it("keeps a host-type capture redirect working", async () => {
+    const { matchRedirect } = await import("../packages/vinext/src/config/config-matchers.js");
+    // Ported from Next.js test/integration/custom-routes (has-redirect-6).
+    const result = matchRedirect(
+      "/has-redirect-6",
+      [
+        {
+          source: "/has-redirect-6",
+          has: [{ type: "host" as const, key: "", value: "(?<subdomain>.*)-test.example.com" }],
+          destination: "https://:subdomain.example.com/some-path/end?a=b",
+          permanent: false,
+        },
+      ],
+      { ...emptyCtx, host: "hello-test.example.com" },
+    );
+
+    expect(result?.destination).toBe("https://hello.example.com/some-path/end?a=b");
+  });
 });
 
 // ---------------------------------------------------------------------------
