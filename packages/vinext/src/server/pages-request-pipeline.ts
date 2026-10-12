@@ -322,7 +322,16 @@ export type PagesPipelineResult =
   // passthrough responses (middleware short-circuits, external proxies, redirects),
   // which Node sends verbatim without injecting a Content-Type — matching the
   // pre-refactor behavior.
-  | { type: "response"; response: Response; defaultContentType?: string }
+  //
+  // `finalCachePolicy` marks a response whose Cache-Control the pipeline owns
+  // (an unmatched data request's never-cache 404). A caller that restores an
+  // outer policy over a shared artifact must leave it as is.
+  | {
+      type: "response";
+      response: Response;
+      defaultContentType?: string;
+      finalCachePolicy?: true;
+    }
   // `handled`: an adapter-supplied callback (e.g. Node public-file serving) already
   // wrote the response to its own output; the adapter should just return.
   | { type: "handled" }
@@ -1007,6 +1016,7 @@ export async function runPagesRequest(
         type: "response",
         response: notFoundResponse,
         defaultContentType: "application/json",
+        finalCachePolicy: true,
       };
     }
     if (
