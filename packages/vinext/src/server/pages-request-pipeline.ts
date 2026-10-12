@@ -32,6 +32,7 @@ import {
 import { buildMiddlewarePrefetchSkipResponse } from "./pages-data-route.js";
 import { cloneRequestWithUrl, normalizeTrailingSlash } from "./request-pipeline.js";
 import { applyConfigHeadersToHeaderRecord } from "./config-headers.js";
+import { applyCdnResponseHeaders, NEVER_CACHE_CONTROL } from "./cache-control.js";
 import type { HeaderRecord } from "./request-pipeline.js";
 import { finalizeMissingStaticAssetResponse, mergeHeaders } from "./worker-utils.js";
 import { assetPrefixPathname, isNextStaticPath } from "../utils/asset-prefix.js";
@@ -994,6 +995,9 @@ export async function runPagesRequest(
       const headers = new Headers(response.headers);
       headers.set("content-type", "application/json");
       headers.set("x-nextjs-matched-path", matchResolvedPathname(pathname));
+      // Response headers win over the staged config headers in mergeHeaders,
+      // so a next.config Cache-Control rule can't replace this policy.
+      applyCdnResponseHeaders(headers, { cacheControl: NEVER_CACHE_CONTROL });
       const notFoundResponse = new Response("{}", { status: 404, headers });
       return {
         type: "response",

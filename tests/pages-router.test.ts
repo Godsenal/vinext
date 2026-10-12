@@ -3306,6 +3306,9 @@ export const config = { matcher: "${matcher}" };
       expect(res.status).toBe(404);
       expect(res.headers.get("content-type")).toContain("application/json");
       expect(res.headers.get("x-nextjs-matched-path")).toBe("/totally-missing-page");
+      expect(res.headers.get("cache-control")).toBe(
+        "private, no-cache, no-store, max-age=0, must-revalidate",
+      );
       // Body must still be valid JSON so naive clients calling `.json()` do
       // not throw before checking the status code.
       expect(await res.json()).toEqual({});
@@ -8263,6 +8266,9 @@ describe("Production server middleware (Pages Router)", () => {
       expect(res.status).toBe(404);
       expect(res.headers.get("content-type")).toContain("application/json");
       expect(res.headers.get("x-nextjs-matched-path")).toBe("/totally-missing-page");
+      expect(res.headers.get("cache-control")).toBe(
+        "private, no-cache, no-store, max-age=0, must-revalidate",
+      );
       expect(await res.json()).toEqual({});
     });
 

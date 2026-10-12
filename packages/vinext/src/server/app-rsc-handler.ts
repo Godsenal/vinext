@@ -2537,11 +2537,13 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       // An App match is served (the Pages client hard-navigates to it). A miss
       // goes to the App not-found route in Next.js router-server.ts, so unlike
       // a Pages-only app it gets a 404 without a matched path.
-      if (!match) return new Response("{}", { status: 404, headers });
+      if (!match) {
+        return withUnmatchedRouteCacheControl(new Response("{}", { status: 404, headers }));
+      }
       headers.set("x-nextjs-matched-path", matchPathname(canonicalPathname));
       return new Response("{}", { status: 200, headers });
     }
-    return buildNextDataNotFoundResponse();
+    return withUnmatchedRouteCacheControl(buildNextDataNotFoundResponse());
   }
 
   if (!match) {

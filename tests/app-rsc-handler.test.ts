@@ -9343,9 +9343,18 @@ describe("createAppRscHandler", () => {
 
   it("returns middleware-enabled hybrid Pages data misses as a 404", async () => {
     // Next.js router-server.ts sends a hybrid app's miss to the App not-found
-    // route rather than the Pages-only JSON matched-path response.
+    // route rather than the Pages-only JSON matched-path response, sent with
+    // the never-cache policy even under a matching next.config rule.
     const handler = createHandler({
-      configHeaders: [],
+      configHeaders: [
+        {
+          source: "/:path*",
+          headers: [
+            { key: "Cache-Control", value: "public, max-age=3600" },
+            { key: "x-config", value: "config" },
+          ],
+        },
+      ],
       matchRoute: () => null,
       middlewareModule: {
         default: () => new Response(null, { headers: { "x-middleware-next": "1" } }),
@@ -9361,6 +9370,10 @@ describe("createAppRscHandler", () => {
     expect(response.status).toBe(404);
     expect(response.headers.get("content-type")).toContain("application/json");
     expect(response.headers.get("x-nextjs-matched-path")).toBeNull();
+    expect(response.headers.get("x-config")).toBe("config");
+    expect(response.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
     expect(await response.text()).toBe("{}");
   });
 

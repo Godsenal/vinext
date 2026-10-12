@@ -798,7 +798,10 @@ export function createSSRHandler(
         // path. Mirror Next.js pages-handler.ts: set x-nextjs-deployment-id on
         // `_next/data` notFound exits for deployment-skew protection. Fixes #1829.
         const deploymentId = process.env.__VINEXT_DEPLOYMENT_ID || process.env.NEXT_DEPLOYMENT_ID;
-        const notFoundHeaders: Record<string, string> = { "Content-Type": "application/json" };
+        const notFoundHeaders: Record<string, string> = {
+          "Content-Type": "application/json",
+          "Cache-Control": ISR_NEVER_CACHE_CONTROL,
+        };
         if (hasMiddleware) {
           notFoundHeaders["x-nextjs-matched-path"] =
             `${locale ? `/${locale}` : ""}${localeStrippedUrl}`;

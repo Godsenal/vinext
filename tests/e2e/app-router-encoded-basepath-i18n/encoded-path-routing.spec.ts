@@ -237,5 +237,8 @@ test("answers a hybrid data miss with a 404", async () => {
     const response = await getRawPath(`/docs/_next/data/${buildId}/${page}.json`);
     expect(response.status, page).toBe(404);
     expect(response.headers["x-nextjs-matched-path"], page).toBeUndefined();
+    expect(response.headers["cache-control"], page).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
   }
 });
