@@ -46,6 +46,7 @@ export async function createInlineServerActionPlugin(options: {
       import(pathToFileURL(resolve("@vitejs/plugin-rsc")).href),
       import(pathToFileURL(resolve("@vitejs/plugin-rsc/transforms")).href),
     ]);
+  const reactServerRuntime = pathToFileURL(resolve("@vitejs/plugin-rsc/react/rsc/server")).href;
   let manager: RscPluginManager | undefined;
 
   return {
@@ -60,13 +61,19 @@ export async function createInlineServerActionPlugin(options: {
       manager = pluginApi.manager;
     },
     transform: {
-      // Like `rsc:use-server`, match every module id; the directive checks
-      // below narrow it.
-      filter: { code: "use server" },
+      // Like `rsc:use-server`, match every module id without a code filter, so
+      // a module that no longer mentions the directive still drops its claim.
       async handler(code, id) {
         if (!manager || this.environment.name !== "rsc") return;
+        if (!code.includes("use server")) {
+          manager.serverReferences.deleteClaim(PLUGIN_NAME, id);
+          return;
+        }
         const ast = await parseAstAsync(code);
-        if (transforms.hasDirective(ast.body, "use server")) {
+        if (
+          transforms.hasDirective(ast.body, "use server") ||
+          transforms.findDirectives(ast, "use server").length === 0
+        ) {
           manager.serverReferences.deleteClaim(PLUGIN_NAME, id);
           return;
         }
@@ -107,13 +114,17 @@ export async function createInlineServerActionPlugin(options: {
           return;
         }
 
-        for (const directive of directives) result.output.remove(directive.start, directive.end);
+        // `update` keeps code plugin-rsc attached around the directive, such as
+        // a nested action's declaration that starts right after it.
+        for (const directive of directives) {
+          result.output.update(directive.start, directive.end, "");
+        }
         manager.serverReferences.replaceClaim(PLUGIN_NAME, id, {
           ...reference,
           exportNames: result.names,
         });
         result.output.prepend(
-          `import * as $$ReactServer from "@vitejs/plugin-rsc/react/rsc/server";\n` +
+          `import * as $$ReactServer from ${JSON.stringify(reactServerRuntime)};\n` +
             `import * as $$vinextBoundArgs from ${JSON.stringify(options.boundArgsRuntime)};\n`,
         );
         return magicStringTransformResult(result.output, { hires: "boundary", source: id });

@@ -65,6 +65,10 @@ async function setup(options: { manualRsc?: boolean } = {}) {
 
 const twoActionsCode = [
   `export default async function Page({ owner }) {`,
+  `  const plain = async () => {`,
+  `    "use server";`,
+  `    return "plain";`,
+  `  };`,
   `  const preview = async () => {`,
   `    "use server";`,
   `    return "preview:" + owner;`,
@@ -78,13 +82,20 @@ const twoActionsCode = [
   `    };`,
   `    return inner;`,
   `  }`,
-  `  const plain = async () => {`,
-  `    "use server";`,
-  `    return "plain";`,
-  `  };`,
   `  return [preview, readProtected, plain];`,
   `}`,
 ].join("\n");
+
+/** Map each hoisted capturing action to the action id its captures decrypt for. */
+function decodedActionIds(code: string): Map<string, string> {
+  return new Map(
+    [
+      ...code.matchAll(
+        /function (\$\$hoist_\d+_\w+)\(\$\$hoist_encoded\) \{\s*const \[[\w,]+\] = await \$\$vinextBoundArgs\.decryptActionBoundArgs\(("[^"]+")/g,
+      ),
+    ].map((match) => [match[1]!, match[2]!]),
+  );
+}
 
 describe("inline Server Action captures", () => {
   it("runs before plugin-rsc's use-server transform", async () => {
@@ -105,29 +116,29 @@ describe("inline Server Action captures", () => {
     expect(() => parseAst(code)).not.toThrow();
     const { referenceKey, exportNames } = manager.serverReferences.metaMap.get(moduleId)!;
     expect(exportNames).toEqual([
-      "$$hoist_0_preview",
-      "$$hoist_1_readProtected",
-      "$$hoist_2_inner",
-      "$$hoist_3_plain",
+      "$$hoist_0_plain",
+      "$$hoist_1_preview",
+      "$$hoist_2_readProtected",
+      "$$hoist_3_inner",
     ]);
 
     const id = (name: string) => JSON.stringify(`${referenceKey}#${name}`);
     expect(code).toContain(
-      `.bind(null, $$vinextBoundArgs.encryptActionBoundArgs(${id("$$hoist_0_preview")}, [owner]))`,
+      `.bind(null, $$vinextBoundArgs.encryptActionBoundArgs(${id("$$hoist_1_preview")}, [owner]))`,
     );
     expect(code).toContain(
-      `.bind(null, $$vinextBoundArgs.encryptActionBoundArgs(${id("$$hoist_2_inner")}, [protectedOwner]))`,
+      `.bind(null, $$vinextBoundArgs.encryptActionBoundArgs(${id("$$hoist_3_inner")}, [protectedOwner]))`,
     );
-    const decoded = (name: string) =>
-      code.match(
-        new RegExp(
-          `function \\$\\$hoist_\\d+_${name}\\(\\$\\$hoist_encoded\\) \\{\\s*const \\[\\w+\\] = await \\$\\$vinextBoundArgs\\.decryptActionBoundArgs\\(("[^"]+")`,
-        ),
-      )?.[1];
-    expect(decoded("preview")).toBe(id("$$hoist_0_preview"));
-    expect(decoded("inner")).toBe(id("$$hoist_2_inner"));
-    expect(code).toContain("async function $$hoist_3_plain() {");
+    expect(decodedActionIds(code)).toEqual(
+      new Map([
+        ["$$hoist_1_preview", id("$$hoist_1_preview")],
+        ["$$hoist_2_readProtected", id("$$hoist_2_readProtected")],
+        ["$$hoist_3_inner", id("$$hoist_3_inner")],
+      ]),
+    );
+    expect(code).toContain("async function $$hoist_0_plain() {");
     expect(code).not.toContain("__vite_rsc_encryption_runtime");
+    expect(code).not.toContain('"@vitejs/plugin-rsc/react/rsc/server"');
     expect(code).not.toContain('"use server"');
 
     // plugin-rsc no longer finds inline directives, so it neither rewrites
@@ -141,6 +152,38 @@ describe("inline Server Action captures", () => {
     expect([...manager.serverReferences.claimMap.get(moduleId).keys()]).toEqual([PLUGIN_NAME]);
   });
 
+  it.each([
+    [
+      "a nested action declared right after the directive",
+      `export function P(y){async function outer(){"use server";async function inner(){"use server";return y}return inner}return outer}`,
+      ["$$hoist_0_outer", "$$hoist_1_inner"],
+    ],
+    [
+      "a use strict prologue",
+      `export function P(y){return async () => {"use strict";"use server";return y}}`,
+      ["$$hoist_0_anonymous_server_function"],
+    ],
+    [
+      "object and static class methods",
+      `export function P(y){return [{ async m(){"use server";return y} }, class { static async s(){"use server";return y} }]}`,
+      ["$$hoist_0_m", "$$hoist_1_s"],
+    ],
+  ])("binds captures for %s", async (_label, source, names) => {
+    const { plugin, manager } = await setup();
+    const result = await unwrapHook(plugin.transform)!.call(rscContext, source, moduleId);
+    const code: string = result!.code;
+    expect(() => parseAst(code)).not.toThrow();
+    const { referenceKey, exportNames } = manager.serverReferences.metaMap.get(moduleId)!;
+    expect(exportNames).toEqual(names);
+    expect(decodedActionIds(code)).toEqual(
+      new Map(names.map((name) => [name, JSON.stringify(`${referenceKey}#${name}`)])),
+    );
+    for (const name of names) {
+      expect(code).toContain(`registerServerReference(${name}, ${JSON.stringify(referenceKey)}`);
+    }
+    expect(code).not.toContain('"use server"');
+  });
+
   it("leaves file-level use-server modules to plugin-rsc", async () => {
     const { plugin, manager } = await setup();
     const source = [`"use server";`, `export async function action() {}`].join("\n");
@@ -148,12 +191,17 @@ describe("inline Server Action captures", () => {
     expect(manager.serverReferences.claimMap.get(moduleId)?.has(PLUGIN_NAME)).toBeFalsy();
   });
 
-  it("drops its claim when the inline actions are removed", async () => {
+  it.each([
+    ["no longer mentions the directive", `export const note = "server";`],
+    ["only mentions the directive in a string", `export const note = "use server";`],
+  ])("drops its claim when a module %s", async (_label, source) => {
     const { plugin, manager } = await setup();
+    // A code filter would skip the module and leave the stale claim behind.
+    expect(plugin.transform).not.toHaveProperty("filter");
     const transform = unwrapHook(plugin.transform)!;
     await transform.call(rscContext, twoActionsCode, moduleId);
     expect(manager.serverReferences.claimMap.get(moduleId)?.has(PLUGIN_NAME)).toBe(true);
-    await transform.call(rscContext, `export const note = "use server";`, moduleId);
+    expect(await transform.call(rscContext, source, moduleId)).toBeUndefined();
     expect(manager.serverReferences.claimMap.get(moduleId)?.has(PLUGIN_NAME)).toBeFalsy();
   });
 
