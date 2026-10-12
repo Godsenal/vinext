@@ -71,7 +71,7 @@ import {
   withResponseStageVary,
 } from "./response-stage-policy.js";
 import type { WorkerCacheabilityProbeRoute } from "./cacheability-request.js";
-import { traceFrameworkRequest } from "./request-tracing.js";
+import { runOutsideFrameworkRequestTrace, traceFrameworkRequest } from "./request-tracing.js";
 import { CACHEABILITY_REQUEST_STATE } from "vinext/shims/cacheability-classification";
 import { getExplicitCdnCacheAdapter } from "vinext/shims/cdn-cache-state";
 
@@ -247,6 +247,115 @@ function handleRequest(
     : trace();
 }
 
+/**
+ * Apply the Worker's request URL guards and strip basePath. Returns the
+ * response for a URL the Worker answers before the pipeline.
+ */
+function resolvePagesWorkerRequestUrl(
+  request: Request,
+): Response | { hadBasePath: boolean; pathname: string; request: Request } {
+  const url = new URL(request.url);
+  // Redirect repeated slashes / backslashes like Next.js (//evil.com →
+  // /evil.com) and block encoded protocol-relative shapes (/%5Cevil.com,
+  // /%2F/evil.com) before any downstream redirect can echo them.
+  const protocolRelativeGuard = guardProtocolRelativeUrl(url.pathname, url.search);
+  if (protocolRelativeGuard) return protocolRelativeGuard;
+  try {
+    normalizePathnameForRouteMatchStrict(url.pathname);
+  } catch {
+    return new Response("Bad Request", { status: 400 });
+  }
+  // Track basePath presence on the original request so matcher gating can
+  // distinguish requests inside basePath from requests outside it.
+  const hadBasePath = !basePath || hasBasePath(url.pathname, basePath);
+  const pathname = stripBasePath(url.pathname, basePath);
+  if (pathname !== url.pathname) {
+    url.pathname = pathname;
+    request = cloneRequestWithUrl(request, url.toString());
+  }
+  return { hadBasePath, pathname, request };
+}
+
+// Like Next.js' fetchInternalImage, resolve an image source through the Pages
+// pipeline as a GET without the caller's headers, so middleware, redirects and
+// rewrites admit it as they would an anonymous direct request. The lookup
+// renders and proxies nothing: it returns a public file the pipeline selects,
+// or a build asset, else null.
+async function resolveImageSource(
+  imageUrl: string,
+  request: Request,
+  deps: PagesPipelineDeps,
+  assets: VinextAssetFetcher,
+): Promise<Response | null> {
+  const fetchAsset = (assetRequest: Request) => Promise.resolve(assets.fetch(assetRequest));
+  // vinext's next/image emits the image endpoint without the basePath, where
+  // Next.js prefixes it. Resolve that form's unprefixed sources under the
+  // basePath, as the App Router does.
+  const sourceUrl = new URL(
+    basePath && !deps.hadBasePath && !hasBasePath(imageUrl, basePath)
+      ? basePath + imageUrl
+      : imageUrl,
+    request.url,
+  );
+  const resolved = resolvePagesWorkerRequestUrl(new Request(sourceUrl, { signal: request.signal }));
+  if (resolved instanceof Response) {
+    await resolved.body?.cancel();
+    return null;
+  }
+  // Workers Static Assets serves build assets before middleware for direct
+  // requests too.
+  if (isNextStaticPath(new URL(resolved.request.url).pathname, "", assetPathPrefix)) {
+    const asset = await fetchAsset(new Request(sourceUrl, { signal: request.signal }));
+    if (asset.ok) return asset;
+    await asset.body?.cancel();
+  }
+  if (normalizeDataRequest(resolved.request).isDataReq) return null;
+
+  let source: Response | null = null;
+  const result = await runOutsideFrameworkRequestTrace(() =>
+    runPagesRequest(resolved.request, {
+      ...deps,
+      dataNotFoundResponse: null,
+      hadBasePath: resolved.hadBasePath,
+      handleApi: null,
+      isDataReq: false,
+      isDataRequest: false,
+      middlewareRequest: undefined,
+      proxyExternal: () => Promise.resolve(new Response(null, { status: 404 })),
+      recordCacheability: false,
+      renderPage: null,
+      runMiddleware:
+        typeof runMiddleware === "function"
+          ? wrapMiddlewareWithBasePath(runMiddleware, basePath, resolved.hadBasePath)
+          : null,
+      serveFilesystemRoute: async (
+        requestPathname,
+        _stagedHeaders,
+        phase,
+        _resolvedUrl,
+        filesystemRequest,
+      ) => {
+        if (isImageOptimizationPath(requestPathname)) return false;
+        const asset = await fetchWorkerFilesystemRoute(
+          filesystemRequest,
+          requestPathname,
+          phase,
+          fetchAsset,
+          publicFiles,
+          basePath,
+          assetPathPrefix,
+          resolved.hadBasePath,
+        );
+        if (asset === false) return false;
+        source = asset;
+        return true;
+      },
+    }),
+  );
+  if (result.type === "response") await result.response.body?.cancel();
+  return result.type === "handled" ? source : null;
+}
+
 async function handleRequestImpl(
   request: Request,
   env: PagesWorkerEnv | undefined,
@@ -374,34 +483,16 @@ async function handleRequestImpl(
       );
     }
 
-    // Redirect repeated slashes / backslashes like Next.js (//evil.com →
-    // /evil.com) and block encoded protocol-relative shapes (/%5Cevil.com,
-    // /%2F/evil.com) before any downstream redirect can echo them.
-    const protocolRelativeGuard = guardProtocolRelativeUrl(pathname, url.search);
-    if (protocolRelativeGuard) return protocolRelativeGuard;
-    try {
-      normalizePathnameForRouteMatchStrict(pathname);
-    } catch {
-      return new Response("Bad Request", { status: 400 });
-    }
-
     // Valid assets are served by Cloudflare's ASSETS binding before the worker
     // is invoked. Missing asset-shaped requests still need to reach middleware
     // so it can rewrite/respond before the pipeline classifies the miss.
     const missingBuildAsset = isNextStaticPath(pathname, basePath, assetPathPrefix);
 
-    // Track basePath presence on the original request so matcher gating can
-    // distinguish requests inside basePath from requests outside it.
-    const hadBasePath = !basePath || hasBasePath(pathname, basePath);
-    {
-      const stripped = stripBasePath(pathname, basePath);
-      if (stripped !== pathname) {
-        const strippedUrl = new URL(request.url);
-        strippedUrl.pathname = stripped;
-        request = cloneRequestWithUrl(request, strippedUrl.toString());
-        pathname = stripped;
-      }
-    }
+    const resolvedRequestUrl = resolvePagesWorkerRequestUrl(request);
+    if (resolvedRequestUrl instanceof Response) return resolvedRequestUrl;
+    const { hadBasePath } = resolvedRequestUrl;
+    request = resolvedRequestUrl.request;
+    pathname = resolvedRequestUrl.pathname;
 
     const middlewareRequest = request;
     // The page sees the request URL before `_next/data` normalization as
@@ -608,8 +699,12 @@ async function handleRequestImpl(
           ];
           return handleConfiguredImageOptimization(
             imageRequest,
-            (assetPath) =>
-              Promise.resolve(assets.fetch(new Request(new URL(assetPath, request.url)))),
+            async (assetPath) => {
+              const source = await resolveImageSource(assetPath, request, deps, assets);
+              if (source && !request.signal.aborted) return source;
+              await source?.body?.cancel();
+              return new Response("Image not found", { status: 404 });
+            },
             allowedWidths,
             imageConfig,
           );

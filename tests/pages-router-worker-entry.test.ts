@@ -2,7 +2,7 @@ import path from "node:path";
 import { createServer, type Plugin } from "vite";
 import { describe, expect, it } from "vite-plus/test";
 
-function pagesWorkerEntryVirtualModules(): Plugin {
+function pagesWorkerEntryVirtualModules(overrides: Record<string, string> = {}): Plugin {
   const modules = new Map([
     [
       "virtual:vinext-server-entry",
@@ -76,6 +76,7 @@ export function registerConfiguredCacheAdapters() {
       `export { registerConfiguredCacheAdapters } from "virtual:vinext-cache-adapters";`,
     ],
     ["virtual:vinext-image-adapters", "export function registerConfiguredImageOptimizer() {}"],
+    ...Object.entries(overrides),
   ]);
 
   return {
@@ -196,6 +197,94 @@ describe("Pages Router production Worker readiness", () => {
       );
       expect(dynamic.headers.get("cache-control")).toContain("no-store");
       await expect(dynamic.text()).resolves.toBe("page");
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("resolves image sources through middleware, under basePath for the unprefixed endpoint", async () => {
+    // Next.js' fetchInternalImage runs a local source through the router without
+    // the caller's cookies (packages/next/src/server/image-optimizer.ts).
+    // vinext's next/image emits the endpoint without basePath, so that form
+    // resolves its source under basePath.
+    const server = await createServer({
+      appType: "custom",
+      configFile: false,
+      logLevel: "silent",
+      plugins: [
+        pagesWorkerEntryVirtualModules({
+          "virtual:vinext-server-entry": `
+export const prerenderSecret = "worker-prerender-secret";
+export const vinextConfig = { basePath: "/docs" };
+`,
+          "virtual:vinext-pages-request-entry": `
+export const authorizeOnDemandRevalidate = () => false;
+export const buildId = "worker-build";
+export const hasMiddleware = true;
+export const hasRequestAwareDocument = false;
+export const matchApiRoute = () => null;
+export const matchPageRoute = () => null;
+export const normalizeDataRequest = (request) => ({ isDataReq: false, normalizedPathname: null, notFoundResponse: null, request });
+export const prerenderSecret = "worker-prerender-secret";
+export function __ensureInstrumentation() {}
+export const publicFiles = new Set(["/open.png", "/protected/private.png"]);
+export async function runMiddleware(request) {
+  if (new URL(request.url).pathname.startsWith("/docs/protected/")) {
+    return { continue: false, response: new Response("blocked", { status: 403 }) };
+  }
+  return { continue: true };
+}
+export const vinextConfig = { basePath: "/docs" };
+`,
+        }),
+      ],
+      resolve: {
+        alias: {
+          "vinext/shims": path.resolve(import.meta.dirname, "../packages/vinext/src/shims"),
+        },
+      },
+      server: { middlewareMode: true },
+    });
+
+    try {
+      const entry = (await server.ssrLoadModule(
+        path.resolve(import.meta.dirname, "../packages/vinext/src/server/pages-router-entry.ts"),
+      )) as {
+        default: {
+          fetch(request: Request, env?: unknown, ctx?: { waitUntil(): void }): Promise<Response>;
+        };
+      };
+      const env = {
+        ASSETS: {
+          fetch(request: Request) {
+            const { pathname } = new URL(request.url);
+            return pathname === "/open.png" || pathname === "/protected/private.png"
+              ? new Response(pathname, { headers: { "content-type": "image/png" } })
+              : new Response(null, { status: 404 });
+          },
+        },
+      };
+      const get = (url: string) =>
+        entry.default.fetch(new Request(`https://example.com${url}`), env, { waitUntil() {} });
+
+      expect((await get("/docs/protected/private.png")).status).toBe(403);
+      for (const url of [
+        "/_next/image?url=%2Fopen.png&w=640&q=75",
+        "/docs/_next/image?url=%2Fdocs%2Fopen.png&w=640&q=75",
+      ]) {
+        const image = await get(url);
+        expect(image.status, url).toBe(200);
+        expect(image.headers.get("content-type"), url).toBe("image/png");
+        await expect(image.text(), url).resolves.toBe("/open.png");
+      }
+      for (const url of [
+        "/_next/image?url=%2Fprotected%2Fprivate.png&w=640&q=75",
+        "/docs/_next/image?url=%2Fdocs%2Fprotected%2Fprivate.png&w=640&q=75",
+      ]) {
+        const image = await get(url);
+        expect(image.status, url).toBe(404);
+        await expect(image.text(), url).resolves.not.toContain("/protected/private.png");
+      }
     } finally {
       await server.close();
     }
