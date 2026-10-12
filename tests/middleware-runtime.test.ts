@@ -1115,3 +1115,75 @@ describe("middleware nextUrl basePath", () => {
     expect(captured.request?.nextUrl.pathname).toBe("/%61bout");
   });
 });
+
+// With `skipProxyUrlNormalize`, Pages adapters hand middleware the raw
+// `/_next/data/<buildId>/<page>.json` URL. Next.js compiles every matcher with
+// an optional `_next/data/<buildId>` prefix and `.json` suffix, so a matcher
+// guarding a page also guards its data URL, including one with a stale buildId.
+// https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/analysis/get-page-static-info.ts
+describe("middleware matching for raw data requests", () => {
+  async function observedPathname(
+    pathname: string,
+    matcher: string,
+    options: {
+      basePath?: string;
+      i18nConfig?: { defaultLocale: string; locales: string[] };
+      isDataRequest?: boolean;
+    } = {},
+  ): Promise<string | undefined> {
+    let observed: string | undefined;
+    await executeMiddleware({
+      basePath: options.basePath,
+      i18nConfig: options.i18nConfig,
+      isDataRequest: options.isDataRequest ?? true,
+      isProxy: false,
+      module: {
+        config: { matcher },
+        default(request: NextRequest) {
+          observed = request.nextUrl.pathname;
+          return new Response("forbidden", { status: 403 });
+        },
+      },
+      request: new Request(`http://localhost:3000${pathname}`),
+    });
+    return observed;
+  }
+
+  it.each([
+    ["the current build", "/_next/data/build-id/admin.json", "/admin"],
+    ["a stale build", "/_next/data/stale-build/admin.json", "/admin"],
+    ["the index page", "/_next/data/build-id/index.json", "/"],
+    ["a nested index page", "/_next/data/build-id/admin/index.json", "/admin"],
+    ["an encoded page path", "/_next/data/build-id/adm%69n.json", "/admin"],
+  ])("applies a page matcher to the data URL of %s", async (_label, pathname, matcher) => {
+    // Middleware still observes the raw URL it was given.
+    await expect(observedPathname(pathname, matcher)).resolves.toBe(pathname);
+  });
+
+  it("applies a page matcher to a data URL inside basePath", async () => {
+    await expect(
+      observedPathname("/docs/_next/data/build-id/admin.json", "/admin", { basePath: "/docs" }),
+    ).resolves.toBe("/_next/data/build-id/admin.json");
+  });
+
+  it.each(["/_next/data/build-id/fr/admin.json", "/_next/data/build-id/admin.json"])(
+    "applies a page matcher to the locale data URL %s",
+    async (pathname) => {
+      const i18nConfig = { defaultLocale: "en", locales: ["en", "fr"] };
+      await expect(observedPathname(pathname, "/admin", { i18nConfig })).resolves.toBeDefined();
+    },
+  );
+
+  it.each([
+    ["a different page", "/_next/data/build-id/admin/settings.json"],
+    ["a sibling page", "/_next/data/build-id/administrator.json"],
+  ])("does not widen an exact matcher to %s", async (_label, pathname) => {
+    await expect(observedPathname(pathname, "/admin")).resolves.toBeUndefined();
+  });
+
+  it("leaves ordinary requests matched against their own pathname", async () => {
+    await expect(
+      observedPathname("/_next/data/build-id/admin.json", "/admin", { isDataRequest: false }),
+    ).resolves.toBeUndefined();
+  });
+});

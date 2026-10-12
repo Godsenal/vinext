@@ -33,6 +33,7 @@ import {
   stripBasePath,
 } from "../utils/base-path.js";
 import { normalizeDefaultLocalePathname } from "./pages-i18n.js";
+import { nextDataMiddlewareMatchPathname } from "./pages-data-route.js";
 import { reportRequestError } from "./instrumentation.js";
 import { isValidNavigationSignalError } from "../utils/navigation-signal.js";
 import { frameworkTracer } from "./tracer.js";
@@ -415,7 +416,16 @@ async function executeMiddlewareModule(
     // not apply outside the basePath.
     return matcher === undefined ? candidate : null;
   };
-  const encodedMatchPathname = prepareMatcherPathname(encodedRequestPathname);
+  // With `skipProxyUrlNormalize`, a Pages data request reaches middleware with
+  // its raw `_next/data` URL. Next.js still evaluates the matcher against the
+  // page that URL addresses, so a matcher guarding a page also guards its data.
+  const toPageMatcherPathname = (candidate: string | null): string | null =>
+    candidate !== null && options.isDataRequest
+      ? (nextDataMiddlewareMatchPathname(candidate) ?? candidate)
+      : candidate;
+  const encodedMatchPathname = toPageMatcherPathname(
+    prepareMatcherPathname(encodedRequestPathname),
+  );
   let decodedMatchPathname = encodedMatchPathname;
   try {
     if (encodedMatchPathname !== null) {
@@ -424,7 +434,9 @@ async function executeMiddlewareModule(
       // Without i18n, Next.js can discover an encoded basePath on the decoded
       // matcher attempt. With i18n, default-locale insertion has already made
       // that path ineligible for the compiled basePath-prefixed matcher.
-      decodedMatchPathname = prepareMatcherPathname(decodeURIComponent(encodedRequestPathname));
+      decodedMatchPathname = toPageMatcherPathname(
+        prepareMatcherPathname(decodeURIComponent(encodedRequestPathname)),
+      );
     }
   } catch {
     // Match Next.js: malformed encoding is non-fatal for matcher eligibility.
