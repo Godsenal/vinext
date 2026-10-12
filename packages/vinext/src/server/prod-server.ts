@@ -51,7 +51,7 @@ import {
 } from "./request-pipeline.js";
 import { notFoundResponse } from "./http-error-responses.js";
 import {
-  IMAGE_SOURCE_ORIGIN,
+  imageSourceOrigin,
   imageSourceUnderBasePath,
   runPagesRequest,
   wrapMiddlewareWithBasePath,
@@ -2423,13 +2423,16 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
     let sourcePath: string | null = null;
     const result = await runOutsideFrameworkRequestTrace(() =>
       runPagesRequest(
-        new Request(new URL(target.url, IMAGE_SOURCE_ORIGIN), { signal: request.signal }),
+        new Request(new URL(target.url, imageSourceOrigin(request.url)), {
+          signal: request.signal,
+        }),
         {
           ...deps,
           configMatchPathname: target.configMatchPathname,
           dataNotFoundResponse: null,
           hadBasePath: target.hadBasePath,
           handleApi: null,
+          hostless: true,
           isDataReq: false,
           isDataRequest: false,
           middlewareRequest: undefined,

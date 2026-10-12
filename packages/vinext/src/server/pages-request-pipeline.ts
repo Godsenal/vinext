@@ -108,11 +108,28 @@ type PageRouteMatch = {
 
 /**
  * Origin of an image optimizer's internal source request. Next.js'
- * fetchInternalImage dispatches the source as a relative URL without headers,
- * so the caller's host selects no host condition, domain locale or
- * middleware branch.
+ * fetchInternalImage dispatches the source as a relative URL without headers
+ * on the caller's socket, so the caller's host selects no domain locale or
+ * middleware branch while its protocol is kept.
  */
-export const IMAGE_SOURCE_ORIGIN = "http://vinext.invalid";
+export function imageSourceOrigin(callerUrl: string): string {
+  return `${new URL(callerUrl).protocol}//vinext.invalid`;
+}
+
+function withoutHost(context: RequestContext): RequestContext {
+  return {
+    get headers() {
+      return context.headers;
+    },
+    get cookies() {
+      return context.cookies;
+    },
+    get query() {
+      return context.query;
+    },
+    host: "",
+  };
+}
 
 /**
  * The image source for an endpoint requested outside the basePath. vinext's
@@ -234,6 +251,8 @@ export type PagesPipelineDeps = {
   ctx?: unknown; // Cloudflare ExecutionContext or undefined (for Node)
   /** False when routing and middleware run outside the shared response stage. */
   recordCacheability?: boolean;
+  /** Match no host condition, as for an image optimizer's headerless source request. */
+  hostless?: boolean;
   // Raw, un-re-encoded query string (incl. leading "?") for building redirect Location
   // headers. Node adapters that build the Web Request from a raw req.url string should
   // pass it so the redirect query isn't re-encoded by URL parsing (e.g. a literal "#"
@@ -445,7 +464,9 @@ export async function runPagesRequest(
   }
 
   // Step 3: Build pre-middleware request context
-  const reqCtx: RequestContext = requestContextFromRequest(request);
+  const reqCtx: RequestContext = deps.hostless
+    ? withoutHost(requestContextFromRequest(request))
+    : requestContextFromRequest(request);
   const requestHostname = i18nConfig ? url.hostname : "";
   const requestConfigMatchPathname = i18nConfig
     ? normalizeDefaultLocalePathname(requestConfigPathname, i18nConfig, {
@@ -654,6 +675,7 @@ export async function runPagesRequest(
   const pathnameForResolvedUrl = (value: string): string => value.split("#", 1)[0].split("?", 1)[0];
   const rewriteRequestContext = (): RequestContext => ({
     ...postMwReqCtx,
+    host: deps.hostless ? "" : postMwReqCtx.host,
     query: new URL(resolvedUrl, url).searchParams,
   });
   let resolvedPathname = pathnameForResolvedUrl(resolvedUrl);

@@ -7,7 +7,7 @@
 
 import {
   fetchWorkerFilesystemRoute,
-  IMAGE_SOURCE_ORIGIN,
+  imageSourceOrigin,
   imageSourceUnderBasePath,
   runPagesRequest,
   wrapMiddlewareWithBasePath,
@@ -298,7 +298,7 @@ async function resolveImageSource(
   // from the caller would carry it.
   const resolved = resolvePagesWorkerRequestUrl(
     attachRequestCfMetadata(
-      new Request(new URL(sourceUrl.pathname + sourceUrl.search, IMAGE_SOURCE_ORIGIN), {
+      new Request(new URL(sourceUrl.pathname + sourceUrl.search, imageSourceOrigin(request.url)), {
         signal: request.signal,
       }),
       request,
@@ -327,6 +327,7 @@ async function resolveImageSource(
       dataNotFoundResponse: null,
       hadBasePath: resolved.hadBasePath,
       handleApi: null,
+      hostless: true,
       isDataReq: false,
       isDataRequest: false,
       middlewareRequest: undefined,

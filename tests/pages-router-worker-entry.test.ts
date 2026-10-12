@@ -202,8 +202,8 @@ describe("Pages Router production Worker readiness", () => {
     }
   });
 
-  // A basePath Pages Worker with middleware denying /protected/ and a
-  // host-conditioned rewrite. ASSETS serves `assetPaths` with their pathname
+  // A basePath Pages Worker with middleware denying /protected/ and
+  // host-conditioned rewrites. ASSETS serves `assetPaths` with their pathname
   // as the body.
   async function loadImageWorker(assetPrefix: string, assetPaths: string[]) {
     const config = `{
@@ -212,6 +212,8 @@ describe("Pages Router production Worker readiness", () => {
   rewrites: {
     beforeFiles: [
       { source: "/host-avatar", has: [{ type: "host", value: "example.com" }], destination: "/open.png" },
+      { source: "/any-host-avatar", has: [{ type: "host", value: ".*" }], destination: "/open.png" },
+      { source: "/no-host-avatar", missing: [{ type: "host", value: ".*" }], destination: "/open.png" },
     ],
     afterFiles: [],
     fallback: [],
@@ -241,7 +243,7 @@ export const publicFiles = new Set(["/open.png", "/protected/private.png", "/cdn
 export const middlewareRequests = [];
 export async function runMiddleware(request) {
   const url = new URL(request.url);
-  middlewareRequests.push({ hasHost: request.headers.has("host"), hostname: url.hostname, pathname: url.pathname });
+  middlewareRequests.push({ hasHost: request.headers.has("host"), hostname: url.hostname, pathname: url.pathname, protocol: url.protocol });
   if (url.pathname.startsWith("/docs/protected/")) {
     return { continue: false, response: new Response("blocked", { status: 403 }) };
   }
@@ -266,7 +268,12 @@ export const vinextConfig = ${config};
       };
     };
     const requestEntry = (await server.ssrLoadModule("virtual:vinext-pages-request-entry")) as {
-      middlewareRequests: { hasHost: boolean; hostname: string; pathname: string }[];
+      middlewareRequests: {
+        hasHost: boolean;
+        hostname: string;
+        pathname: string;
+        protocol: string;
+      }[];
     };
     const env = {
       ASSETS: {
@@ -303,7 +310,8 @@ export const vinextConfig = ${config};
     try {
       expect((await get("/docs/protected/private.png")).status).toBe(403);
       // The caller's host matches a host-conditioned rewrite of a direct request
-      // only, and middleware sees neither its Host header nor its hostname.
+      // only, and middleware sees neither its Host header nor its hostname, but
+      // its protocol.
       await expect((await get("/docs/host-avatar")).text()).resolves.toBe("/open.png");
       middlewareRequests.length = 0;
       expect((await get("/docs/_next/image?url=%2Fdocs%2Fhost-avatar&w=640&q=75")).status).toBe(
@@ -314,6 +322,18 @@ export const vinextConfig = ${config};
       );
       expect(sourceRequest?.hasHost).toBe(false);
       expect(sourceRequest?.hostname).not.toBe("example.com");
+      expect(sourceRequest?.protocol).toBe("https:");
+      // Without a Host header the source matches no host condition, as in
+      // Next.js' matchHas.
+      expect((await get("/docs/any-host-avatar")).status).toBe(200);
+      // A direct request carries a host, so it renders the page instead.
+      await expect((await get("/docs/no-host-avatar")).text()).resolves.toBe("page");
+      expect((await get("/docs/_next/image?url=%2Fdocs%2Fany-host-avatar&w=640&q=75")).status).toBe(
+        404,
+      );
+      const noHost = await get("/docs/_next/image?url=%2Fdocs%2Fno-host-avatar&w=640&q=75");
+      expect(noHost.status).toBe(200);
+      await expect(noHost.text()).resolves.toBe("/open.png");
       // Build assets under a distinct assetPrefix path are not under the
       // basePath; other files there are.
       for (const [url, body] of [
