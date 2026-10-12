@@ -15428,6 +15428,32 @@ describe("matchRedirect destination param substitution", () => {
     );
   });
 
+  it("follows each scheme's authority rules for non-http redirect destinations", async () => {
+    const { matchRedirect } = await import("../packages/vinext/src/config/config-matchers.js");
+    const redirect = (destination: string, value: string) =>
+      matchRedirect(
+        "/go",
+        [
+          {
+            source: "/go",
+            has: [{ type: "query" as const, key: "v", value: "(?<v>.*)" }],
+            destination,
+            permanent: false,
+          },
+        ],
+        { ...emptyCtx, query: new URLSearchParams({ v: value }) },
+      )?.destination;
+
+    // `\` is authority data in a non-special URL, so the param is still in
+    // the authority and gets encoded.
+    const nonSpecial = redirect("foo://safe.example\\:v/landing", "@attacker.test")!;
+    expect(nonSpecial).toBe("foo://safe.example\\%40attacker.test/landing");
+    expect(URL.canParse(nonSpecial)).toBe(false);
+    // `file:///` has an empty authority; the param after it is path text.
+    expect(redirect("file:///:v", "tmp/report.pdf")).toBe("file:///tmp/report.pdf");
+    expect(redirect("foo:///:v", "a/b")).toBe("foo:///a/b");
+  });
+
   it("keeps a host-type capture redirect working", async () => {
     const { matchRedirect } = await import("../packages/vinext/src/config/config-matchers.js");
     // Ported from Next.js test/integration/custom-routes (has-redirect-6).

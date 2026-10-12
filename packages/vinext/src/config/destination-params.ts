@@ -86,29 +86,36 @@ function stripUrlIgnoredCharacters(value: string): string {
   return value.slice(start, end).replace(/[\t\n\r]/g, "");
 }
 
-// End of the `scheme://authority` prefix of an absolute URL. Like the URL
-// parser for special schemes, any run of `/` or `\` after the scheme belongs
-// to the prefix. A destination that is neither a path nor a literal absolute URL (Next.js
-// rejects these) has its first segment treated the same way, so a param can
-// never supply the `:` or slashes of a scheme. A non-special scheme such as a
-// redirect's `mailto:` has an authority only after `//`; a scheme supplied by
-// a param counts as special.
+// End of the `scheme://authority` prefix of an absolute URL, following the URL
+// parser: http(s), ws(s) and ftp skip any run of `/` or `\` and end the
+// authority at either; `file:` takes exactly two; any other scheme has an
+// authority only after `//`, ended by `/` alone (`\` is authority data there).
+// A scheme supplied by a param, or a destination that is neither a path nor a
+// literal absolute URL (Next.js rejects these for rewrites), is handled
+// conservatively: everything up to the first `/` after any leading slashes is
+// encoded, so a param can never supply a scheme's `:` or slashes.
 function getAbsoluteUrlAuthorityEnd(template: string, shape: string): number {
-  const scheme = /^([a-z][a-z0-9+.-]*):([/\\]*)/i.exec(shape);
+  const scheme = /^([a-z][a-z0-9+.-]*):/i.exec(shape);
   if (!scheme && /^[/\\]/.test(shape)) return 0;
-  if (scheme) {
-    const name = template.slice(0, scheme[1].length).toLowerCase();
-    const special = name !== scheme[1].toLowerCase() || SPECIAL_SCHEMES.has(name);
-    if (!special && !scheme[2].startsWith("//")) {
-      return scheme[0].length;
-    }
+
+  const name = scheme ? template.slice(0, scheme[1].length).toLowerCase() : "";
+  let start = scheme ? scheme[0].length : 0;
+  let terminator = /\//;
+  if (scheme && name === scheme[1].toLowerCase() && !SPECIAL_SCHEMES.has(name)) {
+    const slashes = name === "file" ? /^[/\\]{2}/ : /^\/\//;
+    if (!slashes.test(shape.slice(start))) return start;
+    start += 2;
+    if (name === "file") terminator = /[/\\]/;
+  } else {
+    start += /^[/\\]*/.exec(shape.slice(start))![0].length;
+    if (scheme && SPECIAL_SCHEMES.has(name)) terminator = /[/\\]/;
   }
-  const start = scheme ? scheme[0].length : 0;
-  const pathStart = shape.slice(start).search(/[/\\]/);
+  const pathStart = shape.slice(start).search(terminator);
   return pathStart === -1 ? shape.length : start + pathStart;
 }
 
-const SPECIAL_SCHEMES = new Set(["ftp", "file", "http", "https", "ws", "wss"]);
+// Special schemes whose authority follows any run of slashes (`file` differs).
+const SPECIAL_SCHEMES = new Set(["ftp", "http", "https", "ws", "wss"]);
 
 /**
  * Split a redirect destination's query into parts before substituting params,
