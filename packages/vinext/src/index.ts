@@ -5742,14 +5742,15 @@ export const loadServerActionClient = ${
           devPageRouteDataKinds.set(filePath, dataKind);
           return dataKind;
         }
+        // Selected up front, before SSR warmup can transform pages there.
+        const pagesEnvironment =
+          server.environments["ssr"] ??
+          Object.values(server.environments).find((e) => e !== server.environments["rsc"]) ??
+          Object.values(server.environments)[0];
+        pagesDevEnvironment = pagesEnvironment;
         function getPagesRunner() {
           if (!pagesRunner) {
-            const env =
-              server.environments["ssr"] ??
-              Object.values(server.environments).find((e) => e !== server.environments["rsc"]) ??
-              Object.values(server.environments)[0];
-            pagesDevEnvironment = env;
-            pagesRunner = createDirectRunner(env);
+            pagesRunner = createDirectRunner(pagesEnvironment);
           }
           return pagesRunner;
         }
