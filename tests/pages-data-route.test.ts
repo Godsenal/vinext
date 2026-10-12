@@ -90,6 +90,34 @@ describe("pages-data-route", () => {
       });
     });
 
+    // Next.js tests an interception marker's intercepted route for a dynamic
+    // segment, and throws (500) on an invalid one. Observed on Next.js 16.2.7.
+    it.each([
+      ["index/(.)[slug]", "/index/(.)[slug]"],
+      ["index/(...)[slug]", "/index/(...)[slug]"],
+      ["index/(..)[slug]", "/index/(..)[slug]"],
+      ["index/(...)x", "/(...)x"],
+      ["index/(group)/(.)[slug]", "/index/(group)/(.)[slug]"],
+    ])(
+      "resolves the interception-marked asset path %s to the page %s",
+      (assetPath, pagePathname) => {
+        expect(
+          parseNextDataPathname(`/_next/data/${BUILD_ID}/${assetPath}.json`, BUILD_ID),
+        ).toEqual({
+          pagePathname,
+        });
+      },
+    );
+
+    it.each(["index/(.)", "index/(..)(..)x"])(
+      "does not resolve the invalid interception route %s",
+      (assetPath) => {
+        expect(
+          parseNextDataPathname(`/_next/data/${BUILD_ID}/${assetPath}.json`, BUILD_ID),
+        ).toBeNull();
+      },
+    );
+
     it("round-trips encoded page paths that contain index segments", () => {
       for (const pagePathname of ["/", "/index", "/index/foo", "/blog/index", "/fr/blog/index"]) {
         expect(parseNextDataPathname(buildPagesDataPath(BUILD_ID, pagePathname), BUILD_ID)).toEqual(
