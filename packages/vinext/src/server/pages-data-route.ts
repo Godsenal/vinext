@@ -78,6 +78,7 @@ export function encodeUrlParserIgnoredCharacters(pathname: string): string {
  * `/_next/data/<buildId>/about.json`         → `/about`
  * `/_next/data/<buildId>/en/about.json`      → `/en/about`
  * `/_next/data/<buildId>/index.json`         → `/`
+ * `/_next/data/<buildId>/blog/index.json`    → `/blog/index`
  * `/_next/data/<buildId>/en.json`            → `/en`
  * `/_next/data/<wrong-id>/about.json`        → null
  * `/_next/data/<buildId>/about`              → null  (missing .json suffix)
@@ -111,22 +112,28 @@ export function nextDataMiddlewareMatchPathname(pathname: string): string | null
 }
 
 function pageFromNextDataRest(rest: string): NextDataMatch | null {
+  const pagePathname = pagePathnameFromNextDataAsset(rest);
+  return pagePathname === null ? null : { pagePathname };
+}
+
+// Next.js's strict `isDynamicRoute` test.
+const DYNAMIC_ROUTE_SEGMENT = /\/\[[^/]+\](?=\/|$)/;
+
+/**
+ * The page pathname for a data URL's asset path (between the buildId and
+ * `.json`). Ports Next.js's `denormalizePagePath`: `index` is the root page,
+ * and the encoder's extra leading `index/` segment is removed, so an explicit
+ * `pages/index/foo.tsx` (route `/index/foo`) round-trips via `index/index/foo`.
+ * Any other `index` segment is part of the page path: `blog/index` addresses
+ * `/blog/index` (e.g. `/blog/[slug]` with `slug: "index"`), not `/blog`.
+ * https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/shared/lib/page-path/denormalize-page-path.ts
+ */
+export function pagePathnameFromNextDataAsset(assetPath: string): string | null {
   // Empty rest (`/_next/data/<buildId>/.json`) is not a valid page path.
-  if (rest.length === 0) return null;
-
-  // Next.js denormalizes `index` to `/` to mirror file-system page paths
-  // (`pages/index.tsx` → `/`). See `denormalizePagePath` in Next.js.
-  if (rest === "index") return { pagePathname: "/" };
-  if (rest.endsWith("/index")) return { pagePathname: `/${rest.slice(0, -"/index".length)}` };
-
-  // The encoder (`getAssetPathFromRoute` in Next.js / `buildPagesDataPath` in
-  // vinext) prefixes any path beginning with `index` with an extra `index/`
-  // segment so an explicit `pages/index/foo.tsx` page (route `/index/foo`)
-  // round-trips through the data URL without colliding with `/foo`. Strip
-  // that prefix here.
-  if (rest.startsWith("index/")) return { pagePathname: `/${rest.slice("index/".length)}` };
-
-  return { pagePathname: `/${rest}` };
+  if (assetPath.length === 0) return null;
+  const page = `/${assetPath}`;
+  if (page.startsWith("/index/") && !DYNAMIC_ROUTE_SEGMENT.test(page)) return page.slice(6);
+  return page === "/index" ? "/" : page;
 }
 
 export function normalizeNextDataPagePathname(pagePathname: string, trailingSlash = false): string {
