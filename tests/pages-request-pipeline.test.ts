@@ -10,6 +10,11 @@ import { MIDDLEWARE_SKIP_HEADER } from "../packages/vinext/src/server/headers.js
 import { PRERENDER_REVALIDATE_HEADER } from "../packages/vinext/src/utils/protocol-headers.js";
 import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
 import {
+  DefaultCdnCacheAdapter,
+  setCdnCacheAdapter,
+} from "../packages/vinext/src/shims/cdn-cache.js";
+import { CloudflareCdnCacheAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
+import {
   CACHEABILITY_REQUEST_STATE,
   type RouteCacheabilityState,
 } from "../packages/vinext/src/shims/cacheability-classification.js";
@@ -585,6 +590,43 @@ describe("middleware", () => {
       "private, no-cache, no-store, max-age=0, must-revalidate",
     );
     expect(await result.response.text()).toBe("{}");
+  });
+
+  it("keeps staged edge cache headers off middleware data misses", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    try {
+      const result = await runPagesRequest(
+        makeRequest("/unknown"),
+        baseDeps({
+          configHeaders: [
+            {
+              source: "/:path*",
+              headers: [{ key: "Cloudflare-CDN-Cache-Control", value: "max-age=3600" }],
+            },
+          ],
+          isDataReq: true,
+          isDataRequest: true,
+          hasMiddleware: true,
+          runMiddleware: makeMiddleware({
+            continue: true,
+            responseHeaders: new Headers({ "CDN-Cache-Control": "max-age=3600" }),
+          }),
+          matchPageRoute: vi.fn().mockReturnValue(null),
+          renderPage: makeRenderPage(404, "not found"),
+        }),
+      );
+
+      expect(result.type).toBe("response");
+      if (result.type !== "response") return;
+      expect(result.response.status).toBe(404);
+      expect(result.response.headers.get("cache-control")).toBe(
+        "private, no-cache, no-store, max-age=0, must-revalidate",
+      );
+      expect(result.response.headers.get("cloudflare-cdn-cache-control")).toBeNull();
+      expect(result.response.headers.get("cdn-cache-control")).toBeNull();
+    } finally {
+      setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+    }
   });
 
   it("keeps data misses as JSON 404 when generated wiring provides a no-op middleware", async () => {

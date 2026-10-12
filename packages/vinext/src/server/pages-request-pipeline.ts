@@ -995,13 +995,17 @@ export async function runPagesRequest(
       const headers = new Headers(response.headers);
       headers.set("content-type", "application/json");
       headers.set("x-nextjs-matched-path", matchResolvedPathname(pathname));
-      // Response headers win over the staged config headers in mergeHeaders,
-      // so a next.config Cache-Control rule can't replace this policy.
-      applyCdnResponseHeaders(headers, { cacheControl: NEVER_CACHE_CONTROL });
-      const notFoundResponse = new Response("{}", { status: 404, headers });
+      const notFoundResponse = mergeHeaders(
+        new Response("{}", { status: 404, headers }),
+        matchedPathHeaders,
+        undefined,
+      );
+      // Applied after the merge, so staged config or middleware headers can't
+      // restore a cacheable policy (including adapter-owned edge headers).
+      applyCdnResponseHeaders(notFoundResponse.headers, { cacheControl: NEVER_CACHE_CONTROL });
       return {
         type: "response",
-        response: mergeHeaders(notFoundResponse, matchedPathHeaders, undefined),
+        response: notFoundResponse,
         defaultContentType: "application/json",
       };
     }
