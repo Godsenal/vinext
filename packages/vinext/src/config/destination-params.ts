@@ -57,7 +57,11 @@ export function substituteDestinationParams(
   const hash = hashIndex === -1 ? "" : destination.slice(hashIndex);
   const queryIndex = beforeHash.indexOf("?");
   const beforeQuery = queryIndex === -1 ? beforeHash : beforeHash.slice(0, queryIndex);
-  const authorityEnd = getAbsoluteUrlAuthorityEnd(beforeQuery);
+  // A param may supply the scheme itself (`:proto://:tenant.example.com/`), so
+  // find the authority with each param token standing in as same-length text.
+  const authorityEnd = getAbsoluteUrlAuthorityEnd(
+    beforeQuery.replace(paramRe, (token) => "x".repeat(token.length)),
+  );
   const path = `${replaceParams(beforeQuery.slice(0, authorityEnd), encodeAuthorityParam)}${replaceParams(
     beforeQuery.slice(authorityEnd),
     (value) => value,

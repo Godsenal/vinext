@@ -15126,6 +15126,27 @@ describe("matchRewrite with external URLs", () => {
     }
   });
 
+  it("encodes a host capture when a param supplies the destination scheme", async () => {
+    const { matchRewrite } = await import("../packages/vinext/src/config/config-matchers.js");
+    const result = matchRewrite(
+      "/proxy",
+      [
+        {
+          source: "/proxy",
+          has: [
+            { type: "query" as const, key: "proto", value: "(?<proto>.*)" },
+            { type: "query" as const, key: "h", value: "(?<h>.*)" },
+          ],
+          destination: ":proto://:h.example.com/x",
+        },
+      ],
+      { ...emptyCtx, query: new URLSearchParams({ proto: "http", h: "127.0.0.1:9998#" }) },
+    );
+
+    expect(result).toBe("http://127.0.0.1%3A9998%23.example.com/x");
+    expect(URL.canParse(result!)).toBe(false);
+  });
+
   it("keeps percent-encoded path captures in an external destination host", async () => {
     const { matchRewrite } = await import("../packages/vinext/src/config/config-matchers.js");
     const result = matchRewrite(
