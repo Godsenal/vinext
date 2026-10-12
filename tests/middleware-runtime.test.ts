@@ -1129,6 +1129,9 @@ describe("middleware matching for raw data requests", () => {
       basePath?: string;
       i18nConfig?: { defaultLocale: string; locales: string[] };
       isDataRequest?: boolean;
+      isStaleDataRequest?: boolean;
+      matcherConfig?: unknown;
+      headers?: HeadersInit;
     } = {},
   ): Promise<string | undefined> {
     let observed: string | undefined;
@@ -1136,15 +1139,16 @@ describe("middleware matching for raw data requests", () => {
       basePath: options.basePath,
       i18nConfig: options.i18nConfig,
       isDataRequest: options.isDataRequest ?? true,
+      isStaleDataRequest: options.isStaleDataRequest,
       isProxy: false,
       module: {
-        config: { matcher },
+        config: { matcher: options.matcherConfig ?? matcher },
         default(request: NextRequest) {
           observed = request.nextUrl.pathname;
           return new Response("forbidden", { status: 403 });
         },
       },
-      request: new Request(`http://localhost:3000${pathname}`),
+      request: new Request(`http://localhost:3000${pathname}`, { headers: options.headers }),
     });
     return observed;
   }
@@ -1170,7 +1174,7 @@ describe("middleware matching for raw data requests", () => {
     "applies a page matcher to the locale data URL %s",
     async (pathname) => {
       const i18nConfig = { defaultLocale: "en", locales: ["en", "fr"] };
-      await expect(observedPathname(pathname, "/admin", { i18nConfig })).resolves.toBeDefined();
+      await expect(observedPathname(pathname, "/admin", { i18nConfig })).resolves.toBe(pathname);
     },
   );
 
@@ -1179,6 +1183,29 @@ describe("middleware matching for raw data requests", () => {
     ["a sibling page", "/_next/data/build-id/administrator.json"],
   ])("does not widen an exact matcher to %s", async (_label, pathname) => {
     await expect(observedPathname(pathname, "/admin")).resolves.toBeUndefined();
+  });
+
+  it("applies has conditions to a page matcher on its data URL", async () => {
+    const matcherConfig = [{ source: "/admin", missing: [{ type: "cookie", key: "session" }] }];
+    const pathname = "/_next/data/build-id/admin.json";
+    await expect(observedPathname(pathname, "/admin", { matcherConfig })).resolves.toBe(pathname);
+    await expect(
+      observedPathname(pathname, "/admin", { matcherConfig, headers: { cookie: "session=1" } }),
+    ).resolves.toBeUndefined();
+  });
+
+  // Next.js leaves a stale data URL raw for matching, where the optional
+  // `_next/data` prefix lets a matcher accept either the raw URL or its page.
+  // A current-build URL is normalized first, so raw-shaped matchers skip it.
+  it("applies a raw data-URL matcher only to stale build IDs", async () => {
+    await expect(
+      observedPathname("/_next/data/stale-build/admin.json", "/_next/data/:path*", {
+        isStaleDataRequest: true,
+      }),
+    ).resolves.toBe("/_next/data/stale-build/admin.json");
+    await expect(
+      observedPathname("/_next/data/build-id/admin.json", "/_next/data/:path*"),
+    ).resolves.toBeUndefined();
   });
 
   it("leaves ordinary requests matched against their own pathname", async () => {
