@@ -675,7 +675,8 @@ export async function runPagesRequest(
   const pathnameForResolvedUrl = (value: string): string => value.split("#", 1)[0].split("?", 1)[0];
   const rewriteRequestContext = (): RequestContext => ({
     ...postMwReqCtx,
-    host: deps.hostless ? "" : postMwReqCtx.host,
+    // Middleware can still give the hostless request a Host header.
+    host: deps.hostless && !postMwReq.headers.has("host") ? "" : postMwReqCtx.host,
     query: new URL(resolvedUrl, url).searchParams,
   });
   let resolvedPathname = pathnameForResolvedUrl(resolvedUrl);

@@ -214,6 +214,7 @@ describe("Pages Router production Worker readiness", () => {
       { source: "/host-avatar", has: [{ type: "host", value: "example.com" }], destination: "/open.png" },
       { source: "/any-host-avatar", has: [{ type: "host", value: ".*" }], destination: "/open.png" },
       { source: "/no-host-avatar", missing: [{ type: "host", value: ".*" }], destination: "/open.png" },
+      { source: "/override-host-avatar", has: [{ type: "host", value: "images.internal" }], destination: "/open.png" },
     ],
     afterFiles: [],
     fallback: [],
@@ -246,6 +247,15 @@ export async function runMiddleware(request) {
   middlewareRequests.push({ hasHost: request.headers.has("host"), hostname: url.hostname, pathname: url.pathname, protocol: url.protocol });
   if (url.pathname.startsWith("/docs/protected/")) {
     return { continue: false, response: new Response("blocked", { status: 403 }) };
+  }
+  if (url.pathname === "/docs/override-host-avatar") {
+    return {
+      continue: true,
+      responseHeaders: [
+        ["x-middleware-override-headers", "host"],
+        ["x-middleware-request-host", "images.internal"],
+      ],
+    };
   }
   return { continue: true };
 }
@@ -334,6 +344,12 @@ export const vinextConfig = ${config};
       const noHost = await get("/docs/_next/image?url=%2Fdocs%2Fno-host-avatar&w=640&q=75");
       expect(noHost.status).toBe(200);
       await expect(noHost.text()).resolves.toBe("/open.png");
+      // A Host header middleware sets for the source matches later rewrites.
+      const overrideHost = await get(
+        "/docs/_next/image?url=%2Fdocs%2Foverride-host-avatar&w=640&q=75",
+      );
+      expect(overrideHost.status).toBe(200);
+      await expect(overrideHost.text()).resolves.toBe("/open.png");
       // Build assets under a distinct assetPrefix path are not under the
       // basePath; other files there are.
       for (const [url, body] of [
