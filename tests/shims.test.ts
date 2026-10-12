@@ -14840,6 +14840,32 @@ describe("proxyExternalRequest", () => {
       globalThis.fetch = originalFetch;
     }
   });
+
+  it("responds 500 without fetching when the destination is not a valid URL", async () => {
+    const { proxyExternalRequest } =
+      await import("../packages/vinext/src/config/config-matchers.js");
+
+    const originalFetch = globalThis.fetch;
+    const originalConsoleError = console.error;
+    let fetched = false;
+    globalThis.fetch = async () => {
+      fetched = true;
+      return new Response("unexpected");
+    };
+    console.error = () => {};
+
+    try {
+      const response = await proxyExternalRequest(
+        new Request("http://localhost:3000/proxy", { headers: { cookie: "session=secret" } }),
+        "http://127.0.0.1%3A9998%23.bounty.invalid/",
+      );
+      expect(response.status).toBe(500);
+      expect(fetched).toBe(false);
+    } finally {
+      globalThis.fetch = originalFetch;
+      console.error = originalConsoleError;
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -15042,6 +15068,105 @@ describe("matchRewrite with external URLs", () => {
     );
 
     expect(result).toBe("/status#500");
+  });
+
+  it("percent-encodes has captures substituted into an external destination host", async () => {
+    const { matchRewrite } = await import("../packages/vinext/src/config/config-matchers.js");
+    const rewrites = [
+      {
+        source: "/proxy",
+        has: [{ type: "query" as const, key: "tenant", value: "(?<tenant>.*)" }],
+        destination: "https://:tenant.api.example.com/v1/:tenant?t=:tenant",
+      },
+    ];
+    const match = (tenant: string) =>
+      matchRewrite("/proxy", rewrites, { ...emptyCtx, query: new URLSearchParams({ tenant }) });
+
+    expect(match("acme")).toBe("https://acme.api.example.com/v1/acme?t=acme");
+    // A decoded capture must not be able to end the authority and retarget
+    // the proxy. Only the host is encoded; path and query keep their rules.
+    for (const tenant of [
+      "127.0.0.1:9998#",
+      "attacker.test/",
+      "attacker.test?",
+      "x@attacker.test/",
+      "attacker.test\\",
+      "@attacker.test/",
+      "[::1]",
+      "a%23b",
+    ]) {
+      const result = match(tenant)!;
+      expect(result.startsWith("https://")).toBe(true);
+      expect(result).toContain(".api.example.com/v1/");
+      expect(URL.canParse(result)).toBe(false);
+    }
+  });
+
+  it("encodes a host capture after extra slashes the URL parser skips", async () => {
+    const { matchRewrite } = await import("../packages/vinext/src/config/config-matchers.js");
+    for (const destination of ["http:///:h.example.com/x", "http://\\:h.example.com/x"]) {
+      const result = matchRewrite(
+        "/proxy",
+        [
+          {
+            source: "/proxy",
+            has: [{ type: "query" as const, key: "h", value: "(?<h>.*)" }],
+            destination,
+          },
+        ],
+        { ...emptyCtx, query: new URLSearchParams({ h: "127.0.0.1:9998#" }) },
+      );
+      expect(result).toContain("127.0.0.1%3A9998%23.example.com");
+      expect(URL.canParse(result!)).toBe(false);
+    }
+  });
+
+  it("keeps percent-encoded path captures in an external destination host", async () => {
+    const { matchRewrite } = await import("../packages/vinext/src/config/config-matchers.js");
+    const result = matchRewrite(
+      "/t/m%C3%BCnchen/x",
+      [{ source: "/t/:tenant/:path*", destination: "https://:tenant.example.com/:path*" }],
+      emptyCtx,
+    );
+
+    expect(result).toBe("https://m%C3%BCnchen.example.com/x");
+    expect(new URL(result!).host).toBe("xn--mnchen-3ya.example.com");
+  });
+
+  it("percent-encodes header and cookie captures in an external destination host", async () => {
+    const { matchRewrite } = await import("../packages/vinext/src/config/config-matchers.js");
+    const result = matchRewrite(
+      "/proxy",
+      [
+        {
+          source: "/proxy",
+          has: [
+            { type: "header" as const, key: "x-region", value: "(?<region>.*)" },
+            { type: "cookie" as const, key: "shard", value: "(?<shard>.*)" },
+          ],
+          destination: "http://:shard.:region.internal.example/",
+        },
+      ],
+      {
+        ...emptyCtx,
+        headers: new Headers({ "x-region": "eu@attacker.test:80/" }),
+        cookies: { shard: "a#" },
+      },
+    );
+
+    expect(result).toBe("http://a%23.eu%40attacker.test%3A80%2F.internal.example/");
+    expect(URL.canParse(result!)).toBe(false);
+  });
+
+  it("leaves path params after an external destination host unencoded", async () => {
+    const { matchRewrite } = await import("../packages/vinext/src/config/config-matchers.js");
+    const result = matchRewrite(
+      "/ph/a%2Fb/c",
+      [{ source: "/ph/:path*", destination: "https://us.i.posthog.com/:path*" }],
+      emptyCtx,
+    );
+
+    expect(result).toBe("https://us.i.posthog.com/a%2Fb/c");
   });
 });
 
