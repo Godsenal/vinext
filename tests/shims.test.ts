@@ -15104,7 +15104,12 @@ describe("matchRewrite with external URLs", () => {
 
   it("encodes a host capture after extra slashes the URL parser skips", async () => {
     const { matchRewrite } = await import("../packages/vinext/src/config/config-matchers.js");
-    for (const destination of ["http:///:h.example.com/x", "http://\\:h.example.com/x"]) {
+    for (const destination of [
+      "http:///:h.example.com/x",
+      "http://\\:h.example.com/x",
+      "http:\n//:h.example.com/x",
+      "http:/\t/\r:h.example.com/x",
+    ]) {
       const result = matchRewrite(
         "/proxy",
         [

@@ -71,9 +71,10 @@ export function substituteDestinationParams(
 
 // End of the `scheme://authority` prefix of an absolute URL, or 0 when the
 // destination is not absolute. Like the URL parser for special schemes, any
-// run of `/` or `\` after the scheme belongs to the prefix, not the path.
+// run of `/` or `\` after the scheme belongs to the prefix, not the path, and
+// the ASCII tab/newline characters it strips do not end that run.
 function getAbsoluteUrlAuthorityEnd(value: string): number {
-  const scheme = /^[a-z][a-z0-9+.-]*:[/\\]*/i.exec(value);
+  const scheme = /^[a-z][a-z0-9+.-]*:[/\\\t\n\r]*/i.exec(value);
   if (!scheme) return 0;
   const pathStart = value.slice(scheme[0].length).search(/[/\\]/);
   return pathStart === -1 ? value.length : scheme[0].length + pathStart;
