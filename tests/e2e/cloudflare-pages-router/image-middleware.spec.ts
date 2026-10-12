@@ -42,6 +42,25 @@ test.describe("image optimization source behind middleware", () => {
     expect(Buffer.from(await image.body()).equals(openPng)).toBe(true);
   });
 
+  test("resolves the source through rewrites, without the caller's host", async ({ request }) => {
+    const direct = await request.get("/open-image.png");
+    const openPng = Buffer.from(await direct.body());
+
+    // An extensionless source can rewrite to an image.
+    const avatar = await request.get(imagePath("/image-avatar"));
+    expect(avatar.status()).toBe(200);
+    expect(avatar.headers()["content-type"]).toBe("image/png");
+    expect(Buffer.from(await avatar.body()).equals(openPng)).toBe(true);
+
+    // Next.js' internal image request has no Host header, so a host-conditioned
+    // rewrite matches only the direct request.
+    const hostDirect = await request.get("/image-host-avatar");
+    expect(hostDirect.status()).toBe(200);
+    expect(Buffer.from(await hostDirect.body()).equals(openPng)).toBe(true);
+    const hostImage = await request.get(imagePath("/image-host-avatar"));
+    expect(hostImage.status()).toBe(404);
+  });
+
   test("keeps rejecting missing and non-image sources", async ({ request }) => {
     const missing = await request.get(imagePath("/missing.png"));
     expect(missing.status()).toBe(404);

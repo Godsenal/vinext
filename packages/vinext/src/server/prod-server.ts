@@ -2398,9 +2398,13 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
   ): Promise<string | null> => {
     // vinext's next/image emits the image endpoint without the basePath, where
     // Next.js prefixes it. Resolve that form's unprefixed sources under the
-    // basePath, as the App Router does.
+    // basePath, as the App Router does. Build assets under a distinct
+    // assetPrefix path are not under the basePath.
     const sourceUrl = new URL(
-      basePath && !deps.hadBasePath && !hasBasePath(imageUrl, basePath)
+      basePath &&
+        !deps.hadBasePath &&
+        !hasBasePath(imageUrl, basePath) &&
+        !(pagesAssetPathPrefix && hasBasePath(imageUrl, pagesAssetPathPrefix))
         ? basePath + imageUrl
         : imageUrl,
       request.url,
@@ -2423,35 +2427,43 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
 
     let sourcePath: string | null = null;
     const result = await runOutsideFrameworkRequestTrace(() =>
-      runPagesRequest(new Request(new URL(target.url, request.url), { signal: request.signal }), {
-        ...deps,
-        configMatchPathname: target.configMatchPathname,
-        dataNotFoundResponse: null,
-        hadBasePath: target.hadBasePath,
-        handleApi: null,
-        isDataReq: false,
-        isDataRequest: false,
-        middlewareRequest: undefined,
-        proxyExternal: () => Promise.resolve(new Response(null, { status: 404 })),
-        rawSearch: target.rawQs,
-        recordCacheability: false,
-        renderPage: null,
-        runMiddleware:
-          typeof runMiddleware === "function"
-            ? wrapMiddlewareWithBasePath(runMiddleware, basePath, target.hadBasePath)
-            : null,
-        serveFilesystemRoute: async (requestPathname, _stagedHeaders, phase) => {
-          if (
-            !isPublicFileRoute(requestPathname, phase) ||
-            isImageOptimizationPath(requestPathname) ||
-            !hasStaticFile(requestPathname)
-          ) {
-            return false;
-          }
-          sourcePath = requestPathname;
-          return true;
+      // Like Next.js' internal image request, carry no Host header, so host
+      // conditions never match.
+      runPagesRequest(
+        new Request(new URL(target.url, request.url), {
+          headers: { host: "" },
+          signal: request.signal,
+        }),
+        {
+          ...deps,
+          configMatchPathname: target.configMatchPathname,
+          dataNotFoundResponse: null,
+          hadBasePath: target.hadBasePath,
+          handleApi: null,
+          isDataReq: false,
+          isDataRequest: false,
+          middlewareRequest: undefined,
+          proxyExternal: () => Promise.resolve(new Response(null, { status: 404 })),
+          rawSearch: target.rawQs,
+          recordCacheability: false,
+          renderPage: null,
+          runMiddleware:
+            typeof runMiddleware === "function"
+              ? wrapMiddlewareWithBasePath(runMiddleware, basePath, target.hadBasePath)
+              : null,
+          serveFilesystemRoute: async (requestPathname, _stagedHeaders, phase) => {
+            if (
+              !isPublicFileRoute(requestPathname, phase) ||
+              isImageOptimizationPath(requestPathname) ||
+              !hasStaticFile(requestPathname)
+            ) {
+              return false;
+            }
+            sourcePath = requestPathname;
+            return true;
+          },
         },
-      }),
+      ),
     );
     if (result.type === "response") cancelResponseBody(result.response);
     return result.type === "handled" ? sourcePath : null;
@@ -2775,14 +2787,10 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
                 contentTypeForPath(sourcePath),
                 pagesImageConfig?.dangerouslyAllowSVG,
               );
-            const sourcePathname = new URL(params.imageUrl, webRequest.url).pathname;
-            const sourcePath = isSafeSourcePath(sourcePathname)
-              ? await resolveImageSourcePath(params.imageUrl, webRequest, deps)
-              : null;
-            if (
-              !isSafeSourcePath(sourcePathname) ||
-              (sourcePath && !isSafeSourcePath(sourcePath))
-            ) {
+            // Rewrites can map an extensionless source to an image, so the
+            // source resolves before its type is checked.
+            const sourcePath = await resolveImageSourcePath(params.imageUrl, webRequest, deps);
+            if (sourcePath && !isSafeSourcePath(sourcePath)) {
               res.writeHead(400);
               res.end("The requested resource is not an allowed image type");
               return true;

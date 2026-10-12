@@ -215,7 +215,7 @@ describe("Pages Router production Worker readiness", () => {
         pagesWorkerEntryVirtualModules({
           "virtual:vinext-server-entry": `
 export const prerenderSecret = "worker-prerender-secret";
-export const vinextConfig = { basePath: "/docs" };
+export const vinextConfig = { assetPrefix: "/cdn", basePath: "/docs" };
 `,
           "virtual:vinext-pages-request-entry": `
 export const authorizeOnDemandRevalidate = () => false;
@@ -234,7 +234,17 @@ export async function runMiddleware(request) {
   }
   return { continue: true };
 }
-export const vinextConfig = { basePath: "/docs" };
+export const vinextConfig = {
+  assetPrefix: "/cdn",
+  basePath: "/docs",
+  rewrites: {
+    beforeFiles: [
+      { source: "/host-avatar", has: [{ type: "host", value: "example.com" }], destination: "/open.png" },
+    ],
+    afterFiles: [],
+    fallback: [],
+  },
+};
 `,
         }),
       ],
@@ -258,7 +268,9 @@ export const vinextConfig = { basePath: "/docs" };
         ASSETS: {
           fetch(request: Request) {
             const { pathname } = new URL(request.url);
-            return pathname === "/open.png" || pathname === "/protected/private.png"
+            return pathname === "/open.png" ||
+              pathname === "/protected/private.png" ||
+              pathname === "/cdn/_next/static/media/built.png"
               ? new Response(pathname, { headers: { "content-type": "image/png" } })
               : new Response(null, { status: 404 });
           },
@@ -268,6 +280,18 @@ export const vinextConfig = { basePath: "/docs" };
         entry.default.fetch(new Request(`https://example.com${url}`), env, { waitUntil() {} });
 
       expect((await get("/docs/protected/private.png")).status).toBe(403);
+      // Next.js' internal image request has no Host header, so a host-conditioned
+      // rewrite matches only the direct request.
+      await expect((await get("/docs/host-avatar")).text()).resolves.toBe("/open.png");
+      expect((await get("/docs/_next/image?url=%2Fdocs%2Fhost-avatar&w=640&q=75")).status).toBe(
+        404,
+      );
+      // Build assets under a distinct assetPrefix path are not under the basePath.
+      const builtImage = await get(
+        "/_next/image?url=%2Fcdn%2F_next%2Fstatic%2Fmedia%2Fbuilt.png&w=640&q=75",
+      );
+      expect(builtImage.status).toBe(200);
+      await expect(builtImage.text()).resolves.toBe("/cdn/_next/static/media/built.png");
       for (const url of [
         "/_next/image?url=%2Fopen.png&w=640&q=75",
         "/docs/_next/image?url=%2Fdocs%2Fopen.png&w=640&q=75",

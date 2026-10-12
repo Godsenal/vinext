@@ -290,14 +290,22 @@ async function resolveImageSource(
   const fetchAsset = (assetRequest: Request) => Promise.resolve(assets.fetch(assetRequest));
   // vinext's next/image emits the image endpoint without the basePath, where
   // Next.js prefixes it. Resolve that form's unprefixed sources under the
-  // basePath, as the App Router does.
+  // basePath, as the App Router does. Build assets under a distinct
+  // assetPrefix path are not under the basePath.
   const sourceUrl = new URL(
-    basePath && !deps.hadBasePath && !hasBasePath(imageUrl, basePath)
+    basePath &&
+      !deps.hadBasePath &&
+      !hasBasePath(imageUrl, basePath) &&
+      !(assetPathPrefix && hasBasePath(imageUrl, assetPathPrefix))
       ? basePath + imageUrl
       : imageUrl,
     request.url,
   );
-  const resolved = resolvePagesWorkerRequestUrl(new Request(sourceUrl, { signal: request.signal }));
+  // Like Next.js' internal image request, carry no Host header, so host
+  // conditions never match.
+  const resolved = resolvePagesWorkerRequestUrl(
+    new Request(sourceUrl, { headers: { host: "" }, signal: request.signal }),
+  );
   if (resolved instanceof Response) {
     await resolved.body?.cancel();
     return null;
