@@ -1272,6 +1272,26 @@ describe("middleware matching for raw data requests", () => {
     expect(observed?.url).toBe("http://localhost:3000/docs/admin?x=1");
   });
 
+  it("presents a stale data URL without a trailing slash under trailingSlash", async () => {
+    // Next.js derives trailingSlash from the `.json` request pathname.
+    let observed: NextRequest | undefined;
+    await executeMiddleware({
+      isDataRequest: true,
+      isStaleDataRequest: true,
+      isProxy: false,
+      module: {
+        config: { matcher: "/admin" },
+        default(request: NextRequest) {
+          observed = request;
+        },
+      },
+      request: new Request("http://localhost:3000/_next/data/stale/admin.json?x=1"),
+      trailingSlash: true,
+    });
+    expect(observed?.url).toBe("http://localhost:3000/admin?x=1");
+    expect(observed?.nextUrl.href).toBe("http://localhost:3000/admin?x=1");
+  });
+
   it("matches the raw stale URL even when presenting its page path", async () => {
     // The page path `/admin` would gain the default locale and match; the raw
     // stale URL has no locale segment, so Next.js's compiled matcher skips it.

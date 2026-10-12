@@ -322,12 +322,15 @@ function createNextRequest(
     mwRequest = new Request(mwUrl, mwRequest);
   }
 
-  const hasNextConfig = basePath || i18nConfig || trailingSlash;
+  // Next.js derives trailingSlash from the request pathname, and a data URL
+  // never ends in a slash, so its page path is presented without one.
+  const formatTrailingSlash = presentDataUrlAsPage ? false : trailingSlash;
+  const hasNextConfig = basePath || i18nConfig || formatTrailingSlash;
   const nextConfig = hasNextConfig
     ? {
         basePath: basePath ?? "",
         i18n: i18nConfig ?? undefined,
-        trailingSlash: trailingSlash ?? undefined,
+        trailingSlash: formatTrailingSlash ?? undefined,
       }
     : undefined;
 
