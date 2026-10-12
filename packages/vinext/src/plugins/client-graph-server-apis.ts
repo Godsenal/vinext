@@ -183,12 +183,22 @@ function isReachableFromClientRoot(
   return false;
 }
 
-type ServerGraphState = {
-  /** Modules opening a "use client" boundary. */
-  clientBoundaries: Set<string>;
-  /** Modules importing a server API, resolved against the graph at buildEnd. */
-  invalidImports: Map<string, InvalidClientImport>;
-};
+const NODE_MODULES_RE = /\/node_modules\//;
+
+/**
+ * The server API import to report for a module, if any. Like Next.js, skip
+ * Server Function and cache modules. With an App Router, any that reach this
+ * check were not replaced by server reference proxies, so they are checked;
+ * Pages-only apps never replace them. Next.js rejects a module that also says
+ * "use client", so that one is still checked.
+ */
+function getReportedInvalidImport(
+  info: ClientGraphModuleInfo,
+  appDir: string | null,
+): InvalidClientImport | undefined {
+  if (appDir === null && info.isServerModule && !info.isClientBoundary) return undefined;
+  return info.invalidImports[0];
+}
 
 type GraphKind = "browser" | "server";
 
@@ -238,14 +248,16 @@ function tracksClientBoundaries(environmentName: string, appDir: string | null):
 export function createClientGraphServerApisPlugin(
   options: ClientGraphServerApisPluginOptions,
 ): Plugin {
-  const serverGraphs = new Map<string, ServerGraphState>();
-  const getServerGraph = (environmentName: string): ServerGraphState => {
-    let state = serverGraphs.get(environmentName);
-    if (!state) {
-      state = { clientBoundaries: new Set(), invalidImports: new Map() };
-      serverGraphs.set(environmentName, state);
+  // Builds analyze the final module graph at buildEnd, so only dev keeps
+  // state: the "use client" modules each server environment has transformed.
+  const devClientBoundaries = new Map<string, Set<string>>();
+  const getDevClientBoundaries = (environmentName: string): Set<string> => {
+    let boundaries = devClientBoundaries.get(environmentName);
+    if (!boundaries) {
+      boundaries = new Set();
+      devClientBoundaries.set(environmentName, boundaries);
     }
-    return state;
+    return boundaries;
   };
   // Pages pages open the client layer in every server graph. A "use client"
   // module only does in App Router SSR (the "ssr" environment): Pages-only
@@ -257,7 +269,7 @@ export function createClientGraphServerApisPlugin(
   // under in this environment, which follow `resolve.alias` and
   // `resolve.preserveSymlinks`.
   const getClientRootPredicate = async (
-    graph: ServerGraphState,
+    clientBoundaries: ReadonlySet<string>,
     tracksBoundaries: boolean,
     loadsPagesDirectly: boolean,
     isLoaded: (moduleId: string) => boolean,
@@ -280,7 +292,7 @@ export function createClientGraphServerApisPlugin(
       ),
     );
     return (moduleId) =>
-      (tracksBoundaries && graph.clientBoundaries.has(moduleId)) || pageIds.has(moduleId);
+      (tracksBoundaries && clientBoundaries.has(moduleId)) || pageIds.has(moduleId);
   };
 
   return {
@@ -289,20 +301,15 @@ export function createClientGraphServerApisPlugin(
     // app plugin may add imports), but before Vite's dev import analysis
     // rewrites specifiers.
     enforce: "post",
-    // Graph state outlives a build: a watch rebuild reuses cached transforms
-    // of unchanged modules, so their boundaries and invalid imports are not
-    // recorded again. A changed file drops its entries (under any query); its
-    // next transform records them again if they still apply. A module that
-    // loses its "use client" directive may no longer match the code filter
-    // at all.
+    // A module that loses its "use client" directive may no longer match the
+    // code filter, so drop its boundaries (under any query) when the file
+    // changes; the next transform adds them back if the directive is still
+    // there.
     watchChange(id) {
       const file = toSlash(id);
-      for (const graph of serverGraphs.values()) {
-        for (const boundary of graph.clientBoundaries) {
-          if (stripViteModuleQuery(boundary) === file) graph.clientBoundaries.delete(boundary);
-        }
-        for (const moduleId of graph.invalidImports.keys()) {
-          if (stripViteModuleQuery(moduleId) === file) graph.invalidImports.delete(moduleId);
+      for (const boundaries of devClientBoundaries.values()) {
+        for (const boundary of boundaries) {
+          if (stripViteModuleQuery(boundary) === file) boundaries.delete(boundary);
         }
       }
     },
@@ -311,7 +318,7 @@ export function createClientGraphServerApisPlugin(
       // extensionless ids, and code that does not parse is skipped. vinext's
       // own virtual modules only import request APIs in the RSC entry.
       filter: {
-        id: { exclude: /\/node_modules\// },
+        id: { exclude: NODE_MODULES_RE },
         code: CANDIDATE_MODULE_RE,
       },
       async handler(code, id) {
@@ -319,6 +326,8 @@ export function createClientGraphServerApisPlugin(
         const appDir = options.getAppDir();
         const graphKind = options.worker ? "browser" : getGraphKind(environment, appDir !== null);
         if (!graphKind) return null;
+        // A build checks server graphs at buildEnd, against the final graph.
+        if (graphKind === "server" && environment.mode !== "dev") return null;
         const tracksBoundaries = tracksClientBoundaries(environment.name, appDir);
         if (
           !SERVER_API_CANDIDATE_RE.test(code) &&
@@ -327,14 +336,8 @@ export function createClientGraphServerApisPlugin(
           return null;
         }
 
-        const { isClientBoundary, isServerModule, invalidImports } = analyzeClientGraphModule(code);
-        // Like Next.js, skip Server Function and cache modules. With an App
-        // Router, any that reach here were not replaced by server reference
-        // proxies, so they are checked; Pages-only apps never replace them.
-        // Next.js rejects a module that also says "use client", so that one
-        // is still checked.
-        if (appDir === null && isServerModule && !isClientBoundary) return null;
-        const [invalid] = invalidImports;
+        const info = analyzeClientGraphModule(code);
+        const invalid = getReportedInvalidImport(info, appDir);
         if (graphKind === "browser") {
           if (invalid) {
             this.error(createInvalidClientImportMessage(invalid.name, id, appDir), invalid.start);
@@ -342,15 +345,11 @@ export function createClientGraphServerApisPlugin(
           return null;
         }
 
-        const graph = getServerGraph(environment.name);
-        if (isClientBoundary) graph.clientBoundaries.add(id);
-        else graph.clientBoundaries.delete(id);
-        if (!invalid) return null;
-        if (environment.mode === "build") {
-          graph.invalidImports.set(id, invalid);
-          return null;
-        }
         if (environment.mode !== "dev") return null;
+        const clientBoundaries = getDevClientBoundaries(environment.name);
+        if (info.isClientBoundary) clientBoundaries.add(id);
+        else clientBoundaries.delete(id);
+        if (!invalid) return null;
         // In dev the importer that triggered this load is already in the graph.
         const getImporters = (moduleId: string) => {
           const importers: string[] = [];
@@ -360,7 +359,7 @@ export function createClientGraphServerApisPlugin(
           return importers;
         };
         const isClientRoot = await getClientRootPredicate(
-          graph,
+          clientBoundaries,
           tracksBoundaries,
           options.getPagesDevEnvironmentName?.() === environment.name,
           (moduleId) => Boolean(environment.moduleGraph.getModuleById(moduleId)),
@@ -372,25 +371,38 @@ export function createClientGraphServerApisPlugin(
         return null;
       },
     },
+    // Analyze the code each module has in this build, so a watch rebuild that
+    // reuses cached transforms (or regenerates a virtual module) is checked
+    // against current code.
     async buildEnd() {
       const environment = this.environment;
-      const graph = environment ? serverGraphs.get(environment.name) : undefined;
-      if (!graph || graph.invalidImports.size === 0) return;
       const appDir = options.getAppDir();
+      if (options.worker || getGraphKind(environment, appDir !== null) !== "server") return;
+      const tracksBoundaries = tracksClientBoundaries(environment.name, appDir);
+      const clientBoundaries = new Set<string>();
+      const invalidImports = new Map<string, InvalidClientImport>();
+      for (const id of this.getModuleIds()) {
+        if (NODE_MODULES_RE.test(id)) continue;
+        const code = this.getModuleInfo(id)?.code;
+        if (!code || !CANDIDATE_MODULE_RE.test(code)) continue;
+        const info = analyzeClientGraphModule(code);
+        if (info.isClientBoundary) clientBoundaries.add(id);
+        const invalid = getReportedInvalidImport(info, appDir);
+        if (invalid) invalidImports.set(id, invalid);
+      }
+      if (invalidImports.size === 0) return;
       const getImporters = (moduleId: string) => {
         const info = this.getModuleInfo(moduleId);
         return info ? [...info.importers, ...info.dynamicImporters] : [];
       };
       const isClientRoot = await getClientRootPredicate(
-        graph,
-        tracksClientBoundaries(environment.name, appDir),
+        clientBoundaries,
+        tracksBoundaries,
         false,
         (moduleId) => Boolean(this.getModuleInfo(moduleId)),
         (source, importer) => this.resolve(source, importer),
       );
-      for (const [id, invalid] of graph.invalidImports) {
-        // Skip modules an earlier build had that this one dropped.
-        if (!this.getModuleInfo(id)) continue;
+      for (const [id, invalid] of invalidImports) {
         if (isReachableFromClientRoot(id, isClientRoot, getImporters)) {
           this.error({ id, message: createInvalidClientImportMessage(invalid.name, id, appDir) });
         }

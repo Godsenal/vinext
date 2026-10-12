@@ -1122,27 +1122,12 @@ describe("client-graph Pages roots", () => {
       getPagesPages: async () => new Set([pagePath]),
       pagesEntryIds: ["\0virtual:vinext-server-entry"],
     });
-    const context = {
-      environment: { name: "aux_worker", mode: "build", config: { consumer: "server" } },
-      error: (message: unknown) => {
-        throw new Error(String(message));
-      },
-      resolve: async (source: string) => ({ id: source }),
-      getModuleInfo: (id: string) =>
-        id === pagePath ? { importers: ["/repo/worker/index.ts"], dynamicImporters: [] } : null,
-    };
-    const transform = plugin.transform as unknown as {
-      handler: (this: typeof context, code: string, id: string) => Promise<unknown>;
-    };
-    const buildEnd = plugin.buildEnd as unknown as (this: typeof context) => Promise<void>;
+    const context = createBuildContext("aux_worker", {
+      "/repo/worker/index.ts": { importers: [] },
+      [pagePath]: { code: INVALID_HELPER_CODE, importers: ["/repo/worker/index.ts"] },
+    });
 
-    await transform.handler.call(
-      context,
-      `import { cookies } from "next/headers";\nexport const readSession = cookies;\n`,
-      pagePath,
-    );
-
-    await expect(buildEnd.call(context)).resolves.toBeUndefined();
+    await expect(callBuildEnd(plugin, context)).resolves.toBeUndefined();
   });
 
   it.each([
@@ -1189,51 +1174,64 @@ describe("client-graph Pages roots", () => {
     },
   );
 
-  it("check a cached invalid module that a page imports after a watch rebuild", async () => {
+  it("check each build's final module code, whatever a watch rebuild reused", async () => {
     const pagePath = "/repo/pages/index.tsx";
     const entryId = "\0virtual:vinext-server-entry";
-    const helperId = "/repo/lib/session.ts";
+    const helperId = "\0virtual:session";
     const plugin = createClientGraphServerApisPlugin({
       getAppDir: () => null,
       getPagesPages: async () => new Set([pagePath]),
       pagesEntryIds: [entryId],
     });
-    const helperImporters = ["/repo/pages/api/session.ts"];
-    const context = {
-      environment: { name: "ssr", mode: "build", config: { consumer: "server" } },
-      error: (error: string | { message: string }) => {
-        throw new Error(typeof error === "string" ? error : error.message);
-      },
-      resolve: async (source: string) => ({ id: source }),
-      getModuleInfo: (id: string) => {
-        if (id === helperId) return { importers: helperImporters, dynamicImporters: [] };
-        if (id === pagePath) return { importers: [entryId], dynamicImporters: [] };
-        return id === entryId ? { importers: [], dynamicImporters: [] } : null;
-      },
-    };
-    const transform = plugin.transform as unknown as {
-      handler: (this: typeof context, code: string, id: string) => Promise<unknown>;
-    };
-    const buildStart = plugin.buildStart as unknown as ((this: typeof context) => void) | undefined;
-    const buildEnd = plugin.buildEnd as unknown as (this: typeof context) => Promise<void>;
-    const watchChange = plugin.watchChange as unknown as (this: typeof context, id: string) => void;
+    const build = (helperCode: string, helperImporters: string[]) =>
+      callBuildEnd(
+        plugin,
+        createBuildContext("ssr", {
+          [entryId]: { importers: [] },
+          [pagePath]: { importers: [entryId] },
+          [helperId]: { code: helperCode, importers: helperImporters },
+        }),
+      );
 
-    // First build: only an API route imports the helper.
-    buildStart?.call(context);
-    await transform.handler.call(
-      context,
-      `import { cookies } from "next/headers";\nexport const readSession = cookies;\n`,
-      helperId,
-    );
-    await expect(buildEnd.call(context)).resolves.toBeUndefined();
-
-    // The page is edited to import the helper, whose transform is cached.
-    watchChange.call(context, pagePath);
-    helperImporters.push(pagePath);
-    buildStart?.call(context);
-    await expect(buildEnd.call(context)).rejects.toThrow(PAGES_ROUTER_MESSAGE);
+    // Only an API route imports the helper.
+    await expect(
+      build(INVALID_HELPER_CODE, ["/repo/pages/api/session.ts"]),
+    ).resolves.toBeUndefined();
+    // A rebuild where the page imports it, though its transform was cached.
+    await expect(build(INVALID_HELPER_CODE, [pagePath])).rejects.toThrow(PAGES_ROUTER_MESSAGE);
+    // A rebuild where the regenerated module no longer imports next/headers.
+    await expect(
+      build("export const readSession = () => null;\n", [pagePath]),
+    ).resolves.toBeUndefined();
   });
 });
+
+const INVALID_HELPER_CODE = `import { cookies } from "next/headers";\nexport const readSession = cookies;\n`;
+
+/** A build-mode plugin context over a fixed module graph. */
+function createBuildContext(
+  environmentName: string,
+  modules: Record<string, { code?: string; importers: string[] }>,
+) {
+  return {
+    environment: { name: environmentName, mode: "build", config: { consumer: "server" } },
+    error: (error: string | { message: string }) => {
+      throw new Error(typeof error === "string" ? error : error.message);
+    },
+    resolve: async (source: string) => ({ id: source }),
+    getModuleIds: () => Object.keys(modules)[Symbol.iterator](),
+    getModuleInfo: (id: string) => {
+      const module = modules[id];
+      return module
+        ? { code: module.code ?? "", importers: module.importers, dynamicImporters: [] }
+        : null;
+    },
+  };
+}
+
+function callBuildEnd(plugin: Plugin, context: ReturnType<typeof createBuildContext>) {
+  return (plugin.buildEnd as unknown as (this: typeof context) => Promise<void>).call(context);
+}
 
 describe("findInvalidClientImports", () => {
   it("matches Next.js' client-graph import list", () => {
