@@ -3303,7 +3303,7 @@ export const config = { matcher: "${matcher}" };
 
     it("returns the middleware data-miss protocol for an unknown page", async () => {
       const res = await fetch(`${baseUrl}/_next/data/${BUILD_ID}/totally-missing-page.json`);
-      expect(res.status).toBe(200);
+      expect(res.status).toBe(404);
       expect(res.headers.get("content-type")).toContain("application/json");
       expect(res.headers.get("x-nextjs-matched-path")).toBe("/totally-missing-page");
       // Body must still be valid JSON so naive clients calling `.json()` do
@@ -3378,7 +3378,7 @@ export const config = { matcher: "${matcher}" };
         // data fetch must still see the header to hard-navigate.
         await withDeploymentId(async () => {
           const res = await fetch(`${baseUrl}/_next/data/${BUILD_ID}/totally-missing-page.json`);
-          expect(res.status).toBe(200);
+          expect(res.status).toBe(404);
           expect(res.headers.get("content-type")).toContain("application/json");
           expect(res.headers.get("x-nextjs-deployment-id")).toBe(DEPLOYMENT_ID);
           expect(res.headers.get("x-nextjs-matched-path")).toBe("/totally-missing-page");
@@ -3418,7 +3418,7 @@ export const config = { matcher: "${matcher}" };
         expect(staleRes.headers.get("x-nextjs-deployment-id")).toBeNull();
 
         const missRes = await fetch(`${baseUrl}/_next/data/${BUILD_ID}/totally-missing-page.json`);
-        expect(missRes.status).toBe(200);
+        expect(missRes.status).toBe(404);
         expect(missRes.headers.get("x-nextjs-deployment-id")).toBeNull();
         expect(missRes.headers.get("x-nextjs-matched-path")).toBe("/totally-missing-page");
 
@@ -8260,7 +8260,7 @@ describe("Production server middleware (Pages Router)", () => {
 
     it("returns the middleware data-miss protocol for an unknown page", async () => {
       const res = await fetch(`${prodUrl}/_next/data/${BUILD_ID}/totally-missing-page.json`);
-      expect(res.status).toBe(200);
+      expect(res.status).toBe(404);
       expect(res.headers.get("content-type")).toContain("application/json");
       expect(res.headers.get("x-nextjs-matched-path")).toBe("/totally-missing-page");
       expect(await res.json()).toEqual({});

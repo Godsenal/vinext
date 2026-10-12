@@ -9341,7 +9341,9 @@ describe("createAppRscHandler", () => {
     expect(renderPagesFallback).not.toHaveBeenCalled();
   });
 
-  it("returns middleware-enabled Pages data misses with the requested matched path", async () => {
+  it("returns middleware-enabled hybrid Pages data misses as a 404", async () => {
+    // Next.js router-server.ts sends a hybrid app's miss to the App not-found
+    // route rather than the Pages-only JSON matched-path response.
     const handler = createHandler({
       configHeaders: [],
       matchRoute: () => null,
@@ -9356,9 +9358,9 @@ describe("createAppRscHandler", () => {
       null,
     );
 
-    expect(response.status).toBe(200);
+    expect(response.status).toBe(404);
     expect(response.headers.get("content-type")).toContain("application/json");
-    expect(response.headers.get("x-nextjs-matched-path")).toBe("/missing");
+    expect(response.headers.get("x-nextjs-matched-path")).toBeNull();
     expect(await response.text()).toBe("{}");
   });
 

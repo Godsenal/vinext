@@ -982,6 +982,8 @@ export async function runPagesRequest(
     }
 
     const matchedPathHeaders = { ...middlewareHeaders };
+    // Next.js router-server.ts answers a middleware app's data miss with a
+    // JSON 404 naming the requested path instead of rendering the 404 page.
     if (
       (isDataReq || isDataRequest) &&
       deps.hasMiddleware &&
@@ -992,7 +994,7 @@ export async function runPagesRequest(
       const headers = new Headers(response.headers);
       headers.set("content-type", "application/json");
       headers.set("x-nextjs-matched-path", matchResolvedPathname(pathname));
-      const notFoundResponse = new Response("{}", { status: 200, headers });
+      const notFoundResponse = new Response("{}", { status: 404, headers });
       return {
         type: "response",
         response: mergeHeaders(notFoundResponse, matchedPathHeaders, undefined),

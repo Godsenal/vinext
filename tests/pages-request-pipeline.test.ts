@@ -551,7 +551,8 @@ describe("middleware", () => {
     expect(result.response.headers.get("x-nextjs-matched-path")).toBeNull();
   });
 
-  it("returns middleware data misses as JSON with the requested matched path", async () => {
+  it("returns middleware data misses as a JSON 404 with the requested matched path", async () => {
+    // Next.js router-server.ts: a middleware app's data miss is `{}` with a 404.
     const result = await runPagesRequest(
       makeRequest("/unknown"),
       baseDeps({
@@ -566,7 +567,7 @@ describe("middleware", () => {
 
     expect(result.type).toBe("response");
     if (result.type !== "response") return;
-    expect(result.response.status).toBe(200);
+    expect(result.response.status).toBe(404);
     expect(result.response.headers.get("content-type")).toContain("application/json");
     expect(result.response.headers.get("x-nextjs-matched-path")).toBe("/unknown");
     expect(await result.response.text()).toBe("{}");
