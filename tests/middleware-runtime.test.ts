@@ -1157,6 +1157,7 @@ describe("middleware matching for raw data requests", () => {
     ["the current build", "/_next/data/build-id/admin.json", "/admin"],
     ["a stale build", "/_next/data/stale-build/admin.json", "/admin"],
     ["the index page", "/_next/data/build-id/index.json", "/"],
+    // vinext routes this URL to the `/admin` page, so its guard must apply.
     ["a nested index page", "/_next/data/build-id/admin/index.json", "/admin"],
     ["an encoded page path", "/_next/data/build-id/adm%69n.json", "/admin"],
   ])("applies a page matcher to the data URL of %s", async (_label, pathname, matcher) => {
@@ -1194,18 +1195,41 @@ describe("middleware matching for raw data requests", () => {
     ).resolves.toBeUndefined();
   });
 
-  // Next.js leaves a stale data URL raw for matching, where the optional
-  // `_next/data` prefix lets a matcher accept either the raw URL or its page.
-  // A current-build URL is normalized first, so raw-shaped matchers skip it.
-  it("applies a raw data-URL matcher only to stale build IDs", async () => {
-    await expect(
-      observedPathname("/_next/data/stale-build/admin.json", "/_next/data/:path*", {
-        isStaleDataRequest: true,
-      }),
-    ).resolves.toBe("/_next/data/stale-build/admin.json");
-    await expect(
-      observedPathname("/_next/data/build-id/admin.json", "/_next/data/:path*"),
-    ).resolves.toBeUndefined();
+  // Next.js normalizes only a current-build data URL. A stale one is matched
+  // raw against the compiled matcher: optional `_next/data/<buildId>` prefix,
+  // internal locale segment under i18n, optional `.json` suffix. Every row was
+  // observed on Next.js 16.2.7 with `skipProxyUrlNormalize`.
+  it.each([
+    ["/admin", "/_next/data/stale/admin.json", true, true],
+    ["/admin", "/_next/data/stale/other.json", true, false],
+    ["/admin", "/_next/data/stale/admin/index.json", true, false],
+    ["/", "/_next/data/stale/index.json", true, true],
+    ["/_next/data/:path*", "/_next/data/stale/admin.json", true, true],
+    ["/_next/data/:path*", "/_next/data/build-id/admin.json", false, false],
+    ["/report.json", "/_next/data/stale/report.json", true, true],
+    ["/report.json", "/_next/data/stale/report.json.json", true, true],
+    ["/report.json", "/_next/data/build-id/report.json", false, false],
+  ])("matches %s against %s like Next.js", async (matcher, pathname, stale, invoked) => {
+    const observed = await observedPathname(pathname, matcher, { isStaleDataRequest: stale });
+    expect(observed).toBe(invoked ? pathname : undefined);
+  });
+
+  it.each([
+    ["/admin", "/_next/data/stale/admin.json", true, false],
+    ["/admin", "/_next/data/stale/fr/admin.json", true, true],
+    ["/admin", "/_next/data/stale/zz/admin.json", true, true],
+    ["/admin", "/_next/data/build-id/admin.json", false, true],
+    ["/admin", "/_next/data/build-id/fr/admin.json", false, true],
+    [{ source: "/admin", locale: false }, "/_next/data/stale/admin.json", true, true],
+    [{ source: "/admin", locale: false }, "/_next/data/stale/fr/admin.json", true, false],
+    [{ source: "/admin", locale: false }, "/_next/data/build-id/en/admin.json", false, false],
+  ])("matches %j against %s with i18n like Next.js", async (matcher, pathname, stale, invoked) => {
+    const observed = await observedPathname(pathname, "", {
+      i18nConfig: { defaultLocale: "en", locales: ["en", "fr"] },
+      isStaleDataRequest: stale,
+      matcherConfig: [matcher],
+    });
+    expect(observed).toBe(invoked ? pathname : undefined);
   });
 
   it("leaves ordinary requests matched against their own pathname", async () => {

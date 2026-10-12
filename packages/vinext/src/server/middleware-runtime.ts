@@ -421,109 +421,100 @@ async function executeMiddlewareModule(
     // not apply outside the basePath.
     return matcher === undefined ? candidate : null;
   };
-
-  function evaluateMatcher(mapDataUrlToPage: boolean): { matches: boolean; pathMatches: boolean } {
-    const toPageMatcherPathname = (candidate: string | null): string | null =>
-      candidate !== null && mapDataUrlToPage
-        ? (nextDataMiddlewareMatchPathname(candidate) ?? candidate)
-        : candidate;
-    const encodedMatchPathname = toPageMatcherPathname(
-      prepareMatcherPathname(encodedRequestPathname),
-    );
-    let decodedMatchPathname = encodedMatchPathname;
-    try {
-      if (encodedMatchPathname !== null) {
-        decodedMatchPathname = decodeURIComponent(encodedMatchPathname);
-      } else if (!options.i18nConfig) {
-        // Without i18n, Next.js can discover an encoded basePath on the decoded
-        // matcher attempt. With i18n, default-locale insertion has already made
-        // that path ineligible for the compiled basePath-prefixed matcher.
-        decodedMatchPathname = toPageMatcherPathname(
-          prepareMatcherPathname(decodeURIComponent(encodedRequestPathname)),
-        );
-      }
-    } catch {
-      // Match Next.js: malformed encoding is non-fatal for matcher eligibility.
-    }
-
-    let localeContext: MiddlewareLocaleMatchContext | undefined;
-    if (options.i18nConfig && encodedMatchPathname !== null) {
-      const hostname = normalizeHost(options.request.headers.get("host"), requestUrl.hostname);
-      const firstSegment = encodedMatchPathname.split("/", 3)[1];
-      const hasLiteralLocale =
-        firstSegment !== undefined &&
-        options.i18nConfig.locales.some(
-          (locale) => locale.toLowerCase() === firstSegment.toLowerCase(),
-        );
-      if (hasLiteralLocale) {
-        localeContext = { kind: "literal" };
-      } else {
-        const localeDefaultedPathname = normalizeDefaultLocalePathname(
-          encodedMatchPathname,
-          options.i18nConfig,
-          { hostname },
-        );
-        localeContext =
-          localeDefaultedPathname === encodedMatchPathname
-            ? { kind: "internal" }
-            : {
-                defaultLocale: normalizeDefaultLocalePathname("/", options.i18nConfig, {
-                  hostname,
-                }).slice(1),
-                kind: "defaulted",
-              };
-      }
-    }
-    const encodedPathMatches =
-      encodedMatchPathname !== null &&
-      matchesMiddlewarePathname(encodedMatchPathname, matcher, options.i18nConfig, localeContext);
-    const decodedPathMatches =
-      !encodedPathMatches &&
-      decodedMatchPathname !== null &&
-      decodedMatchPathname !== encodedMatchPathname &&
-      matchesMiddlewarePathname(decodedMatchPathname, matcher, options.i18nConfig, localeContext);
-    const encodedMatches =
-      encodedMatchPathname !== null &&
-      matchesMiddleware(
-        encodedMatchPathname,
-        matcher,
-        options.request,
-        options.i18nConfig,
-        localeContext,
+  // With `skipProxyUrlNormalize`, a Pages data request reaches middleware with
+  // its raw `_next/data` URL. Next.js normalizes a current-build data URL to
+  // its page before matching, so a matcher guarding a page also guards its
+  // data. A stale buildId stays raw, and the matcher is compiled with Next.js's
+  // optional `_next/data/<buildId>` prefix instead.
+  // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/server/lib/router-utils/resolve-routes.ts
+  const isStaleDataRequest = options.isDataRequest === true && options.isStaleDataRequest === true;
+  const toPageMatcherPathname = (candidate: string | null): string | null =>
+    candidate !== null && options.isDataRequest && !isStaleDataRequest
+      ? (nextDataMiddlewareMatchPathname(candidate) ?? candidate)
+      : candidate;
+  const encodedMatchPathname = toPageMatcherPathname(
+    prepareMatcherPathname(encodedRequestPathname),
+  );
+  let decodedMatchPathname = encodedMatchPathname;
+  try {
+    if (encodedMatchPathname !== null) {
+      decodedMatchPathname = decodeURIComponent(encodedMatchPathname);
+    } else if (!options.i18nConfig) {
+      // Without i18n, Next.js can discover an encoded basePath on the decoded
+      // matcher attempt. With i18n, default-locale insertion has already made
+      // that path ineligible for the compiled basePath-prefixed matcher.
+      decodedMatchPathname = toPageMatcherPathname(
+        prepareMatcherPathname(decodeURIComponent(encodedRequestPathname)),
       );
-    const decodedMatches =
-      !encodedMatches &&
-      decodedMatchPathname !== null &&
-      decodedMatchPathname !== encodedMatchPathname &&
-      matchesMiddleware(
-        decodedMatchPathname,
-        matcher,
-        options.request,
-        options.i18nConfig,
-        localeContext,
-      );
-
-    return {
-      matches: encodedMatches || decodedMatches,
-      pathMatches: encodedPathMatches || decodedPathMatches,
-    };
+    }
+  } catch {
+    // Match Next.js: malformed encoding is non-fatal for matcher eligibility.
   }
 
-  // With `skipProxyUrlNormalize`, a Pages data request reaches middleware with
-  // its raw `_next/data` URL. Next.js still evaluates the matcher against the
-  // page that URL addresses, so a matcher guarding a page also guards its data.
-  // A stale buildId stays raw in Next.js, where the compiled matcher's optional
-  // `_next/data/<buildId>` prefix accepts either the raw URL or its page path.
-  // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/server/lib/router-utils/resolve-routes.ts
-  const pageMatch = evaluateMatcher(options.isDataRequest === true);
-  const rawMatch =
-    options.isStaleDataRequest && options.isDataRequest && !pageMatch.matches
-      ? evaluateMatcher(false)
-      : null;
-  if (pageMatch.pathMatches || rawMatch?.pathMatches) {
+  let localeContext: MiddlewareLocaleMatchContext | undefined;
+  if (isStaleDataRequest) {
+    localeContext = { kind: "next-data" };
+  } else if (options.i18nConfig && encodedMatchPathname !== null) {
+    const hostname = normalizeHost(options.request.headers.get("host"), requestUrl.hostname);
+    const firstSegment = encodedMatchPathname.split("/", 3)[1];
+    const hasLiteralLocale =
+      firstSegment !== undefined &&
+      options.i18nConfig.locales.some(
+        (locale) => locale.toLowerCase() === firstSegment.toLowerCase(),
+      );
+    if (hasLiteralLocale) {
+      localeContext = { kind: "literal" };
+    } else {
+      const localeDefaultedPathname = normalizeDefaultLocalePathname(
+        encodedMatchPathname,
+        options.i18nConfig,
+        { hostname },
+      );
+      localeContext =
+        localeDefaultedPathname === encodedMatchPathname
+          ? { kind: "internal" }
+          : {
+              defaultLocale: normalizeDefaultLocalePathname("/", options.i18nConfig, {
+                hostname,
+              }).slice(1),
+              kind: "defaulted",
+            };
+    }
+  }
+  const encodedPathMatches =
+    encodedMatchPathname !== null &&
+    matchesMiddlewarePathname(encodedMatchPathname, matcher, options.i18nConfig, localeContext);
+  const decodedPathMatches =
+    !encodedPathMatches &&
+    decodedMatchPathname !== null &&
+    decodedMatchPathname !== encodedMatchPathname &&
+    matchesMiddlewarePathname(decodedMatchPathname, matcher, options.i18nConfig, localeContext);
+  if (encodedPathMatches || decodedPathMatches) {
     options.onPathMatch?.();
   }
-  if (!pageMatch.matches && !rawMatch?.matches) {
+
+  const encodedMatches =
+    encodedMatchPathname !== null &&
+    matchesMiddleware(
+      encodedMatchPathname,
+      matcher,
+      options.request,
+      options.i18nConfig,
+      localeContext,
+    );
+  const decodedMatches =
+    !encodedMatches &&
+    decodedMatchPathname !== null &&
+    decodedMatchPathname !== encodedMatchPathname &&
+    matchesMiddleware(
+      decodedMatchPathname,
+      matcher,
+      options.request,
+      options.i18nConfig,
+      localeContext,
+    );
+
+  if (!encodedMatches && !decodedMatches) {
     return { continue: true };
   }
 
