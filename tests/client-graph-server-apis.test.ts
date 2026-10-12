@@ -1187,7 +1187,7 @@ describe("client-graph Pages roots", () => {
         getAppDir: () => null,
         getPagesPages: async () => new Set([pagePath]),
         pagesEntryIds: ["\0virtual:vinext-server-entry"],
-        getPagesDevEnvironmentName: () => "ssr",
+        isPagesDevEnvironment: (environment) => (environment as { name: string }).name === "ssr",
       });
       const context = {
         environment: {

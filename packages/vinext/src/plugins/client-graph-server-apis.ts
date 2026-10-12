@@ -157,8 +157,8 @@ type ClientGraphServerApisPluginOptions = {
   getPagesPages?: () => Promise<ReadonlySet<string>>;
   /** The generated modules that import the Pages Router's pages. */
   pagesEntryIds?: readonly string[];
-  /** The dev environment that loads Pages Router pages directly, once known. */
-  getPagesDevEnvironmentName?: () => string | null;
+  /** Whether this is the dev environment that loads Pages Router pages directly. */
+  isPagesDevEnvironment?: (environment: object) => boolean;
   /**
    * For a browser Web Worker's plugin container (`worker.plugins`). Vite
    * bundles every worker separately, and a worker is browser code throughout.
@@ -363,7 +363,7 @@ export function createClientGraphServerApisPlugin(
         const isClientRoot = await getClientRootPredicate(
           clientBoundaries,
           tracksBoundaries,
-          options.getPagesDevEnvironmentName?.() === environment.name,
+          options.isPagesDevEnvironment?.(environment) ?? false,
           (moduleId) => Boolean(environment.moduleGraph.getModuleById(moduleId)),
           (source, importer) => this.resolve(source, importer),
         );
