@@ -1174,6 +1174,19 @@ describe("client-graph Pages roots", () => {
     },
   );
 
+  it("skip buildEnd in dev, where perEnvironmentStartEndDuringDev runs it", async () => {
+    const plugin = createClientGraphServerApisPlugin({ getAppDir: () => null });
+    const context = {
+      ...createBuildContext("ssr", { "/repo/lib/session.ts": { importers: [] } }),
+      environment: { name: "ssr", mode: "dev", config: { consumer: "server" } },
+      getModuleInfo: () => {
+        throw new Error("getModuleInfo().code is not supported in dev");
+      },
+    };
+
+    await expect(callBuildEnd(plugin, context)).resolves.toBeUndefined();
+  });
+
   it("check each build's final module code, whatever a watch rebuild reused", async () => {
     const pagePath = "/repo/pages/index.tsx";
     const entryId = "\0virtual:vinext-server-entry";
@@ -1229,8 +1242,8 @@ function createBuildContext(
   };
 }
 
-function callBuildEnd(plugin: Plugin, context: ReturnType<typeof createBuildContext>) {
-  return (plugin.buildEnd as unknown as (this: typeof context) => Promise<void>).call(context);
+function callBuildEnd(plugin: Plugin, context: object) {
+  return (plugin.buildEnd as unknown as (this: object) => Promise<void>).call(context);
 }
 
 describe("findInvalidClientImports", () => {

@@ -378,6 +378,9 @@ export function createClientGraphServerApisPlugin(
       const environment = this.environment;
       const appDir = options.getAppDir();
       if (options.worker || getGraphKind(environment, appDir !== null) !== "server") return;
+      // Dev checks at transform time; `server.perEnvironmentStartEndDuringDev`
+      // also runs buildEnd there, where module code is unavailable.
+      if (environment.mode !== "build") return;
       const tracksBoundaries = tracksClientBoundaries(environment.name, appDir);
       const clientBoundaries = new Set<string>();
       const invalidImports = new Map<string, InvalidClientImport>();
