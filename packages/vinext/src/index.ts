@@ -1765,9 +1765,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let rscActionOwnerRoutes: Awaited<ReturnType<typeof appRouter>> | null = null;
   let rscActionOwnerSharedRoots: string[] = [];
   const serverEntryKindsByEnvironment = new Map<string, Set<string>>();
-  // The dev environment whose runner loads Pages Router pages directly.
-  // Compared by identity: `server.restart()` creates fresh environments.
-  let pagesDevEnvironment: object | null = null;
+  // The dev environments whose runner loads Pages Router pages directly,
+  // by identity: `server.restart()` creates fresh environments, and the old
+  // server keeps running if the restart fails.
+  const pagesDevEnvironments = new WeakSet<object>();
   const serverRuntimeOutputDirs = new Set<string>();
 
   function recordServerEntryLoad(environmentName: string | undefined, id: string): void {
@@ -5747,7 +5748,7 @@ export const loadServerActionClient = ${
           server.environments["ssr"] ??
           Object.values(server.environments).find((e) => e !== server.environments["rsc"]) ??
           Object.values(server.environments)[0];
-        pagesDevEnvironment = pagesEnvironment;
+        pagesDevEnvironments.add(pagesEnvironment);
         function getPagesRunner() {
           if (!pagesRunner) {
             pagesRunner = createDirectRunner(pagesEnvironment);
@@ -7445,7 +7446,7 @@ export const loadServerActionClient = ${
       getAppDir: () => (hasAppDir ? canonicalize(appDir) : null),
       getPagesPages: getPagesClientRoots,
       pagesEntryIds: [RESOLVED_SERVER_ENTRY, RESOLVED_PAGES_RESPONSE_ENTRY],
-      isPagesDevEnvironment: (environment) => environment === pagesDevEnvironment,
+      isPagesDevEnvironment: (environment) => pagesDevEnvironments.has(environment),
     }),
     // Strip console.* calls from the client bundle when compiler.removeConsole
     // is enabled in next.config. Inspired by Next.js's SWC remove_console transform.
