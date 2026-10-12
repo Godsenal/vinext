@@ -15394,6 +15394,25 @@ describe("matchRedirect destination param substitution", () => {
     expect(URL.canParse(result!.destination)).toBe(false);
   });
 
+  it("encodes a host capture behind whitespace the URL parser ignores", async () => {
+    const { matchRedirect } = await import("../packages/vinext/src/config/config-matchers.js");
+    for (const destination of [" https://:h.example.com/", "ht\ttps://:h.example.com/\n"]) {
+      const result = matchRedirect(
+        "/go",
+        [
+          {
+            source: "/go",
+            has: [{ type: "query" as const, key: "h", value: "(?<h>.*)" }],
+            destination,
+            permanent: false,
+          },
+        ],
+        { ...emptyCtx, query: new URLSearchParams({ h: "attacker.test#" }) },
+      );
+      expect(result?.destination).toBe("https://attacker.test%23.example.com/");
+    }
+  });
+
   it("substitutes params verbatim after a non-special scheme without an authority", async () => {
     const { matchRedirect } = await import("../packages/vinext/src/config/config-matchers.js");
     const redirects = [

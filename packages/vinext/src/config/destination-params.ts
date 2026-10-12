@@ -40,12 +40,13 @@ const _compiledDestinationParamCache = new Map<string, RegExp>();
  * https://github.com/vercel/next.js/blob/canary/packages/next/src/server/server-route-utils.ts
  */
 export function substituteDestinationParams(
-  destination: string,
+  rawDestination: string,
   params: Record<string, string>,
   kind: "redirect" | "rewrite",
 ): string {
   const paramRe = getDestinationParamRegex(params);
-  if (!paramRe) return destination;
+  if (!paramRe) return rawDestination;
+  const destination = stripUrlIgnoredCharacters(rawDestination);
 
   const replaceParams = (value: string, encodeParam: (value: string) => string): string =>
     value.replace(paramRe, (_token, key: string) => encodeParam(params[key]));
@@ -74,21 +75,31 @@ export function substituteDestinationParams(
   return `${path}${query}${replaceParams(hash, (value) => value)}`;
 }
 
+// The URL parser drops leading and trailing C0 controls and spaces, and every
+// tab or newline, so ` https://:h.example.com` or `ht\ttps://…` still has an
+// authority. Strip them before locating it.
+function stripUrlIgnoredCharacters(value: string): string {
+  let start = 0;
+  let end = value.length;
+  while (start < end && value.charCodeAt(start) <= 0x20) start++;
+  while (end > start && value.charCodeAt(end - 1) <= 0x20) end--;
+  return value.slice(start, end).replace(/[\t\n\r]/g, "");
+}
+
 // End of the `scheme://authority` prefix of an absolute URL. Like the URL
 // parser for special schemes, any run of `/` or `\` after the scheme belongs
-// to the prefix, and the ASCII tab/newline characters it strips do not end it.
-// A destination that is neither a path nor a literal absolute URL (Next.js
+// to the prefix. A destination that is neither a path nor a literal absolute URL (Next.js
 // rejects these) has its first segment treated the same way, so a param can
 // never supply the `:` or slashes of a scheme. A non-special scheme such as a
 // redirect's `mailto:` has an authority only after `//`; a scheme supplied by
 // a param counts as special.
 function getAbsoluteUrlAuthorityEnd(template: string, shape: string): number {
-  const scheme = /^([a-z][a-z0-9+.-]*):([/\\\t\n\r]*)/i.exec(shape);
+  const scheme = /^([a-z][a-z0-9+.-]*):([/\\]*)/i.exec(shape);
   if (!scheme && /^[/\\]/.test(shape)) return 0;
   if (scheme) {
     const name = template.slice(0, scheme[1].length).toLowerCase();
     const special = name !== scheme[1].toLowerCase() || SPECIAL_SCHEMES.has(name);
-    if (!special && !scheme[2].replace(/[\t\n\r]/g, "").startsWith("//")) {
+    if (!special && !scheme[2].startsWith("//")) {
       return scheme[0].length;
     }
   }
