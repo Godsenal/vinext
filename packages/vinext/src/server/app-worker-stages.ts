@@ -215,6 +215,7 @@ export function createSharedHybridPagesCacheIdentity(
       requestOrigin: origin,
       requestUrl: withCacheIdentityOrigin(props.requestUrl, origin),
     },
+    regenerateFromDispatch: true,
     request: new Request(withCacheIdentityOrigin(request.url, origin), {
       headers: new Headers(request.headers),
       method: request.method,
