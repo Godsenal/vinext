@@ -1066,6 +1066,51 @@ describe("client-graph dev boundaries", () => {
   });
 });
 
+describe("client-graph dev restarts", () => {
+  it("does not carry boundaries into a restarted server's environment", async () => {
+    const plugin = createClientGraphServerApisPlugin({ getAppDir: () => "/repo/app" });
+    const boundaryId = "/repo/app/client.tsx";
+    const createEnvironment = () => ({
+      name: "ssr",
+      mode: "dev",
+      config: { consumer: "server" },
+      moduleGraph: {
+        getModuleById: (id: string) =>
+          id === "/repo/lib/session.ts" ? { importers: [{ id: boundaryId }] } : undefined,
+      },
+    });
+    const createContext = (environment: ReturnType<typeof createEnvironment>) => ({
+      environment,
+      error: (message: unknown) => {
+        throw new Error(String(message));
+      },
+      resolve: async () => null,
+    });
+    const transform = plugin.transform as unknown as {
+      handler: (
+        this: ReturnType<typeof createContext>,
+        code: string,
+        id: string,
+      ) => Promise<unknown>;
+    };
+
+    await transform.handler.call(
+      createContext(createEnvironment()),
+      `"use client";\nimport { readSession } from "../lib/session";\nexport { readSession };\n`,
+      boundaryId,
+    );
+    // After server.restart(), a config-dependent transform dropped the
+    // directive, so the boundary's new code never reaches this plugin.
+    const check = transform.handler.call(
+      createContext(createEnvironment()),
+      INVALID_HELPER_CODE,
+      "/repo/lib/session.ts",
+    );
+
+    await expect(check).resolves.toBeNull();
+  });
+});
+
 describe("client-graph server environments", () => {
   it.each([
     ["ssr", true],

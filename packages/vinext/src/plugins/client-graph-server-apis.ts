@@ -250,14 +250,16 @@ export function createClientGraphServerApisPlugin(
 ): Plugin {
   // Builds analyze the final module graph at buildEnd, so only dev keeps
   // state: the "use client" modules each server environment has transformed.
-  const devClientBoundaries = new Map<string, Set<string>>();
-  const getDevClientBoundaries = (environmentName: string): Set<string> => {
-    let boundaries = devClientBoundaries.get(environmentName);
-    if (!boundaries) {
-      boundaries = new Set();
-      devClientBoundaries.set(environmentName, boundaries);
+  // It belongs to the environment instance, since `server.restart()` reuses
+  // this plugin with fresh environments and module graphs.
+  const devClientBoundaries = new Map<string, { environment: object; boundaries: Set<string> }>();
+  const getDevClientBoundaries = (environment: { name: string }): Set<string> => {
+    let state = devClientBoundaries.get(environment.name);
+    if (state?.environment !== environment) {
+      state = { environment, boundaries: new Set() };
+      devClientBoundaries.set(environment.name, state);
     }
-    return boundaries;
+    return state.boundaries;
   };
   // Pages pages open the client layer in every server graph. A "use client"
   // module only does in App Router SSR (the "ssr" environment): Pages-only
@@ -307,7 +309,7 @@ export function createClientGraphServerApisPlugin(
     // there.
     watchChange(id) {
       const file = toSlash(id);
-      for (const boundaries of devClientBoundaries.values()) {
+      for (const { boundaries } of devClientBoundaries.values()) {
         for (const boundary of boundaries) {
           if (stripViteModuleQuery(boundary) === file) boundaries.delete(boundary);
         }
@@ -346,7 +348,7 @@ export function createClientGraphServerApisPlugin(
         }
 
         if (environment.mode !== "dev") return null;
-        const clientBoundaries = getDevClientBoundaries(environment.name);
+        const clientBoundaries = getDevClientBoundaries(environment);
         if (info.isClientBoundary) clientBoundaries.add(id);
         else clientBoundaries.delete(id);
         if (!invalid) return null;
