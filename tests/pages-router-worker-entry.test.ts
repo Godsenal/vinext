@@ -202,11 +202,21 @@ describe("Pages Router production Worker readiness", () => {
     }
   });
 
-  it("resolves image sources through middleware, under basePath for the unprefixed endpoint", async () => {
-    // Next.js' fetchInternalImage runs a local source through the router without
-    // the caller's cookies (packages/next/src/server/image-optimizer.ts).
-    // vinext's next/image emits the endpoint without basePath, so that form
-    // resolves its source under basePath.
+  // A basePath Pages Worker with middleware denying /protected/ and a
+  // host-conditioned rewrite. ASSETS serves `assetPaths` with their pathname
+  // as the body.
+  async function loadImageWorker(assetPrefix: string, assetPaths: string[]) {
+    const config = `{
+  assetPrefix: ${JSON.stringify(assetPrefix)},
+  basePath: "/docs",
+  rewrites: {
+    beforeFiles: [
+      { source: "/host-avatar", has: [{ type: "host", value: "example.com" }], destination: "/open.png" },
+    ],
+    afterFiles: [],
+    fallback: [],
+  },
+}`;
     const server = await createServer({
       appType: "custom",
       configFile: false,
@@ -215,7 +225,7 @@ describe("Pages Router production Worker readiness", () => {
         pagesWorkerEntryVirtualModules({
           "virtual:vinext-server-entry": `
 export const prerenderSecret = "worker-prerender-secret";
-export const vinextConfig = { assetPrefix: "/cdn", basePath: "/docs" };
+export const vinextConfig = ${config};
 `,
           "virtual:vinext-pages-request-entry": `
 export const authorizeOnDemandRevalidate = () => false;
@@ -227,24 +237,17 @@ export const matchPageRoute = () => null;
 export const normalizeDataRequest = (request) => ({ isDataReq: false, normalizedPathname: null, notFoundResponse: null, request });
 export const prerenderSecret = "worker-prerender-secret";
 export function __ensureInstrumentation() {}
-export const publicFiles = new Set(["/open.png", "/protected/private.png"]);
+export const publicFiles = new Set(["/open.png", "/protected/private.png", "/cdn/photo.png"]);
+export const middlewareRequests = [];
 export async function runMiddleware(request) {
-  if (new URL(request.url).pathname.startsWith("/docs/protected/")) {
+  const url = new URL(request.url);
+  middlewareRequests.push({ hasHost: request.headers.has("host"), hostname: url.hostname, pathname: url.pathname });
+  if (url.pathname.startsWith("/docs/protected/")) {
     return { continue: false, response: new Response("blocked", { status: 403 }) };
   }
   return { continue: true };
 }
-export const vinextConfig = {
-  assetPrefix: "/cdn",
-  basePath: "/docs",
-  rewrites: {
-    beforeFiles: [
-      { source: "/host-avatar", has: [{ type: "host", value: "example.com" }], destination: "/open.png" },
-    ],
-    afterFiles: [],
-    fallback: [],
-  },
-};
+export const vinextConfig = ${config};
 `,
         }),
       ],
@@ -255,43 +258,75 @@ export const vinextConfig = {
       },
       server: { middlewareMode: true },
     });
-
-    try {
-      const entry = (await server.ssrLoadModule(
-        path.resolve(import.meta.dirname, "../packages/vinext/src/server/pages-router-entry.ts"),
-      )) as {
-        default: {
-          fetch(request: Request, env?: unknown, ctx?: { waitUntil(): void }): Promise<Response>;
-        };
+    const entry = (await server.ssrLoadModule(
+      path.resolve(import.meta.dirname, "../packages/vinext/src/server/pages-router-entry.ts"),
+    )) as {
+      default: {
+        fetch(request: Request, env?: unknown, ctx?: { waitUntil(): void }): Promise<Response>;
       };
-      const env = {
-        ASSETS: {
-          fetch(request: Request) {
-            const { pathname } = new URL(request.url);
-            return pathname === "/open.png" ||
-              pathname === "/protected/private.png" ||
-              pathname === "/cdn/_next/static/media/built.png"
-              ? new Response(pathname, { headers: { "content-type": "image/png" } })
-              : new Response(null, { status: 404 });
-          },
+    };
+    const requestEntry = (await server.ssrLoadModule("virtual:vinext-pages-request-entry")) as {
+      middlewareRequests: { hasHost: boolean; hostname: string; pathname: string }[];
+    };
+    const env = {
+      ASSETS: {
+        fetch(request: Request) {
+          const { pathname } = new URL(request.url);
+          return assetPaths.includes(pathname)
+            ? new Response(pathname, { headers: { "content-type": "image/png" } })
+            : new Response(null, { status: 404 });
         },
-      };
-      const get = (url: string) =>
-        entry.default.fetch(new Request(`https://example.com${url}`), env, { waitUntil() {} });
+      },
+    };
+    const get = (url: string) =>
+      entry.default.fetch(
+        new Request(`https://example.com${url}`, { headers: { host: "example.com" } }),
+        env,
+        {
+          waitUntil() {},
+        },
+      );
+    return { get, middlewareRequests: requestEntry.middlewareRequests, server };
+  }
 
+  it("resolves image sources through middleware, under basePath for the unprefixed endpoint", async () => {
+    // Next.js' fetchInternalImage runs a local source through the router as a
+    // relative URL without headers (packages/next/src/server/image-optimizer.ts).
+    // vinext's next/image emits the endpoint without basePath, so that form
+    // resolves its source under basePath.
+    const { get, middlewareRequests, server } = await loadImageWorker("/cdn", [
+      "/open.png",
+      "/protected/private.png",
+      "/cdn/photo.png",
+      "/cdn/_next/static/media/built.png",
+    ]);
+    try {
       expect((await get("/docs/protected/private.png")).status).toBe(403);
-      // Next.js' internal image request has no Host header, so a host-conditioned
-      // rewrite matches only the direct request.
+      // The caller's host matches a host-conditioned rewrite of a direct request
+      // only, and middleware sees neither its Host header nor its hostname.
       await expect((await get("/docs/host-avatar")).text()).resolves.toBe("/open.png");
+      middlewareRequests.length = 0;
       expect((await get("/docs/_next/image?url=%2Fdocs%2Fhost-avatar&w=640&q=75")).status).toBe(
         404,
       );
-      // Build assets under a distinct assetPrefix path are not under the basePath.
-      const builtImage = await get(
-        "/_next/image?url=%2Fcdn%2F_next%2Fstatic%2Fmedia%2Fbuilt.png&w=640&q=75",
+      const sourceRequest = middlewareRequests.find(
+        ({ pathname }) => pathname === "/docs/host-avatar",
       );
-      expect(builtImage.status).toBe(200);
-      await expect(builtImage.text()).resolves.toBe("/cdn/_next/static/media/built.png");
+      expect(sourceRequest?.hasHost).toBe(false);
+      expect(sourceRequest?.hostname).not.toBe("example.com");
+      // Build assets under a distinct assetPrefix path are not under the
+      // basePath; other files there are.
+      for (const [url, body] of [
+        [
+          "/_next/image?url=%2Fcdn%2F_next%2Fstatic%2Fmedia%2Fbuilt.png&w=640&q=75",
+          "/cdn/_next/static/media/built.png",
+        ],
+        ["/_next/image?url=%2Fcdn%2Fphoto.png&w=640&q=75", "/cdn/photo.png"],
+      ]) {
+        const image = await get(url);
+        expect(image.status, url).toBe(200);
+        await expect(image.text(), url).resolves.toBe(body);
+      }
       for (const url of [
         "/_next/image?url=%2Fopen.png&w=640&q=75",
         "/docs/_next/image?url=%2Fdocs%2Fopen.png&w=640&q=75",
@@ -309,6 +344,21 @@ export const vinextConfig = {
         expect(image.status, url).toBe(404);
         await expect(image.text(), url).resolves.not.toContain("/protected/private.png");
       }
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("serves a build-asset image source under an assetPrefix inside the basePath", async () => {
+    const { get, server } = await loadImageWorker("/docs/cdn", [
+      "/docs/cdn/_next/static/media/built.png",
+    ]);
+    try {
+      const image = await get(
+        "/docs/_next/image?url=%2Fdocs%2Fcdn%2F_next%2Fstatic%2Fmedia%2Fbuilt.png&w=640&q=75",
+      );
+      expect(image.status).toBe(200);
+      await expect(image.text()).resolves.toBe("/docs/cdn/_next/static/media/built.png");
     } finally {
       await server.close();
     }

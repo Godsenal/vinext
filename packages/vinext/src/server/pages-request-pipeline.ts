@@ -106,6 +106,36 @@ type PageRouteMatch = {
   route: { isDynamic: boolean; pattern?: string; dataKind?: PagesRouteDataKind };
 };
 
+/**
+ * Origin of an image optimizer's internal source request. Next.js'
+ * fetchInternalImage dispatches the source as a relative URL without headers,
+ * so the caller's host selects no host condition, domain locale or
+ * middleware branch.
+ */
+export const IMAGE_SOURCE_ORIGIN = "http://vinext.invalid";
+
+/**
+ * The image source for an endpoint requested outside the basePath. vinext's
+ * next/image emits the endpoint without the basePath, where Next.js prefixes
+ * it, so its unprefixed sources resolve under the basePath, as the App Router
+ * does. Build assets under a distinct assetPrefix path stay outside it.
+ */
+export function imageSourceUnderBasePath(
+  imageUrl: string,
+  basePath: string,
+  assetPathPrefix: string,
+): string {
+  if (!basePath || hasBasePath(imageUrl, basePath)) return imageUrl;
+  if (
+    assetPathPrefix &&
+    hasBasePath(imageUrl, assetPathPrefix) &&
+    isNextStaticPath(imageUrl.split(/[?#]/, 1)[0], "", assetPathPrefix)
+  ) {
+    return imageUrl;
+  }
+  return basePath + imageUrl;
+}
+
 export async function fetchWorkerFilesystemRoute(
   request: Request,
   requestPathname: string,

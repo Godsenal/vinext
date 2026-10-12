@@ -51,6 +51,8 @@ import {
 } from "./request-pipeline.js";
 import { notFoundResponse } from "./http-error-responses.js";
 import {
+  IMAGE_SOURCE_ORIGIN,
+  imageSourceUnderBasePath,
   runPagesRequest,
   wrapMiddlewareWithBasePath,
   type FilesystemRoutePhase,
@@ -2396,17 +2398,10 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
     request: Request,
     deps: PagesPipelineDeps,
   ): Promise<string | null> => {
-    // vinext's next/image emits the image endpoint without the basePath, where
-    // Next.js prefixes it. Resolve that form's unprefixed sources under the
-    // basePath, as the App Router does. Build assets under a distinct
-    // assetPrefix path are not under the basePath.
     const sourceUrl = new URL(
-      basePath &&
-        !deps.hadBasePath &&
-        !hasBasePath(imageUrl, basePath) &&
-        !(pagesAssetPathPrefix && hasBasePath(imageUrl, pagesAssetPathPrefix))
-        ? basePath + imageUrl
-        : imageUrl,
+      deps.hadBasePath
+        ? imageUrl
+        : imageSourceUnderBasePath(imageUrl, basePath, pagesAssetPathPrefix),
       request.url,
     );
     const sourceRawUrl = sourceUrl.pathname + sourceUrl.search;
@@ -2427,13 +2422,8 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
 
     let sourcePath: string | null = null;
     const result = await runOutsideFrameworkRequestTrace(() =>
-      // Like Next.js' internal image request, carry no Host header, so host
-      // conditions never match.
       runPagesRequest(
-        new Request(new URL(target.url, request.url), {
-          headers: { host: "" },
-          signal: request.signal,
-        }),
+        new Request(new URL(target.url, IMAGE_SOURCE_ORIGIN), { signal: request.signal }),
         {
           ...deps,
           configMatchPathname: target.configMatchPathname,

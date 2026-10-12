@@ -7,6 +7,8 @@
 
 import {
   fetchWorkerFilesystemRoute,
+  IMAGE_SOURCE_ORIGIN,
+  imageSourceUnderBasePath,
   runPagesRequest,
   wrapMiddlewareWithBasePath,
 } from "./pages-request-pipeline.js";
@@ -288,31 +290,30 @@ async function resolveImageSource(
   assets: VinextAssetFetcher,
 ): Promise<Response | null> {
   const fetchAsset = (assetRequest: Request) => Promise.resolve(assets.fetch(assetRequest));
-  // vinext's next/image emits the image endpoint without the basePath, where
-  // Next.js prefixes it. Resolve that form's unprefixed sources under the
-  // basePath, as the App Router does. Build assets under a distinct
-  // assetPrefix path are not under the basePath.
   const sourceUrl = new URL(
-    basePath &&
-      !deps.hadBasePath &&
-      !hasBasePath(imageUrl, basePath) &&
-      !(assetPathPrefix && hasBasePath(imageUrl, assetPathPrefix))
-      ? basePath + imageUrl
-      : imageUrl,
+    deps.hadBasePath ? imageUrl : imageSourceUnderBasePath(imageUrl, basePath, assetPathPrefix),
     request.url,
   );
-  // Like Next.js' internal image request, carry no Host header, so host
-  // conditions never match.
+  // The source request keeps the caller's edge metadata, as a direct request
+  // from the caller would carry it.
   const resolved = resolvePagesWorkerRequestUrl(
-    new Request(sourceUrl, { headers: { host: "" }, signal: request.signal }),
+    attachRequestCfMetadata(
+      new Request(new URL(sourceUrl.pathname + sourceUrl.search, IMAGE_SOURCE_ORIGIN), {
+        signal: request.signal,
+      }),
+      request,
+    ),
   );
   if (resolved instanceof Response) {
     await resolved.body?.cancel();
     return null;
   }
   // Workers Static Assets serves build assets before middleware for direct
-  // requests too.
-  if (isNextStaticPath(new URL(resolved.request.url).pathname, "", assetPathPrefix)) {
+  // requests too. An assetPrefix path can itself start with the basePath.
+  if (
+    isNextStaticPath(sourceUrl.pathname, "", assetPathPrefix) ||
+    isNextStaticPath(sourceUrl.pathname, basePath, assetPathPrefix)
+  ) {
     const asset = await fetchAsset(new Request(sourceUrl, { signal: request.signal }));
     if (asset.ok) return asset;
     await asset.body?.cancel();
