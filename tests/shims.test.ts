@@ -15127,7 +15127,8 @@ describe("matchRewrite with external URLs", () => {
   });
 
   it("encodes a host capture when a param supplies the destination scheme", async () => {
-    const { matchRewrite } = await import("../packages/vinext/src/config/config-matchers.js");
+    const { matchRewrite, isExternalUrl } =
+      await import("../packages/vinext/src/config/config-matchers.js");
     const result = matchRewrite(
       "/proxy",
       [
@@ -15145,6 +15146,27 @@ describe("matchRewrite with external URLs", () => {
 
     expect(result).toBe("http://127.0.0.1%3A9998%23.example.com/x");
     expect(URL.canParse(result!)).toBe(false);
+
+    // A param that would supply the scheme's `:` is encoded, so the
+    // destination never becomes an absolute URL.
+    for (const destination of [":proto//:h.example.com/x", ":proto:h.example.com/x"]) {
+      const rewritten = matchRewrite(
+        "/proxy",
+        [
+          {
+            source: "/proxy",
+            has: [
+              { type: "query" as const, key: "proto", value: "(?<proto>.*)" },
+              { type: "query" as const, key: "h", value: "(?<h>.*)" },
+            ],
+            destination,
+          },
+        ],
+        { ...emptyCtx, query: new URLSearchParams({ proto: "http:", h: "127.0.0.1:9998#" }) },
+      );
+      expect(rewritten!.startsWith("http%3A")).toBe(true);
+      expect(isExternalUrl(rewritten!)).toBe(false);
+    }
   });
 
   it("keeps percent-encoded path captures in an external destination host", async () => {

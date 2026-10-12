@@ -73,15 +73,18 @@ export function substituteDestinationParams(
   return `${path}${query}${replaceParams(hash, (value) => value)}`;
 }
 
-// End of the `scheme://authority` prefix of an absolute URL, or 0 when the
-// destination is not absolute. Like the URL parser for special schemes, any
-// run of `/` or `\` after the scheme belongs to the prefix, not the path, and
-// the ASCII tab/newline characters it strips do not end that run.
+// End of the `scheme://authority` prefix of an absolute URL. Like the URL
+// parser for special schemes, any run of `/` or `\` after the scheme belongs
+// to the prefix, and the ASCII tab/newline characters it strips do not end it.
+// A destination that is neither a path nor a literal absolute URL (Next.js
+// rejects these) has its first segment treated the same way, so a param can
+// never supply the `:` or slashes of a scheme.
 function getAbsoluteUrlAuthorityEnd(value: string): number {
   const scheme = /^[a-z][a-z0-9+.-]*:[/\\\t\n\r]*/i.exec(value);
-  if (!scheme) return 0;
-  const pathStart = value.slice(scheme[0].length).search(/[/\\]/);
-  return pathStart === -1 ? value.length : scheme[0].length + pathStart;
+  if (!scheme && /^[/\\]/.test(value)) return 0;
+  const start = scheme ? scheme[0].length : 0;
+  const pathStart = value.slice(start).search(/[/\\]/);
+  return pathStart === -1 ? value.length : start + pathStart;
 }
 
 /**
