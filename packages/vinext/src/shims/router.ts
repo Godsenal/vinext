@@ -63,6 +63,7 @@ import {
   isAbsoluteUrl,
   isAbsoluteOrProtocolRelativeUrl,
   isHashOnlyBrowserUrlChange,
+  finishInterpolatedDoubleSlashPath,
   normalizePathTrailingSlash,
   toBrowserNavigationHref,
   toSameOriginAppPath,
@@ -677,7 +678,7 @@ function prefixInterpolatedDoubleSlashPath(
   if (isAbsoluteOrProtocolRelativeUrl(prefixed)) {
     // A domain locale hard-navigates to the configured host, as Next.js does.
     return /^[a-z][a-z\d+.-]*:/i.test(prefixed)
-      ? { href: prefixed.replace("/.//", "//"), dotSegment: "" }
+      ? { href: finishInterpolatedDoubleSlashPath(prefixed, __trailingSlash), dotSegment: "" }
       : null;
   }
   if (__basePath === "" && prefixed.startsWith("/./")) return null;

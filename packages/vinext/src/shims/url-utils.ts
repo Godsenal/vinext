@@ -170,6 +170,19 @@ export function withBasePath(path: string, basePath: string): string {
 }
 
 /**
+ * Finish a prefixed interpolated `//...` app path written as a dot-segment
+ * path (`<prefix>/.//...`, so URL helpers keep it a path): normalize its
+ * trailing slash while it is still a local path, then drop the `/.`. A domain
+ * locale URL keeps its origin, as Next.js normalizes the path before joining
+ * the domain.
+ */
+export function finishInterpolatedDoubleSlashPath(url: string, trailingSlash: boolean): string {
+  const origin = /^[a-z][a-z\d+.-]*:\/\/[^/?#]*/i.exec(url)?.[0] ?? "";
+  const path = normalizePathTrailingSlash(url.slice(origin.length), trailingSlash);
+  return origin + path.replace(/\/\.(?=[/?#]|$)/, "");
+}
+
+/**
  * Resolve a potentially relative href against the current URL.
  * Handles: "#hash", "?query", "?query#hash", and relative paths.
  */

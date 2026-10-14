@@ -42,6 +42,7 @@ import {
   isAbsoluteUrl,
   normalizePathTrailingSlash,
   resolveRelativeHref,
+  finishInterpolatedDoubleSlashPath,
   toBrowserNavigationHref,
   toSameOriginAppPath,
   toSameOriginPath,
@@ -1617,6 +1618,26 @@ describe("resolveRelativeHref", () => {
     expect(resolveRelativeHref("?page=2", "http://localhost:3000/base/fr/posts/1", "/base")).toBe(
       "/fr/posts/1?page=2",
     );
+  });
+});
+
+describe("finishInterpolatedDoubleSlashPath", () => {
+  // Next.js normalizes the joined `addBasePath(addLocale(as))` path before
+  // attaching a domain-locale origin, so the trailing slash applies there too.
+  it.each([
+    ["/docs/.//attacker.example/x", false, "/docs//attacker.example/x"],
+    ["/docs/.//attacker.example/x", true, "/docs//attacker.example/x/"],
+    ["/fr/.//attacker.example/x?q=1#h", true, "/fr//attacker.example/x/?q=1#h"],
+    ["/.//attacker.example/x", true, "//attacker.example/x/"],
+    [
+      "https://example.fr/docs/fr/.//attacker.example/x",
+      true,
+      "https://example.fr/docs/fr//attacker.example/x/",
+    ],
+    ["https://example.fr/.//attacker.example/x", false, "https://example.fr//attacker.example/x"],
+    ["/docs/.//", false, "/docs/"],
+  ] as const)("finishes %s (trailingSlash: %s)", (url, trailingSlash, expected) => {
+    expect(finishInterpolatedDoubleSlashPath(url, trailingSlash)).toBe(expected);
   });
 });
 

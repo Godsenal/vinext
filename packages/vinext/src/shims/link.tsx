@@ -33,6 +33,7 @@ import {
   type LinkPrefetchRouterMode,
 } from "./link-prefetch.js";
 import {
+  finishInterpolatedDoubleSlashPath,
   isAbsoluteOrProtocolRelativeUrl,
   normalizePathTrailingSlash,
   toCanonicalBrowserNavigationHref,
@@ -1047,11 +1048,8 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
   // dot segment keeps the URL helpers from treating it as an external URL.
   const fullHref =
     implicitDynamicRouteHref !== null && !isDangerous && resolvedHref.startsWith("//")
-      ? normalizePathTrailingSlash(
-          withBasePath(applyLocaleToHref(`/.${resolvedHref}`, locale), __basePath).replace(
-            "/.//",
-            "//",
-          ),
+      ? finishInterpolatedDoubleSlashPath(
+          withBasePath(applyLocaleToHref(`/.${resolvedHref}`, locale), __basePath),
           __trailingSlash,
         )
       : normalizePathTrailingSlash(withBasePath(normalizedHref, __basePath), __trailingSlash);
