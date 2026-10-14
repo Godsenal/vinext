@@ -194,10 +194,7 @@ describe("Flight shared-buffer detach backport", () => {
       const root = path.dirname(
         require.resolve("@vitejs/plugin-rsc/vendor/react-server-dom/client.edge"),
       );
-      const filename = path.join(
-        root,
-        `cjs/react-server-dom-webpack-server.edge.${mode}.js`,
-      );
+      const filename = path.join(root, `cjs/react-server-dom-webpack-server.edge.${mode}.js`);
       const source = fs.readFileSync(filename, "utf8");
       // The shipped vendored codec genuinely lacks the copy (so the test is
       // meaningful), and our transform inserts it.
