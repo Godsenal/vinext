@@ -211,7 +211,13 @@ export function toBrowserNavigationHref(href: string, currentUrl?: string, baseP
     return basePath;
   }
 
-  if (resolved.startsWith("?") || resolved.startsWith("#")) {
+  // A relative href resolved on a `<basePath>//...` page keeps that page's
+  // app path, which is not a protocol-relative URL.
+  if (
+    resolved.startsWith("?") ||
+    resolved.startsWith("#") ||
+    (resolved.startsWith("//") && href !== resolved)
+  ) {
     return basePath + resolved;
   }
 
