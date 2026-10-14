@@ -1251,14 +1251,13 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
     let navigateHref = normalizedHref;
     // Next.js `linkClicked` checks `isLocalURL` on the route href, not on the
     // interpolated `as`. A local dynamic route can still interpolate to
-    // `//host/...` (an empty param), so let the Pages Router reject it rather
-    // than hard-navigating off-origin.
-    let routeInterpolationThroughRouter = false;
+    // `//host/...` (an empty param); the Pages Router collapses the repeated
+    // slashes in that `as` like Next.js `resolveHref`, so never hard-navigate.
     if (isAbsoluteOrProtocolRelativeUrl(resolvedHref)) {
       const localPath = toSameOriginAppPath(resolvedHref, __basePath);
-      if (localPath == null && implicitDynamicRouteHref !== null) {
-        routeInterpolationThroughRouter = true;
-      } else if (localPath == null) {
+      if (localPath != null) {
+        navigateHref = localPath;
+      } else if (implicitDynamicRouteHref === null) {
         // Truly external. Mirror Next.js `linkClicked`: when `replace` is set
         // we have to take over because the browser's default click navigation
         // pushes to history rather than replacing the current entry.
@@ -1268,8 +1267,6 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
           window.location.replace(resolvedHref);
         }
         return;
-      } else {
-        navigateHref = localPath;
       }
     }
 
@@ -1286,12 +1283,8 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
     // `as` drives the address bar — matching upstream Next.js Link → Router
     // semantics. When no mask is present, leave `pagesAsForLink` undefined so
     // existing single-arg navigation (the dominant code path) is unaffected.
-    const pagesAsForLink =
-      hasPagesHrefAsPair && !routeInterpolationThroughRouter ? pagesNavigateHref : undefined;
-    const pagesHrefForLink =
-      pagesAsForLink === undefined && !routeInterpolationThroughRouter
-        ? pagesNavigateHref
-        : routeHrefRaw;
+    const pagesAsForLink = hasPagesHrefAsPair ? pagesNavigateHref : undefined;
+    const pagesHrefForLink = pagesAsForLink === undefined ? pagesNavigateHref : routeHrefRaw;
     // Resolve relative hrefs (#hash, ?query) for onNavigate and the navigation fallback.
     // Pages query-only links must use the rewrite-aware target resolved above,
     // so callbacks and router-error fallback agree with the actual navigation.

@@ -19567,6 +19567,44 @@ describe("Pages Router concurrent navigation", () => {
     }
   });
 
+  it("matches an explicit as against the route before interpolating the href query", async () => {
+    // Next.js Router.change() collapses `//details` to `/details`, then rejects
+    // it because `/details` does not match `/[id]/details` and `id` is empty.
+    const previousWindow = (globalThis as any).window;
+    const { win, pushState } = createNavWindow();
+    Object.assign(win, {
+      __VINEXT_LOCALE__: "en",
+      __VINEXT_LOCALES__: ["en", "fr"],
+      __VINEXT_DEFAULT_LOCALE__: "en",
+    });
+    (globalThis as any).window = win;
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      vi.resetModules();
+      const { default: Router } = await import("../packages/vinext/src/shims/router.js");
+
+      await expect(Router.push("/[id]/details?id=", "//details")).rejects.toThrow(
+        "The provided `as` value (/details) is incompatible with the `href` value (/[id]/details). Read more: https://nextjs.org/docs/messages/incompatible-href-as",
+      );
+      expect(pushState).not.toHaveBeenCalled();
+
+      // Matching masks, locale-prefixed masks and masks whose params come from
+      // the href query still navigate.
+      await Router.push("/[id]/details", "/abc/details", { shallow: true });
+      expect(win.location.pathname).toBe("/abc/details");
+      await Router.push("/[id]/details", "/abc/details", { locale: "fr", shallow: true });
+      expect(win.location.pathname).toBe("/fr/abc/details");
+      await Router.push("/[id]/details?id=abc", "/custom-mask", { locale: "en", shallow: true });
+      expect(win.location.pathname).toBe("/custom-mask");
+    } finally {
+      error.mockRestore();
+      vi.resetModules();
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+    }
+  });
+
   // Ported from Next.js: test/e2e/dynamic-routing/dynamic-routing.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/dynamic-routing/dynamic-routing.test.ts
   it("throws href-interpolation-failed when a full dynamic href omits a required param", async () => {

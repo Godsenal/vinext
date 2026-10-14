@@ -3493,6 +3493,21 @@ async function performNavigation(
   // merely inherit the current pathname keep their existing display fallback.
   let interpolatedRoute = resolvedRoute;
   if (resolvedRoute.includes("[")) {
+    const hasExplicitHrefPathname = typeof url === "string" || !urlInheritsCurrentPath;
+    const isMiddlewareMatch = () =>
+      options?.shallow !== true &&
+      getPagesMiddlewareDataHref(resolved, __basePath, { locale: navigationLocale }) !== null;
+    // Next.js Router.change() matches an explicit `as` against the route
+    // before it interpolates, so the href query can't rebuild a mismatched
+    // `as` (an empty `id` would otherwise turn `/[id]/details` into
+    // `//details`).
+    if (as !== undefined && hasExplicitHrefPathname) {
+      const incompatibleAsError = getIncompatibleDynamicAsError(
+        removeNavigationLocalePrefix(resolvedRoute),
+        removeNavigationLocalePrefix(resolved),
+      );
+      if (incompatibleAsError && !isMiddlewareMatch()) throw incompatibleAsError;
+    }
     const projection = interpolateDynamicRouteHref(
       resolvedRoute,
       resolved,
@@ -3529,11 +3544,7 @@ async function performNavigation(
       const hrefInterpolationError = projection
         ? getHrefInterpolationError(resolvedRoute, projection.routePathname, projection.query)
         : null;
-      const hasExplicitHrefPathname = typeof url === "string" || !urlInheritsCurrentPath;
-      const isMiddlewareMatch =
-        options?.shallow !== true &&
-        getPagesMiddlewareDataHref(resolved, __basePath, { locale: navigationLocale }) !== null;
-      if (hrefInterpolationError && hasExplicitHrefPathname && !isMiddlewareMatch) {
+      if (hrefInterpolationError && hasExplicitHrefPathname && !isMiddlewareMatch()) {
         const asPathname = stripHash(resolved).split("?", 1)[0];
         const routePathname =
           projection?.routePathname ?? stripHash(resolvedRoute).split("?", 1)[0];

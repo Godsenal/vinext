@@ -7,6 +7,10 @@ import { waitForHydration } from "../helpers";
 // Router.change() rejects it because the `as` no longer matches the route.
 const INCOMPATIBLE_AS =
   "The provided `as` value (//details) is incompatible with the `href` value (/[id]/details).";
+// An explicit `as` (which Link passes) first has its repeated slashes
+// collapsed, as Next.js resolveHref does, so the mismatch reports `/details`.
+const INCOMPATIBLE_NORMALIZED_AS =
+  "The provided `as` value (/details) is incompatible with the `href` value (/[id]/details).";
 
 function recordOffOriginRequests(page: Page, origin: string): string[] {
   const offOrigin: string[] = [];
@@ -16,17 +20,22 @@ function recordOffOriginRequests(page: Page, origin: string): string[] {
   return offOrigin;
 }
 
-async function push(page: Page, url: string | { pathname: string; query: object }) {
-  return page.evaluate((target) => {
-    const router = window.next?.router as
-      | { push(url: string | { pathname: string; query: object }): Promise<boolean> }
-      | undefined;
-    if (!router) throw new Error("window.next.router is not installed");
-    return router.push(target).then(
-      () => "resolved",
-      (error: unknown) => String(error),
-    );
-  }, url);
+async function push(page: Page, url: string | { pathname: string; query: object }, as?: string) {
+  return page.evaluate(
+    ([target, mask]) => {
+      const router = window.next?.router as
+        | {
+            push(url: string | { pathname: string; query: object }, as?: string): Promise<boolean>;
+          }
+        | undefined;
+      if (!router) throw new Error("window.next.router is not installed");
+      return router.push(target, mask).then(
+        () => "resolved",
+        (error: unknown) => String(error),
+      );
+    },
+    [url, as] as const,
+  );
 }
 
 test.describe("Pages Router dynamic href interpolation", () => {
@@ -43,6 +52,7 @@ test.describe("Pages Router dynamic href interpolation", () => {
       INCOMPATIBLE_AS,
     );
     expect(await push(page, "/[id]/details?id=")).toContain(INCOMPATIBLE_AS);
+    expect(await push(page, "/[id]/details", "//details")).toContain(INCOMPATIBLE_NORMALIZED_AS);
     expect(page.url()).toBe(`${baseURL}/pages-dir/start`);
     expect(offOrigin).toEqual([]);
   });
@@ -52,7 +62,11 @@ test.describe("Pages Router dynamic href interpolation", () => {
       const origin = new URL(baseURL!).origin;
       const offOrigin = recordOffOriginRequests(page, origin);
       const pageErrors: string[] = [];
+      const consoleErrors: string[] = [];
       page.on("pageerror", (error) => pageErrors.push(error.message));
+      page.on("console", (message) => {
+        if (message.type() === "error") consoleErrors.push(message.text());
+      });
       await page.goto(`${baseURL}/href-interpolation`);
       await waitForHydration(page);
 
@@ -60,7 +74,10 @@ test.describe("Pages Router dynamic href interpolation", () => {
       await expect(page.locator(`#${linkId}`)).toHaveAttribute("href", "//details");
       await page.click(`#${linkId}`);
 
-      await expect.poll(() => pageErrors.join("\n")).toContain(INCOMPATIBLE_AS);
+      await expect.poll(() => pageErrors.join("\n")).toContain(INCOMPATIBLE_NORMALIZED_AS);
+      expect(consoleErrors.join("\n")).toContain(
+        "Invalid href '//details' passed to next/router in page: '/href-interpolation'.",
+      );
       expect(page.url()).toBe(`${baseURL}/href-interpolation`);
       expect(offOrigin).toEqual([]);
     });
