@@ -734,6 +734,9 @@ export function matchConfigPattern(
         // suffixes after :param are consumed procedurally to avoid polynomial
         // backtracking in the regex engine.
         let regexStr = "";
+        // The same pattern without the optional-param folding below, used when
+        // folding produces a regex that the ReDoS guard rejects.
+        let unfoldedStr = "";
         const tokenRe = /:([\w-]+)|[.]|[^:.]+/g; // lgtm[js/redos] — alternatives are non-overlapping (`:` and `.` excluded from `[^:.]+`)
         let tok: RegExpExecArray | null;
         while ((tok = tokenRe.exec(pattern)) !== null) {
@@ -750,6 +753,7 @@ export function matchConfigPattern(
                 constraint !== null ? `(${constraint})` : quantifier === "*" ? "(.*)" : "(.+)";
               regexStr =
                 quantifier === "*" ? withOptionalSlashPrefix(regexStr, group) : regexStr + group;
+              unfoldedStr += group;
             } else {
               // Check for inline constraint without quantifier
               const constraint = extractConstraint(pattern, tokenRe);
@@ -758,20 +762,28 @@ export function matchConfigPattern(
               if (pattern[tokenRe.lastIndex] === "?") {
                 tokenRe.lastIndex += 1;
                 regexStr = withOptionalSlashPrefix(regexStr, group);
+                unfoldedStr += group + "?";
               } else {
                 regexStr += group;
+                unfoldedStr += group;
               }
             }
           } else if (tok[0] === ".") {
             regexStr += "\\.";
+            unfoldedStr += "\\.";
           } else {
             regexStr += tok[0];
+            unfoldedStr += tok[0];
           }
         }
         // Next.js appends an optional trailing slash to every custom-route
         // regex (modifyRouteRegex), which is what lets `/:locale(en|fr)?`
         // match `/`.
-        const re = safeRegExp("^" + regexStr + "(?:/)?$", "i");
+        const folded = "^" + regexStr + "(?:/)?$";
+        // A catch-all followed by another optional param (e.g.
+        // `/:path+/:tail?`) folds into overlapping repetition; keep the
+        // unfolded regex for those instead of rejecting the rule.
+        const re = safeRegExp(isSafeRegex(folded, "i") ? folded : "^" + unfoldedStr + "$", "i");
         return re ? { re, paramNames } : null;
       });
       if (!compiled) return null;
