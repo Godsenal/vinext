@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { Plugin } from "vite-plus";
+import { routeNitroPublicFilesThroughRouter } from "../packages/vinext/src/build/nitro-public-files.js";
 import vinext from "../packages/vinext/src/index.js";
 
 const tempDirs: string[] = [];
@@ -10,6 +11,12 @@ const tempDirs: string[] = [];
 type NitroSetupTarget = {
   options: {
     dev?: boolean;
+    preset?: string;
+    baseURL?: string;
+    serveStatic?: boolean | string;
+    publicAssets?: { dir: string; baseURL?: string; fallthrough?: boolean }[];
+    plugins?: string[];
+    virtual?: Record<string, unknown>;
     routeRules?: Record<string, Record<string, unknown>>;
     traceDeps?: string[];
   };
@@ -114,11 +121,14 @@ function createPagesProject(): string {
   return root;
 }
 
-async function initializeNitroSetupPlugin(root: string): Promise<NitroSetupPlugin> {
+async function initializeNitroSetupPlugin(
+  root: string,
+  viteConfig: { publicDir?: string | false } = {},
+): Promise<NitroSetupPlugin> {
   const plugins = vinext({ appDir: root, rsc: false }) as ReturnType<typeof vinext>;
   const configPlugin = findNamedPlugin(plugins, "vinext:config") as Plugin & {
     config?: (
-      config: { root: string; plugins: unknown[] },
+      config: { root: string; plugins: unknown[]; publicDir?: string | false },
       env: { command: "build"; mode: string },
     ) => Promise<unknown>;
   };
@@ -128,7 +138,10 @@ async function initializeNitroSetupPlugin(root: string): Promise<NitroSetupPlugi
 
   // Passing empty plugins array means hasNitroPlugin=false in the closure,
   // but the nitro.setup hook doesn't gate on hasNitroPlugin (Nitro calls it directly).
-  await configPlugin.config({ root, plugins: [] }, { command: "build", mode: "production" });
+  await configPlugin.config(
+    { root, plugins: [], ...viteConfig },
+    { command: "build", mode: "production" },
+  );
 
   const nitroPlugin = findNamedPlugin(plugins, "vinext:nitro-setup") as NitroSetupPlugin;
   if (!nitroPlugin?.nitro?.setup) {
@@ -215,5 +228,87 @@ describe("vinext Nitro setup integration", () => {
     expect(nitro.options.traceDeps?.slice(0, 1)).toEqual(["existing-trace"]);
     expect(nitro.options.traceDeps).toContain("pg");
     expect(nitro.options.traceDeps).toContain("mongodb");
+  });
+
+  describe("public files", () => {
+    function publicFilesNitro(root: string, overrides: Partial<NitroSetupTarget["options"]> = {}) {
+      return {
+        options: {
+          dev: false,
+          preset: "node-server",
+          serveStatic: true,
+          routeRules: {},
+          publicAssets: [
+            { dir: path.join(root, "public"), baseURL: "/", fallthrough: true },
+            { dir: path.join(root, "assets"), baseURL: "/", fallthrough: true },
+          ],
+          ...overrides,
+        },
+      };
+    }
+
+    // Next.js runs middleware before it serves public/ files, so presets that
+    // serve static files in-process hand public/ to vinext's router.
+    it("serves public/ under a private prefix on in-process static presets", async () => {
+      const root = createAppProject();
+      const nitroPlugin = await initializeNitroSetupPlugin(root);
+      const nitro = publicFilesNitro(root);
+
+      await nitroPlugin.nitro!.setup!(nitro);
+
+      const [publicDir, otherDir] = nitro.options.publicAssets!;
+      expect(publicDir.baseURL).toMatch(/^\/_vinext\/public\/[0-9a-f]{32}$/);
+      expect(publicDir.fallthrough).toBe(false);
+      expect(otherDir).toEqual({ dir: path.join(root, "assets"), baseURL: "/", fallthrough: true });
+      expect(nitro.options.plugins).toEqual(["#vinext/nitro-public-files"]);
+      expect(nitro.options.virtual?.["#vinext/nitro-public-files"]).toContain(
+        "nitroApp.fetch(request)",
+      );
+
+      // A repeated setup keeps the first prefix and plugin registration.
+      const prefix = publicDir.baseURL;
+      await nitroPlugin.nitro!.setup!(nitro);
+      expect(publicDir.baseURL).toBe(prefix);
+      expect(nitro.options.plugins).toEqual(["#vinext/nitro-public-files"]);
+    });
+
+    it.each([
+      ["presets whose platform serves static files", {}, { serveStatic: false }],
+      ["AWS Amplify, whose CDN serves static files", {}, { preset: "aws_amplify" }],
+      ["dev", {}, { dev: true }],
+      ["a disabled Vite publicDir", { publicDir: false as const }, {}],
+      ["another Vite publicDir", { publicDir: "static" }, {}],
+    ])("leaves public/ with Nitro for %s", async (_name, viteConfig, overrides) => {
+      const root = createPagesProject();
+      const nitroPlugin = await initializeNitroSetupPlugin(root, viteConfig);
+      const nitro = publicFilesNitro(root, overrides);
+
+      await nitroPlugin.nitro!.setup!(nitro);
+
+      expect(nitro.options.publicAssets![0]).toEqual({
+        dir: path.join(root, "public"),
+        baseURL: "/",
+        fallthrough: true,
+      });
+      expect(nitro.options.plugins).toBeUndefined();
+      expect(nitro.options.virtual).toBeUndefined();
+    });
+
+    it("includes Nitro's baseURL in the request prefix", () => {
+      const publicDir = path.join(os.tmpdir(), "public");
+      const options = {
+        baseURL: "/app/",
+        serveStatic: true,
+        publicAssets: [{ dir: publicDir, baseURL: "/", fallthrough: true }],
+      };
+
+      const prefix = routeNitroPublicFilesThroughRouter(options, { publicDir, secret: "abc" });
+
+      expect(options.publicAssets[0].baseURL).toBe("/_vinext/public/abc");
+      expect(prefix).toBe("/app/_vinext/public/abc");
+      expect(routeNitroPublicFilesThroughRouter(options, { publicDir, secret: "def" })).toBe(
+        "/app/_vinext/public/abc",
+      );
+    });
   });
 });

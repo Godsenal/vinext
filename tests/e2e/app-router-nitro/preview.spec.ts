@@ -7,6 +7,15 @@ import { defineNitroAppTests } from "./app-tests";
 test.describe("App Router on Nitro (vite preview)", () => {
   defineNitroAppTests();
 
+  // Next.js runs middleware before it serves public/ files (#3217). Dev
+  // serves them from Vite before middleware, so this is preview-only.
+  test("runs middleware before serving public files", async ({ request }) => {
+    const response = await request.get("/hello.txt");
+    expect(response.status()).toBe(200);
+    expect(response.headers()["x-vinext-middleware"]).toBe("active");
+    expect(await response.text()).toBe("Hello from public/\n");
+  });
+
   // `revalidate` pages are cached by vinext's own ISR cache, not by Nitro
   // route rules.
   test("serves revalidate pages from the ISR cache", async ({ request }) => {

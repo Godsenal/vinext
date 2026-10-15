@@ -49,6 +49,11 @@ async function stopServer(server: ChildProcess | undefined): Promise<void> {
   await Promise.race([exited, new Promise<void>((resolve) => setTimeout(resolve, 3_000))]);
 }
 
+const PIXEL_PNG = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==",
+  "base64",
+);
+
 describe("Pages Router on Nitro", () => {
   let root = "";
   let workerdRoot = "";
@@ -130,6 +135,7 @@ export function proxy(request) {
 `,
       ),
       fs.writeFile(path.join(root, "public/asset.txt"), "nitro public asset"),
+      fs.writeFile(path.join(root, "public/pixel.png"), PIXEL_PNG),
     ]);
 
     const nitroModule = (await import(
@@ -237,12 +243,16 @@ export default function handler() {
 
   it("uses Worker response semantics for Nitro's Cloudflare preset", () => {
     expect(workerdServiceEntry).toContain('hostRuntime: "worker"');
+    // Cloudflare serves public/ before the Worker runs, so Nitro keeps it.
+    expect(workerdServiceEntry).not.toContain("withNitroPagesPublicFiles");
   });
 
-  // Ported from Next.js: test/e2e/500-page/500-page.test.ts and test/e2e/file-serving.
+  // Ported from Next.js: test/e2e/500-page/500-page.test.ts, test/e2e/file-serving
+  // and test/e2e/middleware-static-files.
   // https://github.com/vercel/next.js/blob/canary/test/e2e/500-page/500-page.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/file-serving/file-serving.test.ts
-  it("preserves Pages errors and Nitro-owned public assets", async () => {
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-static-files/index.test.ts
+  it("preserves Pages errors and serves public assets after middleware", async () => {
     const [errorResponse, assetResponse] = await Promise.all([
       fetch(`${baseUrl}/error`),
       fetch(`${baseUrl}/asset.txt`),
@@ -250,6 +260,14 @@ export default function handler() {
     expect(errorResponse.status).toBe(500);
     expect(await errorResponse.text()).toContain("custom 500");
     expect(assetResponse.status).toBe(200);
+    expect(assetResponse.headers.get("x-nitro-middleware")).toBe("/asset.txt");
     expect(await assetResponse.text()).toBe("nitro public asset");
+  });
+
+  // The image endpoint reads public/ files through the same asset fetcher.
+  it("serves local images from the image endpoint", async () => {
+    const response = await fetch(`${baseUrl}/_next/image?url=%2Fpixel.png&w=64&q=75`);
+    expect(response.status).toBe(200);
+    expect(Buffer.from(await response.arrayBuffer())).toEqual(PIXEL_PNG);
   });
 });

@@ -179,6 +179,10 @@ import {
   VINEXT_DEV_RESTART_CONFIG,
 } from "./cli-dev-config.js";
 import { ensureAssetsIgnore } from "./build/assets-ignore.js";
+import {
+  routeNitroPublicFilesThroughRouter,
+  type NitroPublicFilesOptions,
+} from "./build/nitro-public-files.js";
 import { emitNextClientRuntimeManifests } from "./build/next-client-runtime-manifests.js";
 import { collectInlineCssManifest, injectInlineCssManifestGlobal } from "./build/inline-css.js";
 import { validateDevRequest } from "./server/dev-origin-check.js";
@@ -1395,6 +1399,7 @@ const _appBrowserServerActionClientPath = resolveShimModulePath(
 const _appRscCombinedHandlerPath = resolveShimModulePath(_serverDir, "app-rsc-combined-handler");
 const _appRscHandlerPath = resolveShimModulePath(_serverDir, "app-rsc-handler");
 const _pagesClientAssetsPath = resolveShimModulePath(_serverDir, "pages-client-assets");
+const _nitroPublicFilesPath = resolveShimModulePath(_serverDir, "nitro-public-files");
 // Source checkouts resolve to TypeScript and must stay in Vite's graph so tests
 // do not execute a stale dist build. Published packages resolve to emitted JS,
 // which Node can load natively outside the RSC transform graph.
@@ -1686,7 +1691,7 @@ type InternalUserConfig = UserConfig & {
 };
 
 type NitroSetupContext = {
-  options: {
+  options: NitroPublicFilesOptions & {
     buildDir?: string;
     exportConditions?: string[];
     traceDeps?: string[];
@@ -1763,6 +1768,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let warnedInlineNextConfigOverride = false;
   let hasNitroPlugin = false;
   let nitroHostRuntime: "node" | "worker" = "node";
+  let nitroPublicFilesPrefix: string | null = null;
+  // Vite's public directory, resolved the way Vite does. Nitro creates its
+  // instance during the config hooks, before Vite resolves the config.
+  let vitePublicDir: string | null = null;
   let resolvedServerExternalPackages: string[] = [];
   let registerNodeOpenTelemetryLoader = false;
   let pagesTsconfigAliases: Record<string, string> = {};
@@ -2630,6 +2639,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           typeof config.build?.emptyOutDir === "boolean" ? config.build.emptyOutDir : undefined;
         isServeCommand = env.command === "serve";
         root = path.resolve(toSlash(process.cwd()), config.root ?? ".");
+        vitePublicDir =
+          config.publicDir === false || config.publicDir === ""
+            ? null
+            : path.resolve(root, config.publicDir ?? "public");
         if (env.command === "build") assertClientOutDirIsSeparate(root, options);
         const devCliLifecycleEnabled =
           env.command === "serve" &&
@@ -4897,11 +4910,20 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             const entry = hasAppDir
               ? "vinext/server/app-router-entry"
               : "vinext/server/pages-router-entry";
-            if (!hasAppDir && hasNitroPlugin) {
+            // Nitro's setup hook sets the prefix when public/ files are routed
+            // through vinext (see build/nitro-public-files.ts).
+            if (!hasAppDir && (hasNitroPlugin || nitroPublicFilesPrefix)) {
+              const publicFilesWorker = nitroPublicFilesPrefix
+                ? [
+                    `import { withNitroPagesPublicFiles } from ${JSON.stringify(_nitroPublicFilesPath)};`,
+                    `const nitroWorker = withNitroPagesPublicFiles(worker, ${JSON.stringify(nitroPublicFilesPrefix)});`,
+                  ]
+                : ["const nitroWorker = worker;"];
               return [
                 `import worker from ${JSON.stringify(entry)};`,
+                ...publicFilesWorker,
                 "export default { fetch(request, env, ctx) {",
-                `  return worker.fetch(request, env, { ...ctx, hostRuntime: ${JSON.stringify(nitroHostRuntime)} });`,
+                `  return nitroWorker.fetch(request, env, { ...ctx, hostRuntime: ${JSON.stringify(nitroHostRuntime)} });`,
                 "} };",
               ].join("\n");
             }
@@ -5107,7 +5129,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           }
           if (id === RESOLVED_APP_SSR_ENTRY && hasAppDir) {
             recordServerEntryLoad(this.environment?.name, id);
-            return generateSsrEntry(hasPagesDir);
+            return generateSsrEntry(hasPagesDir, nitroPublicFilesPrefix);
           }
           if (id === RESOLVED_APP_BROWSER_ENTRY && hasAppDir) {
             const graph = await appRouteGraph(appDir, nextConfig?.pageExtensions, fileMatcher);
@@ -8150,6 +8172,11 @@ export const loadServerActionClient = ${
             : "node";
           if (!nextConfig) return;
           if (!hasAppDir && !hasPagesDir) return;
+
+          nitroPublicFilesPrefix = routeNitroPublicFilesThroughRouter(nitro.options, {
+            publicDir: vitePublicDir,
+            secret: randomBytes(16).toString("hex"),
+          });
 
           if (resolvedServerExternalPackages.length > 0) {
             nitro.options.traceDeps = [
