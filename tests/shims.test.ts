@@ -14087,6 +14087,35 @@ describe("matchRedirect locale-static index", () => {
     expect(result!.destination).toBe("/other-dest");
     expect(result!.permanent).toBe(true);
   });
+
+  it("does not index sources with params after the locale segment", async () => {
+    const { matchRedirect } = await import("../packages/vinext/src/config/config-matchers.js");
+    const redirects = [
+      { source: "/:locale(en|fr)?/admin/:path*", destination: "/login", permanent: false },
+      // Shape emitted by applyLocaleToRoutes for an i18n `/docs/:slug` redirect.
+      {
+        source: "/:nextInternalLocale(en|fr)/docs/:slug",
+        destination: "/:nextInternalLocale/guides/:slug",
+        permanent: false,
+      },
+      { source: "/:locale(en|fr)?/blog/:id+", destination: "/posts/:id+", permanent: false },
+    ];
+    for (const pathname of [
+      "/admin",
+      "/admin/settings",
+      "/en/admin/x",
+      "/fr/admin",
+      "/fr/admin/a/b",
+    ]) {
+      expect(matchRedirect(pathname, redirects, emptyCtx)?.destination, pathname).toBe("/login");
+    }
+    expect(matchRedirect("/de/admin/settings", redirects, emptyCtx)).toBeNull();
+    expect(matchRedirect("/fr/docs/intro", redirects, emptyCtx)?.destination).toBe(
+      "/fr/guides/intro",
+    );
+    expect(matchRedirect("/fr/blog/a/b", redirects, emptyCtx)?.destination).toBe("/posts/a/b");
+    expect(matchRedirect("/fr/blog", redirects, emptyCtx)).toBeNull();
+  });
 });
 
 describe("matchConfigPattern handles parameterized suffix patterns", () => {

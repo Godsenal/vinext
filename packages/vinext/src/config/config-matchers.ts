@@ -150,8 +150,13 @@ function getCachedRegex<K, V>(cache: Map<K, V | null>, key: K, compile: () => V 
  *      by `applyLocaleToRoutes` for the locale-capture variant)
  * Both forms benefit from O(1) suffix lookup; the optionality is recorded
  * on the entry so we know whether to try the no-locale-prefix bucket.
+ *
+ * The suffix class must only admit characters that path-to-regexp treats as
+ * literals. `:` (param), `*` and `+` (modifiers) are excluded so a source like
+ * `/:locale(en|fr)?/admin/:path*` stays in the linear scan instead of being
+ * keyed under the literal text `/admin/:path*`.
  */
-const _LOCALE_STATIC_RE = /^\/:[\w-]+\(([^)]+)\)(\??)\/([a-zA-Z0-9_~.%@!$&'*+,;=:/-]+)$/;
+const _LOCALE_STATIC_RE = /^\/:[\w-]+\(([^)]+)\)(\??)\/([a-zA-Z0-9_~.%@!$&',;=/-]+)$/;
 
 type LocaleStaticEntry = {
   /** The param name extracted from the source (e.g. "locale"). */
@@ -623,6 +628,15 @@ function extractConstraint(str: string, re: RegExp): string | null {
 }
 
 /**
+ * Append an optional param group. Like path-to-regexp, a `/` right before an
+ * optional (`?`) or zero-or-more (`*`) param belongs to that param, so
+ * `/:locale(en|fr)?/about` matches `/about` and `/docs/:path*` matches `/docs`.
+ */
+function withOptionalSlashPrefix(regexStr: string, group: string): string {
+  return regexStr.endsWith("/") ? `${regexStr.slice(0, -1)}(?:/${group})?` : `${regexStr}${group}?`;
+}
+
+/**
  * Match a Next.js config pattern (from redirects/rewrites sources) against a pathname.
  * Returns matched params or null.
  *
@@ -725,16 +739,25 @@ export function matchConfigPattern(
               tokenRe.lastIndex += 1;
               const constraint = extractConstraint(pattern, tokenRe);
               paramNames.push(name);
-              if (constraint !== null) {
-                regexStr += `(${constraint})`;
-              } else {
-                regexStr += quantifier === "*" ? "(.*)" : "(.+)";
-              }
+              const group =
+                constraint !== null ? `(${constraint})` : quantifier === "*" ? "(.*)" : "(.+)";
+              regexStr =
+                quantifier === "*" ? withOptionalSlashPrefix(regexStr, group) : regexStr + group;
             } else {
               // Check for inline constraint without quantifier
               const constraint = extractConstraint(pattern, tokenRe);
               paramNames.push(name);
-              regexStr += constraint !== null ? `(${constraint})` : "([^/]+)";
+              const group = constraint !== null ? `(${constraint})` : "([^/]+)";
+              if (pattern[tokenRe.lastIndex] === "?") {
+                tokenRe.lastIndex += 1;
+                // A lone root `/:param?` keeps matching `/` as before.
+                regexStr =
+                  regexStr === "/" && tokenRe.lastIndex === pattern.length
+                    ? regexStr + group + "?"
+                    : withOptionalSlashPrefix(regexStr, group);
+              } else {
+                regexStr += group;
+              }
             }
           } else if (tok[0] === ".") {
             regexStr += "\\.";
