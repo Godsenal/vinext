@@ -30,7 +30,7 @@ function getNitroAppFetch(): NitroAppFetch {
  * under the prefix retries there, marked so it cannot re-enter the router.
  * These requests go through Nitro's app, so its request hooks see the prefix.
  */
-export function createNitroAssetFetcher(prefix: string): VinextAssetFetcher {
+function createNitroAssetFetcher(prefix: string): VinextAssetFetcher {
   return {
     async fetch(request) {
       const appFetch = getNitroAppFetch();
@@ -51,7 +51,7 @@ export function createNitroAssetFetcher(prefix: string): VinextAssetFetcher {
  * Answer a request that must not reach the router: an asset fallback that
  * Nitro's static handler did not serve, or a path under the private prefix.
  */
-export function nitroPublicFilesGuardResponse(request: Request, prefix: string): Response | null {
+function nitroPublicFilesGuardResponse(request: Request, prefix: string): Response | null {
   const { pathname } = new URL(request.url);
   return request.headers.get(NITRO_ASSET_FALLBACK_HEADER) === prefix ||
     pathname === prefix ||
