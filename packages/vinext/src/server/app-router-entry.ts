@@ -76,6 +76,7 @@ import {
   createWorkerPrerenderReadinessResponse,
 } from "./worker-prerender-discovery.js";
 import { traceFrameworkRequest } from "./request-tracing.js";
+import { fetchDevAssetOnNotFound } from "./dev-asset-fallback.js";
 import type { VinextRequestStageContext } from "./multi-stage.js";
 
 // Precompute the path components used for `_next/static/*` 404 short-circuit
@@ -122,7 +123,8 @@ export default {
         target: url.pathname + url.search,
       });
     };
-    return ctx ? runWithExecutionContext(ctx, handleFetch) : handleFetch();
+    const response = await (ctx ? runWithExecutionContext(ctx, handleFetch) : handleFetch());
+    return import.meta.env.DEV ? fetchDevAssetOnNotFound(request, env, response) : response;
   },
 };
 

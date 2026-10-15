@@ -22,6 +22,7 @@ import {
 import { cloneRequestWithHeaders, cloneRequestWithUrl } from "./request-pipeline.js";
 import { validateCdnRequest } from "./cache-control.js";
 import { runWithExecutionContext, type ExecutionContextLike } from "vinext/shims/request-context";
+import { fetchDevAssetOnNotFound } from "./dev-asset-fallback.js";
 
 // @ts-expect-error -- virtual modules resolved by vinext at build time
 import { __ensureInstrumentation as ensureRequestStageInstrumentation } from "virtual:vinext-pages-request-entry";
@@ -123,14 +124,15 @@ async function handleSingleStageRequest(
 }
 
 export default {
-  fetch(
+  async fetch(
     request: Request,
     env?: PagesWorkerEnv,
     ctx?: PagesWorkerExecutionContext,
   ): Promise<Response> {
     const handle = () => handleSingleStageRequest(request, env, ctx);
-    return ctx && typeof ctx.waitUntil === "function"
+    const response = await (ctx && typeof ctx.waitUntil === "function"
       ? runWithExecutionContext(ctx as ExecutionContextLike, handle)
-      : handle();
+      : handle());
+    return import.meta.env.DEV ? fetchDevAssetOnNotFound(request, env, response) : response;
   },
 };
