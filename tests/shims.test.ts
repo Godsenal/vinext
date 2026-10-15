@@ -14116,6 +14116,23 @@ describe("matchRedirect locale-static index", () => {
     expect(matchRedirect("/fr/blog/a/b", redirects, emptyCtx)?.destination).toBe("/posts/a/b");
     expect(matchRedirect("/fr/blog", redirects, emptyCtx)).toBeNull();
   });
+
+  it("does not index slash-ending sources", async () => {
+    const { matchRedirect } = await import("../packages/vinext/src/config/config-matchers.js");
+    const redirects = [
+      { source: "/:locale(en|fr)?/about/", destination: "/team/", permanent: false },
+      // Shape emitted by applyLocaleToRoutes for an i18n `/docs/` redirect.
+      {
+        source: "/:nextInternalLocale(en|fr)/docs/",
+        destination: "/:nextInternalLocale/guides/",
+        permanent: false,
+      },
+    ];
+    expect(matchRedirect("/about/", redirects, emptyCtx)?.destination).toBe("/team/");
+    expect(matchRedirect("/fr/about/", redirects, emptyCtx)?.destination).toBe("/team/");
+    expect(matchRedirect("/fr/about", redirects, emptyCtx)).toBeNull();
+    expect(matchRedirect("/fr/docs/", redirects, emptyCtx)?.destination).toBe("/fr/guides/");
+  });
 });
 
 describe("matchConfigPattern optional params", () => {

@@ -200,7 +200,9 @@ function _getRedirectIndex(redirects: NextRedirect[]): RedirectIndex {
   for (let i = 0; i < redirects.length; i++) {
     const redirect = redirects[i];
     const m = _LOCALE_STATIC_RE.exec(redirect.source);
-    if (m) {
+    // Lookups use the slash-stripped pathname, so a slash-ending suffix could
+    // never be found; leave those rules to the linear scan.
+    if (m && !m[3].endsWith("/")) {
       const paramName = redirect.source.slice(2, redirect.source.indexOf("("));
       const alternation = m[1];
       const optional = m[2] === "?";
