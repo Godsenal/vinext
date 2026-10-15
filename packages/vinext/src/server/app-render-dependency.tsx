@@ -87,14 +87,23 @@ export function invokeAppComponent(
   return isPromiseLike(result) ? result : invokeCssWrappedComponent(result, props);
 }
 
-function hasSameProps(
+/**
+ * Whether `elementProps` are what `createElement(type, props)` produces: the
+ * same values, plus any `type.defaultProps` for keys that are `undefined`.
+ */
+function isElementOfProps(
   elementProps: Readonly<Record<string, unknown>>,
   props: Readonly<Record<string, unknown>>,
+  defaultProps: Readonly<Record<string, unknown>> | undefined,
 ): boolean {
-  const keys = Object.keys(props);
+  const expected: Record<string, unknown> = { ...props };
+  for (const key in defaultProps) {
+    if (expected[key] === undefined) expected[key] = defaultProps[key];
+  }
+  const keys = Object.keys(expected);
   return (
     Object.keys(elementProps).length === keys.length &&
-    keys.every((key) => Object.is(elementProps[key], props[key]))
+    keys.every((key) => Object.is(elementProps[key], expected[key]))
   );
 }
 
@@ -122,17 +131,18 @@ function invokeCssWrappedComponent(
   const children = result.props.children;
   if (!Array.isArray(children) || children.length !== 2) return result;
   const [css, inner] = children as [ReactNode, unknown];
-  if (
-    !isValidElement<Record<string, unknown>>(inner) ||
-    typeof inner.type !== "function" ||
-    !hasSameProps(inner.props, props)
-  ) {
+  if (!isValidElement<Record<string, unknown>>(inner) || typeof inner.type !== "function") {
     return result;
   }
+  const component = inner.type as ComponentType<Record<string, unknown>> & {
+    defaultProps?: Readonly<Record<string, unknown>>;
+  };
+  if (!isElementOfProps(inner.props, props, component.defaultProps)) return result;
 
-  const component = inner.type as ComponentType<Record<string, unknown>>;
+  // The element's props, so the component gets its defaultProps as before.
+  const componentProps = inner.props;
   function CssWrappedComponent() {
-    return invokeAppComponent(component, props);
+    return invokeAppComponent(component, componentProps);
   }
   CssWrappedComponent.displayName = component.displayName ?? component.name;
   return createElement(Fragment, null, css, createElement(CssWrappedComponent));

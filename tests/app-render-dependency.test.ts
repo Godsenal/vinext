@@ -209,7 +209,29 @@ describe("app render dependency helpers", () => {
     const body = await renderHtml(result);
     expect(body).toContain('href="/page.css"');
     expect(body).toContain("<p>page</p>");
-    expect(receivedProps).toBe(props);
+    expect(receivedProps).toEqual(props);
+  });
+
+  it("invokes a CSS-wrapped component that has defaultProps with them applied", async () => {
+    const props = { params: Promise.resolve({}), theme: undefined };
+    let receivedProps: unknown;
+    function Page(pageProps: Record<string, unknown>) {
+      receivedProps = pageProps;
+      return null;
+    }
+    Page.defaultProps = { theme: "dark", size: "small" };
+    function CssWrapper(wrapperProps: Record<string, unknown>) {
+      return createElement(Fragment, null, "css", createElement(Page, wrapperProps));
+    }
+
+    const result = invokeAppComponent(CssWrapper, props);
+    if (!isValidElement<{ children: [unknown, ReactElement] }>(result)) {
+      throw new Error("expected an element");
+    }
+    const inner = result.props.children[1];
+    expect(inner.props).toEqual({});
+    await renderHtml(result);
+    expect(receivedProps).toEqual({ params: props.params, theme: "dark", size: "small" });
   });
 
   it("keeps a fragment whose element gets other props as rendered", () => {
