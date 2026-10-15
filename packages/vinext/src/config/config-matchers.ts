@@ -633,7 +633,12 @@ function extractConstraint(str: string, re: RegExp): string | null {
  * `/:locale(en|fr)?/about` matches `/about` and `/docs/:path*` matches `/docs`.
  */
 function withOptionalSlashPrefix(regexStr: string, group: string): string {
-  return regexStr.endsWith("/") ? `${regexStr.slice(0, -1)}(?:/${group})?` : `${regexStr}${group}?`;
+  if (!regexStr.endsWith("/")) return `${regexStr}${group}?`;
+  // An escaped `\/` is a literal character, not a param prefix.
+  let i = regexStr.length - 2;
+  while (i >= 0 && regexStr[i] === "\\") i--;
+  if ((regexStr.length - 2 - i) % 2 === 1) return `${regexStr}${group}?`;
+  return `${regexStr.slice(0, -1)}(?:/${group})?`;
 }
 
 /**
@@ -750,11 +755,7 @@ export function matchConfigPattern(
               const group = constraint !== null ? `(${constraint})` : "([^/]+)";
               if (pattern[tokenRe.lastIndex] === "?") {
                 tokenRe.lastIndex += 1;
-                // A lone root `/:param?` keeps matching `/` as before.
-                regexStr =
-                  regexStr === "/" && tokenRe.lastIndex === pattern.length
-                    ? regexStr + group + "?"
-                    : withOptionalSlashPrefix(regexStr, group);
+                regexStr = withOptionalSlashPrefix(regexStr, group);
               } else {
                 regexStr += group;
               }
@@ -765,7 +766,10 @@ export function matchConfigPattern(
             regexStr += tok[0];
           }
         }
-        const re = safeRegExp("^" + regexStr + "$", "i");
+        // Next.js appends an optional trailing slash to every custom-route
+        // regex (modifyRouteRegex), which is what lets `/:locale(en|fr)?`
+        // match `/`.
+        const re = safeRegExp("^" + regexStr + "(?:/)?$", "i");
         return re ? { re, paramNames } : null;
       });
       if (!compiled) return null;

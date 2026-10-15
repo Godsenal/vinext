@@ -14118,6 +14118,42 @@ describe("matchRedirect locale-static index", () => {
   });
 });
 
+describe("matchConfigPattern optional params", () => {
+  // Expected values from Next.js's compiled path-to-regexp plus modifyRouteRegex.
+  it("folds the slash before an optional or zero-or-more param", async () => {
+    const { matchConfigPattern } = await import("../packages/vinext/src/config/config-matchers.js");
+    const locale = "/:locale(en|fr)?/admin/:path*";
+    expect(matchConfigPattern("/admin", locale)).toEqual({ locale: "", path: "" });
+    expect(matchConfigPattern("/fr/admin", locale)).toEqual({ locale: "fr", path: "" });
+    expect(matchConfigPattern("/fr/admin/a/b", locale)).toEqual({ locale: "fr", path: "a/b" });
+    expect(matchConfigPattern("/de/admin", locale)).toBeNull();
+    expect(matchConfigPattern("/en/docs", "/:locale/docs/:path*")).toEqual({
+      locale: "en",
+      path: "",
+    });
+    expect(matchConfigPattern("/blog", "/blog/:slug(\\d+)?")).toEqual({ slug: "" });
+    expect(matchConfigPattern("/blog/ab", "/blog/:slug(\\d+)?")).toBeNull();
+    expect(matchConfigPattern("/x", "/x/:locale(en|sv)?")).toEqual({ locale: "" });
+    expect(matchConfigPattern("/fr/blog", "/:locale(en|fr)?/blog/:id+")).toBeNull();
+  });
+
+  it("matches the root against a pattern that can match an empty path", async () => {
+    const { matchConfigPattern } = await import("../packages/vinext/src/config/config-matchers.js");
+    expect(matchConfigPattern("/", "/:locale(en|sv)?")).toEqual({ locale: "" });
+    expect(matchConfigPattern("/", "/:locale(en|fr)?/:slug(\\d+)?")).toEqual({
+      locale: "",
+      slug: "",
+    });
+  });
+
+  it("does not fold an escaped slash or a non-slash prefix", async () => {
+    const { matchConfigPattern } = await import("../packages/vinext/src/config/config-matchers.js");
+    expect(matchConfigPattern("/foo/1", "/foo\\/:bar(\\d+)?")).toEqual({ bar: "1" });
+    expect(matchConfigPattern("/-x", "/:a(\\d+)?-:b")).toBeNull();
+    expect(matchConfigPattern("/1-x", "/:a(\\d+)?-:b")).toEqual({ a: "1", b: "x" });
+  });
+});
+
 describe("matchConfigPattern handles parameterized suffix patterns", () => {
   it("matches :path* with literal suffix (e.g. /:path*.md)", async () => {
     const { matchConfigPattern } = await import("../packages/vinext/src/config/config-matchers.js");
