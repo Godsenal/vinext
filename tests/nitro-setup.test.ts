@@ -301,14 +301,28 @@ describe("vinext Nitro setup integration", () => {
         serveStatic: true,
         publicAssets: [{ dir: publicDir, baseURL: "/", fallthrough: true }],
       };
+      const route = (secret: string) =>
+        routeNitroPublicFilesThroughRouter(options, { basePath: "/app", publicDir, secret });
 
-      const prefix = routeNitroPublicFilesThroughRouter(options, { publicDir, secret: "abc" });
-
+      expect(route("abc")).toBe("/app/_vinext/public/abc");
       expect(options.publicAssets[0].baseURL).toBe("/_vinext/public/abc");
-      expect(prefix).toBe("/app/_vinext/public/abc");
-      expect(routeNitroPublicFilesThroughRouter(options, { publicDir, secret: "def" })).toBe(
-        "/app/_vinext/public/abc",
-      );
+      expect(route("def")).toBe("/app/_vinext/public/abc");
+    });
+
+    // The router matches public files below basePath, but Nitro passes the
+    // path with its own baseURL, so a different baseURL never finds a file.
+    it("leaves public/ with Nitro when its baseURL is not the basePath", () => {
+      const publicDir = path.join(os.tmpdir(), "public");
+      const options = {
+        baseURL: "/app/",
+        serveStatic: true,
+        publicAssets: [{ dir: publicDir, baseURL: "/", fallthrough: true }],
+      };
+
+      expect(
+        routeNitroPublicFilesThroughRouter(options, { basePath: "", publicDir, secret: "abc" }),
+      ).toBeNull();
+      expect(options.publicAssets[0]).toEqual({ dir: publicDir, baseURL: "/", fallthrough: true });
     });
   });
 });

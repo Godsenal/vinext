@@ -308,3 +308,34 @@ export default function middleware() {
     expect(await response.text()).not.toContain("passed through");
   });
 });
+
+describe("App Router on Nitro: public files under a Nitro baseURL without basePath", () => {
+  let root = "";
+  let server: ChildProcess | undefined;
+  let baseUrl = "";
+
+  beforeAll(async () => {
+    root = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-nitro-public-baseurl-"));
+    await writeFiles(root, {
+      "app/layout.tsx": LAYOUT,
+      "app/page.tsx": `export default function Page() { return <p>home</p>; }\n`,
+      "public/file.txt": "nitro base file",
+    });
+
+    ({ server, baseUrl } = await buildAndStart(root, { baseURL: "/app/" }));
+    await waitForServer(baseUrl);
+  }, 180_000);
+
+  afterAll(async () => {
+    await stopServer(server);
+    if (root) await fs.rm(root, { recursive: true, force: true });
+  });
+
+  // vinext's router doesn't strip Nitro's baseURL, so Nitro keeps serving
+  // public/ here.
+  it("keeps serving public files below the Nitro baseURL", async () => {
+    const response = await fetch(`${baseUrl}/app/file.txt`);
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe("nitro base file");
+  });
+});

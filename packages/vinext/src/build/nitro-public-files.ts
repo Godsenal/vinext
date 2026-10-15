@@ -36,19 +36,22 @@ const CDN_STATIC_PRESETS = new Set(["aws-amplify"]);
  * Nitro runs at all, so they keep Nitro's routing.
  *
  * `publicDir` is Vite's resolved public directory, which vinext's router
- * serves. Returns the prefix requests use, including Nitro's `baseURL`, or
- * null when public/ stays with Nitro's static handler.
+ * serves below `basePath`. Returns the prefix requests use, including
+ * Nitro's `baseURL`, or null when public/ stays with Nitro's static handler.
  */
 export function routeNitroPublicFilesThroughRouter(
   options: NitroPublicFilesOptions,
-  { publicDir, secret }: { publicDir: string | null; secret: string },
+  { basePath, publicDir, secret }: { basePath: string; publicDir: string | null; secret: string },
 ): string | null {
   if (options.dev || !options.serveStatic || !publicDir) return null;
   if (options.preset && CDN_STATIC_PRESETS.has(options.preset.replaceAll("_", "-"))) return null;
+  // Nitro passes request paths to vinext unchanged, so the router finds
+  // public files only when Nitro's `baseURL` is the root or the basePath.
+  const nitroBase = (options.baseURL ?? "/").replace(/\/+$/, "");
+  if (nitroBase && nitroBase !== basePath) return null;
 
   // Nitro serves each asset directory below its own `baseURL`.
-  const requestPrefix = (assetBaseURL: string) =>
-    (options.baseURL ?? "/").replace(/\/+$/, "") + assetBaseURL;
+  const requestPrefix = (assetBaseURL: string) => nitroBase + assetBaseURL;
   const publicAssets = options.publicAssets ?? [];
   const routed = publicAssets.find((asset) => asset.baseURL?.startsWith(NITRO_PUBLIC_FILES_BASE));
   if (routed?.baseURL) return requestPrefix(routed.baseURL);

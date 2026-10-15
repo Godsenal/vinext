@@ -8174,6 +8174,7 @@ export const loadServerActionClient = ${
           if (!hasAppDir && !hasPagesDir) return;
 
           nitroPublicFilesPrefix = routeNitroPublicFilesThroughRouter(nitro.options, {
+            basePath: nextConfig.basePath,
             publicDir: vitePublicDir,
             secret: randomBytes(16).toString("hex"),
           });
