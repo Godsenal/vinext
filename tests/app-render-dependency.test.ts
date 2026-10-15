@@ -1,10 +1,11 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { createElement } from "react";
+import { createElement, Fragment, isValidElement, type ReactElement } from "react";
 import { renderToReadableStream } from "react-dom/server.edge";
 import { describe, expect, it } from "vite-plus/test";
 import {
   createAppRenderDependency,
+  invokeAppComponent,
   renderAfterAppDependencies,
   renderAppComponentWithDependencyBarrier,
 } from "../packages/vinext/src/server/app-render-dependency.js";
@@ -176,5 +177,59 @@ describe("app render dependency helpers", () => {
     }
     expect(events).toContain("forwardRef:ref:undefined");
     expect(events).not.toContain("forwardRef:ref:null");
+  });
+
+  it("invokes a CSS-wrapped component without passing its props to an element", async () => {
+    const props = { params: Promise.resolve({}), searchParams: Promise.resolve({}) };
+    let receivedProps: unknown;
+    function Page(pageProps: Record<string, unknown>) {
+      receivedProps = pageProps;
+      return createElement("p", null, "page");
+    }
+    // The shape of @vitejs/plugin-rsc's `__vite_rsc_wrap_css__` wrapper.
+    function CssWrapper(wrapperProps: Record<string, unknown>) {
+      return createElement(
+        Fragment,
+        null,
+        createElement("link", { rel: "stylesheet", href: "/page.css" }),
+        createElement(Page, wrapperProps),
+      );
+    }
+
+    const result = invokeAppComponent(CssWrapper, props);
+    if (!isValidElement<{ children: [unknown, ReactElement] }>(result)) {
+      throw new Error("expected an element");
+    }
+    const inner = result.props.children[1];
+    // React's dev build serializes an element's props as debug info, which
+    // would call `then` on params and searchParams.
+    expect(inner.props).toEqual({});
+    expect(inner.type).toHaveProperty("displayName", "Page");
+
+    const body = await renderHtml(result);
+    expect(body).toContain('href="/page.css"');
+    expect(body).toContain("<p>page</p>");
+    expect(receivedProps).toBe(props);
+  });
+
+  it("keeps a fragment whose element gets other props as rendered", () => {
+    const props = { params: Promise.resolve({}) };
+    function Child(_props: Record<string, unknown>) {
+      return null;
+    }
+    function Layout() {
+      return createElement(
+        Fragment,
+        null,
+        "css",
+        createElement(Child, { params: props.params, x: 1 }),
+      );
+    }
+
+    const result = invokeAppComponent(Layout, props);
+    if (!isValidElement<{ children: [unknown, ReactElement] }>(result)) {
+      throw new Error("expected an element");
+    }
+    expect(result.props.children[1].type).toBe(Child);
   });
 });

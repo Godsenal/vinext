@@ -1,4 +1,11 @@
-import { createElement, use, type ComponentType, type ReactNode } from "react";
+import {
+  createElement,
+  Fragment,
+  isValidElement,
+  use,
+  type ComponentType,
+  type ReactNode,
+} from "react";
 import { isPromiseLike } from "../utils/promise.js";
 
 export type AppRenderDependency = {
@@ -76,7 +83,59 @@ export function invokeAppComponent(
   const ServerComponent = candidate as unknown as (
     props: Readonly<Record<string, unknown>>,
   ) => ReactNode | Promise<ReactNode>;
-  return ServerComponent(props);
+  const result = ServerComponent(props);
+  return isPromiseLike(result) ? result : invokeCssWrappedComponent(result, props);
+}
+
+function hasSameProps(
+  elementProps: Readonly<Record<string, unknown>>,
+  props: Readonly<Record<string, unknown>>,
+): boolean {
+  const keys = Object.keys(props);
+  return (
+    Object.keys(elementProps).length === keys.length &&
+    keys.every((key) => Object.is(elementProps[key], props[key]))
+  );
+}
+
+/**
+ * `@vitejs/plugin-rsc` wraps a server component export whose module imports
+ * CSS (`__vite_rsc_wrap_css__`). The wrapper returns
+ * `<><Css /><Component {...props} /></>`, so a component vinext invokes
+ * directly renders as an element with its props after all. React's dev build
+ * serializes an element's props as debug info and calls `then` on `params`
+ * and `searchParams`, which counts as reading them. Invoke the inner
+ * component from an element without props instead, as for an export without
+ * CSS.
+ */
+function invokeCssWrappedComponent(
+  result: ReactNode,
+  props: Readonly<Record<string, unknown>>,
+): ReactNode {
+  if (
+    !isValidElement<{ children?: unknown }>(result) ||
+    result.type !== Fragment ||
+    result.key !== null
+  ) {
+    return result;
+  }
+  const children = result.props.children;
+  if (!Array.isArray(children) || children.length !== 2) return result;
+  const [css, inner] = children as [ReactNode, unknown];
+  if (
+    !isValidElement<Record<string, unknown>>(inner) ||
+    typeof inner.type !== "function" ||
+    !hasSameProps(inner.props, props)
+  ) {
+    return result;
+  }
+
+  const component = inner.type as ComponentType<Record<string, unknown>>;
+  function CssWrappedComponent() {
+    return invokeAppComponent(component, props);
+  }
+  CssWrappedComponent.displayName = component.displayName ?? component.name;
+  return createElement(Fragment, null, css, createElement(CssWrappedComponent));
 }
 
 const appElementRenderDependencies = new WeakMap<
