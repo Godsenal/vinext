@@ -234,6 +234,53 @@ describe("app render dependency helpers", () => {
     expect(receivedProps).toEqual({ params: props.params, theme: "dark", size: "small" });
   });
 
+  it("unwraps a CSS-wrapped component whose defaultProps have a getter", async () => {
+    const props = { params: Promise.resolve({}) };
+    let receivedTheme: unknown;
+    function Page(pageProps: Record<string, unknown>) {
+      receivedTheme = pageProps.theme;
+      return null;
+    }
+    Page.defaultProps = {
+      get theme() {
+        return { mode: "dark" };
+      },
+    };
+    function CssWrapper(wrapperProps: Record<string, unknown>) {
+      return createElement(Fragment, null, "css", createElement(Page, wrapperProps));
+    }
+
+    const result = invokeAppComponent(CssWrapper, props);
+    if (!isValidElement<{ children: [unknown, ReactElement] }>(result)) {
+      throw new Error("expected an element");
+    }
+    expect(result.props.children[1].props).toEqual({});
+    await renderHtml(result);
+    expect(receivedTheme).toEqual({ mode: "dark" });
+  });
+
+  it("keeps a keyed element in the fragment as rendered", () => {
+    const props = { params: Promise.resolve({}) };
+    function Child(_props: Record<string, unknown>) {
+      return null;
+    }
+    function Layout(layoutProps: Record<string, unknown>) {
+      return createElement(
+        Fragment,
+        null,
+        "css",
+        createElement(Child, { ...layoutProps, key: "route-a" }),
+      );
+    }
+
+    const result = invokeAppComponent(Layout, props);
+    if (!isValidElement<{ children: [unknown, ReactElement] }>(result)) {
+      throw new Error("expected an element");
+    }
+    expect(result.props.children[1].type).toBe(Child);
+    expect(result.props.children[1].key).toBe("route-a");
+  });
+
   it("keeps a fragment whose element gets other props as rendered", () => {
     const props = { params: Promise.resolve({}) };
     function Child(_props: Record<string, unknown>) {

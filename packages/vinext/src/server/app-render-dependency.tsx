@@ -90,20 +90,28 @@ export function invokeAppComponent(
 /**
  * Whether `elementProps` are what `createElement(type, props)` produces: the
  * same values, plus any `type.defaultProps` for keys that are `undefined`.
+ * Defaulted values aren't read again, since a default can be a getter.
  */
 function isElementOfProps(
   elementProps: Readonly<Record<string, unknown>>,
   props: Readonly<Record<string, unknown>>,
   defaultProps: Readonly<Record<string, unknown>> | undefined,
 ): boolean {
-  const expected: Record<string, unknown> = { ...props };
+  const keys = new Set(Object.keys(props));
+  const defaulted = new Set<string>();
   for (const key in defaultProps) {
-    if (expected[key] === undefined) expected[key] = defaultProps[key];
+    if (props[key] === undefined) {
+      keys.add(key);
+      defaulted.add(key);
+    }
   }
-  const keys = Object.keys(expected);
   return (
-    Object.keys(elementProps).length === keys.length &&
-    keys.every((key) => Object.is(elementProps[key], expected[key]))
+    Object.keys(elementProps).length === keys.size &&
+    [...keys].every(
+      (key) =>
+        Object.hasOwn(elementProps, key) &&
+        (defaulted.has(key) || Object.is(elementProps[key], props[key])),
+    )
   );
 }
 
@@ -131,7 +139,11 @@ function invokeCssWrappedComponent(
   const children = result.props.children;
   if (!Array.isArray(children) || children.length !== 2) return result;
   const [css, inner] = children as [ReactNode, unknown];
-  if (!isValidElement<Record<string, unknown>>(inner) || typeof inner.type !== "function") {
+  if (
+    !isValidElement<Record<string, unknown>>(inner) ||
+    typeof inner.type !== "function" ||
+    inner.key !== null
+  ) {
     return result;
   }
   const component = inner.type as ComponentType<Record<string, unknown>> & {
