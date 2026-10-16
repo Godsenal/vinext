@@ -124,12 +124,14 @@ const SOURCES = [
   // Plain literal text to path-to-regexp.
   "/foo[bar]",
   "/a|b",
+  "/foo)bar",
   // Linear: each backreference reads what its param captured, and `(?!a|b)a`
   // and `(?!é|x)é` never match.
   "/:a(x)/:id(y\\1)+",
   "/:id(x(?:(?!a|b)a|a))+",
   "/:a(a)/:id(\\1+)",
   "/:a(x+)/:id(y\\1)+",
+  "/:a(a|bb)/:id(\\1+)",
   "/:id(x(?:(?!é|x)é|é))+",
   // Invalid in path-to-regexp; Next.js fails the build for these.
   "/:a:b",
@@ -140,6 +142,10 @@ const SOURCES = [
 ];
 
 const PATHNAMES = [
+  "/foo)bar",
+  "/FOO)BAR",
+  "/bb/bbbb",
+  "/a/aab",
   "/foo[bar]",
   "/FOO[BAR]",
   "/a|b",
@@ -474,9 +480,10 @@ describe("Pages client sync matcher agrees with the server matcher", () => {
     expect(matchSimpleClientConfigSource("/docs/a/b/", "/docs/:path*")).toEqual({ path: "a/b" });
     expect(matchSimpleClientConfigSource("/docs", "/docs/:path+")).toBeNull();
     expect(matchSimpleClientConfigSource("/blog/x", "/blog/:slug")).toEqual({ slug: "x" });
-    // path-to-regexp reads `[`, `]` and `|` as plain text.
+    // path-to-regexp reads `[`, `]`, `|` and `)` as plain text.
     expect(matchSimpleClientConfigSource("/FOO[BAR]", "/foo[bar]")).toEqual({});
     expect(matchSimpleClientConfigSource("/a|b", "/a|b")).toEqual({});
+    expect(matchSimpleClientConfigSource("/FOO)BAR", "/foo)bar")).toEqual({});
   });
 });
 

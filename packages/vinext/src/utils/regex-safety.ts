@@ -319,12 +319,13 @@ class RegexParser {
 
   /**
    * A backreference matches the text its group captured, or nothing when the
-   * group did not take part. A group that reads one fixed word captured that
-   * word. Otherwise the text is a run of the characters the group reads, as
-   * long as the group reads, which one repeat of their class reads one way
-   * per length, as the engine compares the text one way. Lookarounds in the
-   * group only constrained the capture, so they are not replayed. An open or
-   * unknown group may have captured any text.
+   * group did not take part. A group that reads a few fixed words captured
+   * one of them, each read one way. Otherwise the text is a run of the
+   * characters the group reads, as long as the group reads, which one repeat
+   * of their class reads one way per length, as the engine compares the text
+   * one way. Each occurrence is read on its own, so `(a|aa)\1+` still looks
+   * ambiguous. Lookarounds in the group only constrained the capture, so they
+   * are not replayed. An open or unknown group may have captured any text.
    */
   private backreference(group: number | undefined): RegexNode {
     const body = group === undefined || this.skippedGroup ? undefined : this.groups[group];
@@ -334,13 +335,18 @@ class RegexParser {
     }
     const optional = this.optionalGroups.has(group!);
     const words = fixedWords(body, { words: 0, symbols: 0, exceeded: false });
-    const distinct = new Set(words?.map((word) => word.map((symbol) => symbol.key).join("\0")));
-    if (words && distinct.size === 1) {
-      const children = words[0]!.map((symbol) =>
-        this.node({ kind: "atom", symbol, fixedWidth: true }),
+    if (words) {
+      const distinct = new Map<string, RegexSymbol[]>();
+      for (const word of words) distinct.set(word.map((symbol) => symbol.key).join("\0"), word);
+      const branches = [...distinct.values()].map((word) =>
+        this.node({
+          kind: "sequence",
+          children: word.map((symbol) => this.node({ kind: "atom", symbol, fixedWidth: true })),
+        }),
       );
-      const word = this.node({ kind: "sequence", children });
-      return optional ? this.node({ kind: "repeat", child: word, min: 0, max: 1 }) : word;
+      const text =
+        branches.length === 1 ? branches[0]! : this.node({ kind: "alternation", branches });
+      return optional ? this.node({ kind: "repeat", child: text, min: 0, max: 1 }) : text;
     }
     const [min, max] = widthRange(body, new WeakMap());
     if (characters === undefined || max === 0) {
