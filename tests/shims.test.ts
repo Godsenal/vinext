@@ -9901,7 +9901,15 @@ describe("middleware matcher patterns", () => {
         error: expect.stringContaining("polynomially ambiguous repetition"),
       });
     }
-    for (const pattern of ["[ab]*a[ab]*a[ab]*", "(.*)-(.*)-(.*)", "[\\w.]+\\.[\\w.]+\\.[\\w.]+!"]) {
+    for (const pattern of [
+      "[ab]*a[ab]*a[ab]*",
+      "(.*)-(.*)-(.*)",
+      "[\\w.]+\\.[\\w.]+\\.[\\w.]+!",
+      // Too long to unroll, so read as loops.
+      "[ab]{0,20000}a[ab]{0,20000}a[ab]{0,20000}X",
+      // Short enough to unroll, but each near miss still takes cubic time.
+      "[ab]{0,500}a[ab]{0,500}a[ab]{0,500}X",
+    ]) {
       expect(isSafeRegex(pattern), pattern).toBe(false);
     }
   });
@@ -9929,11 +9937,12 @@ describe("middleware matcher patterns", () => {
 
   it("analyzes lookaround bodies and three-way character intersections", async () => {
     const { isSafeRegex } = await import("../packages/vinext/src/config/config-matchers.js");
+    const { analyzeRegexSafety } = await import("../packages/vinext/src/utils/regex-safety.js");
 
     // The engine runs a lookaround body wherever it is reached, so a
     // catastrophic repeat inside one is as dangerous as one outside.
-    expect(isSafeRegex("(?=(?:a+)+X)a*")).toBe(false);
-    expect(isSafeRegex("(?!(?:a|aa)+$)x")).toBe(false);
+    expect(analyzeRegexSafety("(?=(?:a+)+X)a*")).toBe("exponentially ambiguous repetition");
+    expect(analyzeRegexSafety("(?!(?:a|aa)+$)x")).toBe("exponentially ambiguous repetition");
     expect(isSafeRegex("(?=.*foo)")).toBe(true);
 
     // `[ab]`, `[ac]` and `[bc]` overlap pairwise, but no one character is in
@@ -9943,6 +9952,12 @@ describe("middleware matcher patterns", () => {
     const start = performance.now();
     new RegExp(`^(?:${pattern})$`).test(`${"b".repeat(5_000)}a${"c".repeat(5_000)}!`);
     expect(performance.now() - start).toBeLessThan(500);
+
+    // Each guarded loop is `\S*`, so neither can read a separating `\s`,
+    // ASCII or not.
+    const notSpace = "(?:(?!\\s)[\\s\\S])*";
+    expect(isSafeRegex(`${notSpace}\\s${notSpace}\\s${notSpace}X`)).toBe(true);
+    expect(isSafeRegex("[\\s\\S]*\\s[\\s\\S]*\\s[\\s\\S]*X")).toBe(false);
   });
 
   it("keeps analysis cheap for long alternations", async () => {

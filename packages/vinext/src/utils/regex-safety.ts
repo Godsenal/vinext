@@ -755,19 +755,19 @@ function exactWidth(node: RegexNode): number | null {
   }
 }
 
-/** Whether `node`, lookaround bodies included, holds a repeat such as `a*` or `a{2,}`. */
-function hasUnboundedRepetition(node: RegexNode): boolean {
+/** Whether `node`, lookaround bodies included, holds a repeat such as `a?`, `a{0,500}` or `a*`. */
+function containsVariableRepetition(node: RegexNode): boolean {
   switch (node.kind) {
     case "atom":
       return false;
     case "assertion":
-      return hasUnboundedRepetition(node.child);
+      return containsVariableRepetition(node.child);
     case "sequence":
-      return node.children.some(hasUnboundedRepetition);
+      return node.children.some(containsVariableRepetition);
     case "alternation":
-      return node.branches.some(hasUnboundedRepetition);
+      return node.branches.some(containsVariableRepetition);
     case "repeat":
-      return !Number.isFinite(node.max) || hasUnboundedRepetition(node.child);
+      return node.min !== node.max || containsVariableRepetition(node.child);
   }
 }
 
@@ -1320,10 +1320,11 @@ export function analyzeRegexSafety(
   );
   const node = parser.parse();
   if (parser.exceededBudget || parser.index !== pattern.length) return "analysis budget exceeded";
-  // Without an unbounded repeat the automaton has no loop to be ambiguous in,
-  // and long literal lists would only spend its budget.
+  // Without a variable repeat `node` is a finite list of fixed-length words,
+  // which the structural checks cover. Long literal lists would only spend
+  // the automaton's budget.
   return (
-    findSafetyIssue(node) ?? (hasUnboundedRepetition(node) ? analyzeNodeAmbiguity(node) : null)
+    findSafetyIssue(node) ?? (containsVariableRepetition(node) ? analyzeNodeAmbiguity(node) : null)
   );
 }
 
@@ -2007,6 +2008,19 @@ function tripleOverlapChecker(
     asciiSets.set(state, set);
     return set;
   };
+  // Each class state's non-ASCII characters, less the class exclusions. A
+  // single excluded character leaves the domain as it was.
+  const nonAsciiDomain = (state: number): NonAsciiDomain => {
+    let domain = (symbols[state] as Extract<RegexSymbol, { kind: "class" }>).nonAscii;
+    for (const exclusion of excluded[state]!) {
+      if (exclusion.kind !== "class" || exclusion.nonAscii === "none") continue;
+      if (exclusion.nonAscii === "all" || exclusion.nonAscii === domain) domain = "none";
+      else if (domain === "all") {
+        domain = exclusion.nonAscii === "whitespace" ? "non-whitespace" : "whitespace";
+      }
+    }
+    return domain;
+  };
   return (x, y, z) => {
     if (!symbolsOverlap(x, y) || !symbolsOverlap(y, z) || !symbolsOverlap(x, z)) return false;
     const triple = [symbols[x], symbols[y], symbols[z]];
@@ -2018,8 +2032,7 @@ function tripleOverlapChecker(
     for (let word = 0; word < 4; word++) {
       if ((left[word]! & middle[word]! & right[word]!) !== 0) return true;
     }
-    // Non-ASCII characters: exclusions only name ASCII ones here.
-    const domains = triple.map((symbol) => (symbol as { nonAscii: NonAsciiDomain }).nonAscii);
+    const domains = [nonAsciiDomain(x), nonAsciiDomain(y), nonAsciiDomain(z)];
     if (domains.includes("none")) return false;
     return !(domains.includes("whitespace") && domains.includes("non-whitespace"));
   };
