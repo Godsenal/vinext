@@ -120,12 +120,15 @@ function lexer(value: string): LexerToken[] {
   return tokens;
 }
 
-export type ParsePathOptions = {
+export type ParsePathPatternOptions = {
   /** Characters a default param cannot contain. path-to-regexp defaults to `/#?`. */
   delimiter?: string;
 };
 
-export function parsePath(value: string, options: ParsePathOptions = {}): PathToken[] {
+export function parsePathPattern(
+  value: string,
+  options: ParsePathPatternOptions = {},
+): PathToken[] {
   const tokens = lexer(value);
   const result: PathToken[] = [];
   const prefixes = "./";

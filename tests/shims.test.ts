@@ -9560,8 +9560,8 @@ describe("middleware matcher patterns", () => {
   it("matches Next.js 16.2.7 path-to-regexp tokens and compiled regexes", async () => {
     const { compileMiddlewareMatcherPattern } =
       await import("../packages/vinext/src/server/middleware-matcher-pattern.js");
-    const { parsePath } = await import("../packages/vinext/src/utils/path-to-regexp.js");
-    type Token = ReturnType<typeof parsePath>[number];
+    const { parsePathPattern } = await import("../packages/vinext/src/utils/path-to-regexp.js");
+    type Token = ReturnType<typeof parsePathPattern>[number];
     const nextPathToRegexp = createRequire(import.meta.url)(
       "next/dist/compiled/path-to-regexp",
     ) as {
@@ -9585,7 +9585,7 @@ describe("middleware matcher patterns", () => {
 
     for (const pattern of patterns) {
       const nextTokens = nextPathToRegexp.parse(pattern);
-      expect(parsePath(pattern), pattern).toEqual(nextTokens);
+      expect(parsePathPattern(pattern), pattern).toEqual(nextTokens);
 
       let nextRegexp: RegExp;
       try {

@@ -1,7 +1,7 @@
 import type { HasCondition } from "../config/next-config.js";
 import {
   normalizePathTokens,
-  parsePath,
+  parsePathPattern,
   pathTokensToRegExpSource,
   type PathToken,
 } from "../utils/path-to-regexp.js";
@@ -114,7 +114,7 @@ export function compileMiddlewareMatcherPattern(source: string): CompiledMiddlew
 
   let tokens: PathToken[];
   try {
-    tokens = parsePath(source);
+    tokens = parsePathPattern(source);
   } catch (error) {
     return {
       kind: "invalid",

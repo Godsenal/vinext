@@ -28,7 +28,11 @@ import {
   getUnconsumedMiddlewareRequestHeaders,
 } from "../utils/middleware-request-headers.js";
 import { analyzeRegexSafety } from "../utils/regex-safety.js";
-import { parsePath, pathTokensToRegExpSource, type PathToken } from "../utils/path-to-regexp.js";
+import {
+  parsePathPattern,
+  pathTokensToRegExpSource,
+  type PathToken,
+} from "../utils/path-to-regexp.js";
 import { unsafePathTokensReason } from "../utils/path-token-safety.js";
 import { requestContextFromRequest, type RequestContext } from "./request-context.js";
 import { isExternalUrl } from "../utils/external-url.js";
@@ -548,7 +552,7 @@ function compileConfigSource(source: string): CompiledConfigSource | null {
     let tokens: PathToken[];
     let re: RegExp;
     try {
-      tokens = parsePath(source, { delimiter: "/" });
+      tokens = parsePathPattern(source, { delimiter: "/" });
       re = new RegExp(`${pathTokensToRegExpSource(tokens)}(?:\\/)?$`, "i");
     } catch (error) {
       console.warn(
