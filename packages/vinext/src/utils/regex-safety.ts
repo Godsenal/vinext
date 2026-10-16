@@ -34,6 +34,7 @@ export type RegexSafetyIssue =
   | "ambiguous sequence expansion"
   | "overlapping sequential repetition"
   | "exponentially ambiguous repetition"
+  | "polynomially ambiguous repetition"
   | "analysis budget exceeded";
 
 const MAX_NODES = 16_384;
@@ -44,6 +45,9 @@ const MAX_WORD_SYMBOLS = 32_768;
 const MAX_OPAQUE_COMPARISONS = 4_096;
 const MAX_SEQUENCE_EXPANSIONS = 256;
 const MAX_SAFE_OVERLAPPING_VARIABLE_BOUNDARIES = 1;
+// One ambiguous pair of loops, such as `[^/]+.*`, makes a near miss take
+// quadratic time; a chain of two, such as `a+.*a+`, cubic.
+const MAX_POLYNOMIAL_DEGREE = 1;
 // Above Next.js's 4096-character source limit, plus room for unrolled repeats.
 const MAX_POSITIONS = 16_384;
 // When unrolling every repeat exceeds a budget, repeats past this many
@@ -751,18 +755,21 @@ function exactWidth(node: RegexNode): number | null {
   }
 }
 
-function containsConsumingRepetition(node: RegexNode): boolean {
+/** Whether `node` holds a repeat with a finite range, such as `a?` or `a{1,3}`. */
+function containsBoundedVariableRepetition(node: RegexNode): boolean {
   switch (node.kind) {
     case "atom":
-      return false;
     case "assertion":
       return false;
     case "sequence":
-      return node.children.some(containsConsumingRepetition);
+      return node.children.some(containsBoundedVariableRepetition);
     case "alternation":
-      return node.branches.some(containsConsumingRepetition);
+      return node.branches.some(containsBoundedVariableRepetition);
     case "repeat":
-      return node.min !== 1 || node.max !== 1 || containsConsumingRepetition(node.child);
+      return (
+        (node.min !== node.max && Number.isFinite(node.max)) ||
+        containsBoundedVariableRepetition(node.child)
+      );
   }
 }
 
@@ -1187,7 +1194,12 @@ function findSafetyIssue(node: RegexNode): RegexSafetyIssue | null {
       }
       return null;
     case "repeat": {
-      const nestedRepetition = containsConsumingRepetition(node.child);
+      // An unbounded repeat is a loop of the position automaton, whose
+      // ambiguity analyzeNodeAmbiguity measures exactly. A bounded one is
+      // unrolled into copies, which can still multiply the paths through a
+      // near miss without forming a loop.
+      if (!Number.isFinite(node.max)) return findSafetyIssue(node.child);
+      const nestedRepetition = containsBoundedVariableRepetition(node.child);
       if (node.max > 1 && nestedRepetition && exactWidth(node.child) === null) {
         return "nested repetition";
       }
@@ -1291,8 +1303,8 @@ export function analyzeRegexSafety(
     options.captures,
   );
   const node = parser.parse();
-  if (parser.exceededBudget) return "analysis budget exceeded";
-  return findSafetyIssue(node);
+  if (parser.exceededBudget || parser.index !== pattern.length) return "analysis budget exceeded";
+  return findSafetyIssue(node) ?? analyzeNodeAmbiguity(node);
 }
 
 export function regexAtomsMayOverlap(left: string, right: string, ignoreCase = false): boolean {
@@ -1309,6 +1321,34 @@ export function regexAtomsMayOverlap(left: string, right: string, ignoreCase = f
   const rightSymbol = rightWords[0][0];
   if (!leftSymbol || !rightSymbol) return true;
   return symbolsMayOverlap(leftSymbol, rightSymbol);
+}
+
+/**
+ * One symbol for an alternation of distinct single characters, `(?:a|b|c)`,
+ * whose branches never read the same character, so it has a single path for
+ * each like a class does. Its states then take one position instead of one
+ * per branch, which a repeat would connect pairwise. Non-ASCII characters
+ * become an opaque class, matched case-insensitively, which only adds
+ * overlaps.
+ */
+function singleCharacterAlternationSymbol(
+  node: Extract<RegexNode, { kind: "alternation" }>,
+): RegexSymbol | null {
+  const literals = new Map<string, string>();
+  for (const branch of node.branches) {
+    if (branch.kind !== "atom" || branch.symbol?.kind !== "literal") return null;
+    if (literals.has(branch.symbol.key)) return null;
+    literals.set(branch.symbol.key, branch.symbol.value);
+  }
+  const keys = [...literals.keys()];
+  if (keys.every((key) => key.charCodeAt(0) <= 0x7f)) {
+    return createClassSymbol(new Set(keys), "none");
+  }
+  const characters = [...literals.values()]
+    .map((value) => (/[\\\]^-]/.test(value) ? `\\${value}` : value))
+    .join("");
+  const pattern = `[${characters}]`;
+  return { kind: "opaque", key: `opaque:i:${pattern}`, pattern, ignoreCase: true };
 }
 
 // Path counts saturate at two: two distinct paths are enough for ambiguity.
@@ -1435,7 +1475,9 @@ class PositionAutomaton {
         size = node.children.reduce((total, child) => total + this.size(child), 0);
         break;
       case "alternation":
-        size = node.branches.reduce((total, branch) => total + this.size(branch), 0);
+        size = singleCharacterAlternationSymbol(node)
+          ? 1
+          : node.branches.reduce((total, branch) => total + this.size(branch), 0);
         break;
       case "repeat": {
         const child = this.size(node.child);
@@ -1532,6 +1574,8 @@ class PositionAutomaton {
         return fragment;
       }
       case "alternation": {
+        const merged = singleCharacterAlternationSymbol(node);
+        if (merged) return this.single(this.position(merged));
         const fragment: PositionFragment = { first: new Map(), last: new Map(), empty: 0 };
         for (const branch of node.branches) {
           const child = this.fragment(branch);
@@ -1677,35 +1721,26 @@ function applyLookaheadGuards(automaton: PositionAutomaton): AmbiguityGraph | nu
   return graph;
 }
 
-/**
- * Whether two paths through the automaton can leave the same state and meet
- * again in it after reading the same text, by different states or by
- * parallel edges. Such a loop doubles the paths a backtracking engine tries
- * on each pass, so a near miss takes exponential time. This is the
- * exponential-ambiguity test of Allauzen, Mohri and Rastogi (2008): a
- * strongly connected component of the automaton's self-product holding both
- * a pair `(p, p)` and either a pair `(q, r)` with q != r or an edge from a
- * parallel pair. States unreachable from the start are never explored, and
- * dead ends are kept, since the engine explores those paths too.
- */
-function hasExponentialAmbiguity(graph: AmbiguityGraph): boolean | null {
-  const { excluded, follow, symbols } = graph;
+// Whether `symbol` minus `without` may share a character with `other`.
+// Exact when `other` is a single character; conservative otherwise.
+function remainderMayOverlap(
+  symbol: RegexSymbol | null,
+  without: RegexSymbol[],
+  other: RegexSymbol | null,
+): boolean {
+  if (symbol == null || other == null) return true;
+  if (!symbolsMayOverlap(symbol, other)) return false;
+  return (
+    other.kind !== "literal" || !without.some((character) => symbolsMayOverlap(character, other))
+  );
+}
+
+/** Whether two states of `graph` may read the same character, memoized. */
+function stateOverlapChecker(graph: AmbiguityGraph): (left: number, right: number) => boolean {
+  const { excluded, symbols } = graph;
   const size = symbols.length;
-  // Whether `symbol` minus `without` may share a character with `other`.
-  // Exact when `other` is a single character; conservative otherwise.
-  const remainderMayOverlap = (
-    symbol: RegexSymbol | null,
-    without: RegexSymbol[],
-    other: RegexSymbol | null,
-  ): boolean => {
-    if (symbol == null || other == null) return true;
-    if (!symbolsMayOverlap(symbol, other)) return false;
-    return (
-      other.kind !== "literal" || !without.some((character) => symbolsMayOverlap(character, other))
-    );
-  };
   const overlaps = new Map<number, boolean>();
-  const symbolsOverlap = (left: number, right: number): boolean => {
+  return (left, right) => {
     const key = left < right ? left * size + right : right * size + left;
     let overlap = overlaps.get(key);
     if (overlap === undefined) {
@@ -1716,6 +1751,35 @@ function hasExponentialAmbiguity(graph: AmbiguityGraph): boolean | null {
     }
     return overlap;
   };
+}
+
+type ProductAnalysis =
+  | { exponential: true }
+  | {
+      exponential: false;
+      /** Pairs `[p, q]`, p != q, that two paths can occupy on a cycle. */
+      loopPairs: Array<[number, number]>;
+    };
+
+/**
+ * Whether two paths through the automaton can leave the same state and meet
+ * again in it after reading the same text, by different states or by
+ * parallel edges. Such a loop doubles the paths a backtracking engine tries
+ * on each pass, so a near miss takes exponential time. This is the
+ * exponential-ambiguity test of Allauzen, Mohri and Rastogi (2008): a
+ * strongly connected component of the automaton's self-product holding both
+ * a pair `(p, p)` and either a pair `(q, r)` with q != r or an edge from a
+ * parallel pair. States unreachable from the start are never explored, and
+ * dead ends are kept, since the engine explores those paths too. Without
+ * such a loop, the off-diagonal pairs on cycles are what polynomialDegree
+ * starts from.
+ */
+function analyzeProduct(
+  graph: AmbiguityGraph,
+  symbolsOverlap: (left: number, right: number) => boolean,
+): ProductAnalysis | null {
+  const { follow, symbols } = graph;
+  const size = symbols.length;
 
   // Iterative Tarjan over the product states reachable from (0, 0). States
   // are numbered in visiting order, so the per-state data are dense arrays.
@@ -1725,6 +1789,8 @@ function hasExponentialAmbiguity(graph: AmbiguityGraph): boolean | null {
   const stack: number[] = [];
   const onStack: boolean[] = [];
   const parallelEdges: Array<[number, number]> = [];
+  const selfLoops = new Set<number>();
+  const loopPairs: Array<[number, number]> = [];
   let components = 0;
   let edges = 0;
 
@@ -1797,6 +1863,7 @@ function hasExponentialAmbiguity(graph: AmbiguityGraph): boolean | null {
         if (left === right && leftTarget === rightTarget && i !== j) {
           parallelEdges.push([state, target]);
         }
+        if (target === state) selfLoops.add(state);
         pending.push(target);
       }
     }
@@ -1849,30 +1916,192 @@ function hasExponentialAmbiguity(graph: AmbiguityGraph): boolean | null {
     }
     if (lowLink[id] !== id) continue;
     let hasDiagonal = false;
-    let hasOffDiagonal = false;
+    const offDiagonal: Array<[number, number]> = [];
     let member: number;
+    let members = 0;
     do {
       member = stack.pop()!;
       onStack[member] = false;
       component[member] = components;
+      members++;
       const state = states[member]!;
-      if (Math.floor(state / size) === state % size) hasDiagonal = true;
-      else hasOffDiagonal = true;
+      const left = Math.floor(state / size);
+      const right = state % size;
+      if (left === right) hasDiagonal = true;
+      else offDiagonal.push([left, right]);
     } while (member !== id);
     components++;
-    if (hasDiagonal && hasOffDiagonal) return true;
+    if (hasDiagonal && offDiagonal.length > 0) return { exponential: true };
+    if (members > 1 || selfLoops.has(states[id]!)) loopPairs.push(...offDiagonal);
   }
 
-  return parallelEdges.some(
+  const exponential = parallelEdges.some(
     ([from, to]) => component[index.get(from)!] === component[index.get(to)!],
   );
+  return exponential ? { exponential: true } : { exponential: false, loopPairs };
+}
+
+/**
+ * Tarjan's strongly connected components of the states reachable from state
+ * 0, each numbered after every component it reaches; -1 if unreachable.
+ */
+function reachableComponents(follow: number[][]): { component: number[]; count: number } {
+  const size = follow.length;
+  const index = Array.from<number>({ length: size }).fill(-1);
+  const lowLink = Array.from<number>({ length: size }).fill(0);
+  const component = Array.from<number>({ length: size }).fill(-1);
+  const onStack = Array.from<boolean>({ length: size }).fill(false);
+  const stack: number[] = [];
+  // The DFS path as [state, next follow index] frames.
+  const frames: Array<[number, number]> = [];
+  let visited = 0;
+  let count = 0;
+  const visit = (state: number): void => {
+    index[state] = lowLink[state] = visited++;
+    stack.push(state);
+    onStack[state] = true;
+    frames.push([state, 0]);
+  };
+  visit(0);
+  while (frames.length > 0) {
+    const frame = frames[frames.length - 1]!;
+    const state = frame[0];
+    const targets = follow[state]!;
+    if (frame[1] < targets.length) {
+      const target = targets[frame[1]++]!;
+      if (index[target] === -1) visit(target);
+      else if (onStack[target]) lowLink[state] = Math.min(lowLink[state]!, index[target]!);
+      continue;
+    }
+    frames.pop();
+    if (frames.length > 0) {
+      const parent = frames[frames.length - 1]![0];
+      lowLink[parent] = Math.min(lowLink[parent]!, lowLink[state]!);
+    }
+    if (lowLink[state] !== index[state]) continue;
+    let member: number;
+    do {
+      member = stack.pop()!;
+      onStack[member] = false;
+      component[member] = count;
+    } while (member !== state);
+    count++;
+  }
+  return { component, count };
+}
+
+/**
+ * The longest chain of loop pairs that a near miss can be split across
+ * ambiguously; a backtracking engine takes about n^(d+1) steps on a near miss
+ * of length n when this returns d. Two loops form such a pair when they have
+ * states p != q and some text w with p -w-> p, p -w-> q and q -w-> q (the IDA
+ * condition of Weber and Seidl, 1991): each repetition of w can be read by
+ * either loop. `a*a*` has one pair; `a*a*a*` and `[ab]*a[ab]*a[ab]*` a chain
+ * of two. Each candidate is a search of the triple product from (p, p, q) to
+ * (p, q, q) that keeps the outer paths in their loops and the middle one on
+ * the way from p's loop to q's. Only called without exponential ambiguity,
+ * which rules out p and q sharing a loop.
+ */
+function polynomialDegree(
+  graph: AmbiguityGraph,
+  loopPairs: Array<[number, number]>,
+  symbolsOverlap: (left: number, right: number) => boolean,
+): number | null {
+  const { follow } = graph;
+  const size = follow.length;
+  const { component, count } = reachableComponents(follow);
+  const successors = Array.from({ length: count }, () => new Set<number>());
+  for (let state = 0; state < size; state++) {
+    const from = component[state]!;
+    if (from === -1) continue;
+    for (const target of follow[state]!) {
+      if (component[target] !== from) successors[from]!.add(component[target]!);
+    }
+  }
+  // The components that can reach `to`, which the middle path must stay in.
+  const reaching = new Map<number, boolean[]>();
+  const componentsReaching = (to: number): boolean[] => {
+    let reaches = reaching.get(to);
+    if (reaches) return reaches;
+    reaches = Array.from<boolean>({ length: count }).fill(false);
+    reaches[to] = true;
+    // Components only reach lower-numbered ones.
+    for (let from = to + 1; from < count; from++) {
+      for (const next of successors[from]!) {
+        if (reaches[next]) {
+          reaches[from] = true;
+          break;
+        }
+      }
+    }
+    reaching.set(to, reaches);
+    return reaches;
+  };
+  const uniqueFollow = follow.map((targets) => [...new Set(targets)]);
+
+  let edges = 0;
+  const pairIsAmbiguous = (p: number, q: number): boolean | null => {
+    const from = component[p]!;
+    const to = component[q]!;
+    const reaches = componentsReaching(to);
+    const key = (x: number, y: number, z: number) => (x * size + y) * size + z;
+    const goal = key(p, q, q);
+    const seen = new Set<number>([key(p, p, q)]);
+    const queue = [p, p, q];
+    while (queue.length > 0) {
+      const z = queue.pop()!;
+      const y = queue.pop()!;
+      const x = queue.pop()!;
+      for (const nextX of uniqueFollow[x]!) {
+        if (component[nextX] !== from) continue;
+        for (const nextZ of uniqueFollow[z]!) {
+          if (component[nextZ] !== to || !symbolsOverlap(nextX, nextZ)) continue;
+          for (const nextY of uniqueFollow[y]!) {
+            if (++edges > MAX_PRODUCT_EDGES) return null;
+            if (!reaches[component[nextY]!]) continue;
+            if (!symbolsOverlap(nextX, nextY) || !symbolsOverlap(nextY, nextZ)) continue;
+            const next = key(nextX, nextY, nextZ);
+            if (next === goal) return true;
+            if (seen.has(next)) continue;
+            seen.add(next);
+            queue.push(nextX, nextY, nextZ);
+          }
+        }
+      }
+    }
+    return false;
+  };
+
+  // The components each component's loops form an ambiguous pair with.
+  const pairs = new Map<number, Set<number>>();
+  for (const [p, q] of loopPairs) {
+    const from = component[p]!;
+    const to = component[q]!;
+    if (from === to || pairs.get(from)?.has(to)) continue;
+    const ambiguous = pairIsAmbiguous(p, q);
+    if (ambiguous === null) return null;
+    if (!ambiguous) continue;
+    let targets = pairs.get(from);
+    if (!targets) pairs.set(from, (targets = new Set()));
+    targets.add(to);
+  }
+
+  // The longest chain from each component, after those it reaches.
+  const longest = Array.from<number>({ length: count }).fill(0);
+  for (let from = 0; from < count; from++) {
+    let chain = 0;
+    for (const next of successors[from]!) chain = Math.max(chain, longest[next]!);
+    for (const next of pairs.get(from) ?? []) chain = Math.max(chain, longest[next]! + 1);
+    longest[from] = chain;
+  }
+  return longest[component[0]!]!;
 }
 
 /**
  * Whether a backtracking engine can take exponentially many paths through
- * `pattern` on one input, as with `(a|aa?)+`, `(a?a?b)+` or `(.*\/)*x`.
- * Polynomial blowups, such as a chain of overlapping repeats, are left to
- * analyzeRegexSafety and analyzeRegexRepetitionChains.
+ * `pattern` on one input, as with `(a|aa?)+`, `(a?a?b)+` or `(.*\/)*x`, or
+ * polynomially many past MAX_POLYNOMIAL_DEGREE, as with `a+.*a+` or
+ * `[ab]*a[ab]*a[ab]*`.
  */
 export function analyzeRegexAmbiguity(
   pattern: string,
@@ -1886,6 +2115,10 @@ export function analyzeRegexAmbiguity(
   );
   const node = parser.parse();
   if (parser.exceededBudget || parser.index !== pattern.length) return "analysis budget exceeded";
+  return analyzeNodeAmbiguity(node);
+}
+
+function analyzeNodeAmbiguity(node: RegexNode): RegexSafetyIssue | null {
   // Unroll repeats exactly while the automaton fits, and only read long
   // repeats as loops when it does not.
   const exact = new PositionAutomaton(MAX_POSITIONS);
@@ -1902,7 +2135,11 @@ function analyzePositionAutomaton(
   if (automaton.exceeded) return "analysis budget exceeded";
   const graph = applyLookaheadGuards(automaton);
   if (graph === null) return "analysis budget exceeded";
-  const ambiguous = hasExponentialAmbiguity(graph);
-  if (ambiguous === null) return "analysis budget exceeded";
-  return ambiguous ? "exponentially ambiguous repetition" : null;
+  const symbolsOverlap = stateOverlapChecker(graph);
+  const product = analyzeProduct(graph, symbolsOverlap);
+  if (product === null) return "analysis budget exceeded";
+  if (product.exponential) return "exponentially ambiguous repetition";
+  const degree = polynomialDegree(graph, product.loopPairs, symbolsOverlap);
+  if (degree === null) return "analysis budget exceeded";
+  return degree > MAX_POLYNOMIAL_DEGREE ? "polynomially ambiguous repetition" : null;
 }

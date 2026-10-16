@@ -293,11 +293,10 @@ function stripHopByHopRequestHeaders(headers: Headers): void {
 /**
  * Detect regex patterns vulnerable to catastrophic backtracking (ReDoS).
  *
- * Uses the same deterministic structural analysis as middleware matcher
- * validation. Nested bounded repetition is accepted only when its repeated
- * language has fixed width and unambiguous branches; a fixed outer count can
- * otherwise still cause polynomially catastrophic backtracking on long near
- * misses.
+ * Uses the same analysis as middleware matcher validation: the pattern's
+ * position automaton is checked for exponential ambiguity and for chains of
+ * ambiguously split loops, and bounded repeats, which unroll without forming
+ * loops, for alternatives or optional parts that multiply the paths.
  *
  * Returns true if the pattern appears safe, false if it's potentially dangerous.
  */

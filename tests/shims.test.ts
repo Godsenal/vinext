@@ -9671,7 +9671,8 @@ describe("middleware matcher patterns", () => {
     ]) {
       expect(compileMiddlewareMatcherPattern(matcher), matcher).toMatchObject({
         kind: "unsafe",
-        error: expect.stringContaining("ambiguous alternatives"),
+        // Unbounded repeats get the exact automaton verdict.
+        error: expect.stringMatching(/ambiguous alternatives|exponentially ambiguous repetition/),
       });
     }
 
@@ -9796,7 +9797,7 @@ describe("middleware matcher patterns", () => {
 
     expect(compileMiddlewareMatcherPattern("/:a(a+):b(a+):c(a+)")).toMatchObject({
       kind: "unsafe",
-      error: expect.stringContaining("overlapping sequential repetition"),
+      error: expect.stringContaining("polynomially ambiguous repetition"),
     });
     for (const matcher of [
       "/:a(a+):b(a+)",
@@ -9883,6 +9884,49 @@ describe("middleware matcher patterns", () => {
     }
   });
 
+  it("rejects polynomial blowups that a shared mandatory atom does not separate", async () => {
+    const { compileMiddlewareMatcherPattern } =
+      await import("../packages/vinext/src/server/middleware-matcher-pattern.js");
+    const { isSafeRegex } = await import("../packages/vinext/src/config/config-matchers.js");
+
+    // `[ab]*` can read the literal `a` between the repeats, so a near miss
+    // splits across all three: cubic time.
+    for (const matcher of [
+      "/:id([ab]*a[ab]*a[ab]*)X",
+      "/:a([^/]*)-:b([^/]*)-:c([^/]*)x",
+      "/:id(a+.a+.a+)",
+    ]) {
+      expect(compileMiddlewareMatcherPattern(matcher), matcher).toMatchObject({
+        kind: "unsafe",
+        error: expect.stringContaining("polynomially ambiguous repetition"),
+      });
+    }
+    for (const pattern of ["[ab]*a[ab]*a[ab]*", "(.*)-(.*)-(.*)", "[\\w.]+\\.[\\w.]+\\.[\\w.]+!"]) {
+      expect(isSafeRegex(pattern), pattern).toBe(false);
+    }
+  });
+
+  it("accepts nested repeats whose loops never share text", async () => {
+    const { compileMiddlewareMatcherPattern } =
+      await import("../packages/vinext/src/server/middleware-matcher-pattern.js");
+    const { isSafeRegex } = await import("../packages/vinext/src/config/config-matchers.js");
+
+    const slug = "[a-z0-9]+(?:-[a-z0-9]+)*";
+    expect(isSafeRegex(slug)).toBe(true);
+    expect(isSafeRegex("(?:[a-z0-9]+-){1,1000}x")).toBe(true);
+    for (const matcher of [`/:slug(${slug})`, `/blog/:slug(${slug})/:page(\\d+)?`]) {
+      const compiled = compileMiddlewareMatcherPattern(matcher);
+      expect(compiled.regexp, matcher).toBeInstanceOf(RegExp);
+      const start = performance.now();
+      compiled.regexp!.test(`/${"a1-".repeat(5_000)}-`);
+      compiled.regexp!.test(`/blog/${"a-".repeat(8_000)}!`);
+      expect(performance.now() - start, matcher).toBeLessThan(500);
+    }
+    expect(compileMiddlewareMatcherPattern(`/:slug(${slug})`).regexp!.test("/my-first-post")).toBe(
+      true,
+    );
+  });
+
   it("handles fixed-width nested repeats and simple class intersections", async () => {
     const { compileMiddlewareMatcherPattern } =
       await import("../packages/vinext/src/server/middleware-matcher-pattern.js");
@@ -9916,7 +9960,8 @@ describe("middleware matcher patterns", () => {
     ]) {
       expect(compileMiddlewareMatcherPattern(matcher), matcher).toMatchObject({
         kind: "unsafe",
-        error: expect.stringContaining("ambiguous alternatives"),
+        // Unbounded repeats get the exact automaton verdict.
+        error: expect.stringMatching(/ambiguous alternatives|exponentially ambiguous repetition/),
       });
     }
   });
@@ -9974,7 +10019,9 @@ describe("middleware matcher patterns", () => {
     ]) {
       expect(compileMiddlewareMatcherPattern(matcher), matcher).toMatchObject({
         kind: "unsafe",
-        error: expect.stringContaining("overlapping sequential repetition"),
+        error: expect.stringMatching(
+          /overlapping sequential repetition|polynomially ambiguous repetition/,
+        ),
       });
     }
     // A case-sensitive `(?!A)` lets "a" through even though `(?i:...)`
@@ -13966,9 +14013,12 @@ describe("isSafeRegex", () => {
 
   it("rejects bounded outer repetition around an unbounded inner atom", async () => {
     const { isSafeRegex } = await import("../packages/vinext/src/config/config-matchers.js");
-    expect(isSafeRegex("(a+){2}")).toBe(false);
+    // Three or more copies chain their overlapping loops: cubic or worse.
+    expect(isSafeRegex("(a+){3}")).toBe(false);
     expect(isSafeRegex("(a+){2,4}")).toBe(false);
     expect(isSafeRegex("(a+){10}")).toBe(false);
+    // Two copies are one overlapping pair, quadratic like `(?:a+)(?:a+)`.
+    expect(isSafeRegex("(a+){2}")).toBe(true);
   });
 
   it("accepts quantifier on group without inner quantifier", async () => {
@@ -13992,21 +14042,17 @@ describe("isSafeRegex", () => {
     expect(isSafeRegex("([+*])+")).toBe(true);
   });
 
-  it("rejects nested optional quantifiers: (a?)+", async () => {
+  it("accepts an optional atom under an unbounded repeat", async () => {
     const { isSafeRegex } = await import("../packages/vinext/src/config/config-matchers.js");
-    // '?' inside group + quantifier on group = catastrophic backtracking
-    expect(isSafeRegex("(a?)+")).toBe(false);
-    expect(isSafeRegex("(a?)+b")).toBe(false);
-  });
-
-  it("rejects nested optional quantifiers: (.?)+", async () => {
-    const { isSafeRegex } = await import("../packages/vinext/src/config/config-matchers.js");
-    expect(isSafeRegex("(.?)+")).toBe(false);
-  });
-
-  it("rejects nested optional quantifiers: (a?)*", async () => {
-    const { isSafeRegex } = await import("../packages/vinext/src/config/config-matchers.js");
-    expect(isSafeRegex("(a?)*")).toBe(false);
+    // The engine never repeats an empty iteration past the minimum, so each
+    // character is one iteration's `a`: linear, not catastrophic.
+    for (const pattern of ["(a?)+", "(a?)+b", "(.?)+", "(a?)*"]) {
+      expect(isSafeRegex(pattern), pattern).toBe(true);
+      const regexp = new RegExp(`^(?:${pattern})$`);
+      const start = performance.now();
+      regexp.test(`${"a".repeat(20_000)}!`);
+      expect(performance.now() - start, pattern).toBeLessThan(500);
+    }
   });
 
   it("accepts outer '?' on group (zero-or-one is not unbounded repetition)", async () => {
