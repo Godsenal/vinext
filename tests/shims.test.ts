@@ -9560,9 +9560,8 @@ describe("middleware matcher patterns", () => {
   it("matches Next.js 16.2.7 path-to-regexp tokens and compiled regexes", async () => {
     const { compileMiddlewareMatcherPattern } =
       await import("../packages/vinext/src/server/middleware-matcher-pattern.js");
-    const { parseMiddlewarePath } =
-      await import("../packages/vinext/src/server/middleware-path-to-regexp.js");
-    type Token = ReturnType<typeof parseMiddlewarePath>[number];
+    const { parsePath } = await import("../packages/vinext/src/utils/path-to-regexp.js");
+    type Token = ReturnType<typeof parsePath>[number];
     const nextPathToRegexp = createRequire(import.meta.url)(
       "next/dist/compiled/path-to-regexp",
     ) as {
@@ -9586,7 +9585,7 @@ describe("middleware matcher patterns", () => {
 
     for (const pattern of patterns) {
       const nextTokens = nextPathToRegexp.parse(pattern);
-      expect(parseMiddlewarePath(pattern), pattern).toEqual(nextTokens);
+      expect(parsePath(pattern), pattern).toEqual(nextTokens);
 
       let nextRegexp: RegExp;
       try {
@@ -13819,62 +13818,14 @@ describe("safeRegExp", () => {
   });
 });
 
-describe("escapeHeaderSource", () => {
-  it("passes through literal paths unchanged", async () => {
-    const { escapeHeaderSource } = await import("../packages/vinext/src/config/config-matchers.js");
-    expect(escapeHeaderSource("/api/users")).toBe("/api/users");
-  });
-
-  it("escapes dots", async () => {
-    const { escapeHeaderSource } = await import("../packages/vinext/src/config/config-matchers.js");
-    expect(escapeHeaderSource("/file.txt")).toBe("/file\\.txt");
-  });
-
-  it("converts named param to [^/]+", async () => {
-    const { escapeHeaderSource } = await import("../packages/vinext/src/config/config-matchers.js");
-    expect(escapeHeaderSource("/user/:id")).toBe("/user/[^/]+");
-  });
-
-  it("converts glob * to .*", async () => {
-    const { escapeHeaderSource } = await import("../packages/vinext/src/config/config-matchers.js");
-    expect(escapeHeaderSource("/api/*")).toBe("/api/.*");
-  });
-
-  it("escapes + and ?", async () => {
-    const { escapeHeaderSource } = await import("../packages/vinext/src/config/config-matchers.js");
-    expect(escapeHeaderSource("/path+query")).toBe("/path\\+query");
-    expect(escapeHeaderSource("/maybe?")).toBe("/maybe\\?");
-  });
-
-  it("handles constrained param :param(constraint)", async () => {
-    const { escapeHeaderSource } = await import("../packages/vinext/src/config/config-matchers.js");
-    expect(escapeHeaderSource("/api/:version(\\d+)/users")).toBe("/api/(\\d+)/users");
-  });
-
-  it("handles constrained param with alternation", async () => {
-    const { escapeHeaderSource } = await import("../packages/vinext/src/config/config-matchers.js");
-    expect(escapeHeaderSource("/:lang(en|fr)/page")).toBe("/(en|fr)/page");
-  });
-
-  it("preserves standalone regex groups", async () => {
-    const { escapeHeaderSource } = await import("../packages/vinext/src/config/config-matchers.js");
-    expect(escapeHeaderSource("/api/(v1|v2)/users")).toBe("/api/(v1|v2)/users");
-  });
-
-  it("handles multiple groups and params", async () => {
-    const { escapeHeaderSource } = await import("../packages/vinext/src/config/config-matchers.js");
-    expect(escapeHeaderSource("/:lang(en|fr)/:id(\\d+)/page")).toBe("/(en|fr)/(\\d+)/page");
-  });
-});
-
 describe("matchConfigPattern rejects ReDoS patterns", () => {
   it("returns null for pathological source patterns", async () => {
     const { matchConfigPattern } = await import("../packages/vinext/src/config/config-matchers.js");
-    // This pattern has nested quantifiers: the compiled regex would be (a+)+b
-    // which causes catastrophic backtracking. matchConfigPattern should return
-    // null (no match) rather than hanging.
-    // lgtm[js/redos] — deliberate pathological regex to test safeRegExp guard
-    const result = matchConfigPattern("/aaaaaaaaaaaaaaaaaaaac", "/:id((a+)+b)");
+    // This pattern has nested quantifiers: the compiled regex would contain
+    // (?:a+)+b, which causes catastrophic backtracking. matchConfigPattern
+    // should return null (no match) rather than hanging.
+    // lgtm[js/redos] — deliberate pathological regex to test the ReDoS guard
+    const result = matchConfigPattern("/aaaaaaaaaaaaaaaaaaaac", "/:id((?:a+)+b)");
     expect(result).toBeNull();
   });
 });
@@ -14625,9 +14576,9 @@ describe("matchHeaders", () => {
 });
 
 describe("matchHeaders compiled source cache", () => {
-  // Regression test: escapeHeaderSource() + safeRegExp() were re-run on every
-  // request for every header rule. The result is now cached in _compiledHeaderSourceCache
-  // keyed by rule.source so subsequent calls skip the tokeniser and isSafeRegex.
+  // Regression test: header sources were recompiled and re-validated on every
+  // request for every header rule. The result is now cached by rule.source so
+  // subsequent calls skip the parser and the ReDoS checks.
   function makeCtx(h: Record<string, string> = {}) {
     return {
       headers: new Headers(h),
@@ -15269,11 +15220,12 @@ describe("matchRewrite with external URLs", () => {
     expect(result).toBe("/archive/2024-06");
   });
 
-  it("replaces hyphenated param names without truncating them", async () => {
+  it("reads a hyphen after a param name as literal text, like path-to-regexp", async () => {
     const { matchRewrite } = await import("../packages/vinext/src/config/config-matchers.js");
+    // `:auth-method` is the `auth` param followed by the literal `-method`.
     const rewrites = [{ source: "/auth/:auth-method", destination: "/signin/:auth-method" }];
-    const result = matchRewrite("/auth/google", rewrites, emptyCtx);
-    expect(result).toBe("/signin/google");
+    expect(matchRewrite("/auth/google", rewrites, emptyCtx)).toBeNull();
+    expect(matchRewrite("/auth/google-method", rewrites, emptyCtx)).toBe("/signin/google-method");
   });
 
   it("treats hyphen as a literal delimiter when only the shorter param key exists", async () => {
@@ -15722,7 +15674,8 @@ describe("open redirect prevention in catch-all redirects", () => {
 
   it("matchRedirect sanitizes double-slash in already-decoded paths", async () => {
     const { matchRedirect } = await import("../packages/vinext/src/config/config-matchers.js");
-    const redirects = [{ source: "/old/:path*", destination: "/:path*", permanent: false }];
+    // `:path*` never matches an empty segment, but `(.*)` captures `/evil.com`.
+    const redirects = [{ source: "/old/:path(.*)", destination: "/:path", permanent: false }];
     // Even if an already-decoded path somehow contains //, the sanitizer should handle it
     const result = matchRedirect("/old//evil.com", redirects, emptyCtx);
     expect(result).not.toBeNull();

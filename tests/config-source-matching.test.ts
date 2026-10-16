@@ -1,0 +1,510 @@
+import { createRequire } from "node:module";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  matchConfigPattern,
+  matchHeaders,
+  matchRedirect,
+  matchRewrite,
+  requestContextFromRequest,
+} from "../packages/vinext/src/config/config-matchers.js";
+
+// next.config.js redirects/rewrites/headers sources are compiled the way
+// Next.js 16 does at runtime: path-to-regexp 6 (`strict`, `delimiter: "/"`,
+// case-insensitive) plus `modifyRouteRegex`'s optional trailing slash.
+// The oracle below is Next's own compiled path-to-regexp and getPathMatch.
+
+type NextKey = { name: string | number; prefix: string; suffix: string; modifier: string };
+type NextParams = Record<string, string | string[] | undefined>;
+
+const require = createRequire(import.meta.url);
+const { pathToRegexp } = require("next/dist/compiled/path-to-regexp") as {
+  pathToRegexp: (source: string, keys: NextKey[], options: object) => RegExp;
+};
+const { getPathMatch } = require("next/dist/shared/lib/router/utils/path-match") as {
+  getPathMatch: (source: string, options: object) => (pathname: string) => NextParams | false;
+};
+const { modifyRouteRegex } = require("next/dist/lib/redirect-status") as {
+  modifyRouteRegex: (regex: string) => string;
+};
+
+/**
+ * Next.js params in vinext's representation: repeated params keep the
+ * captured string (`a/b` rather than `["a", "b"]`) and a missing optional
+ * param is `""`.
+ */
+function nextMatch(source: string, pathname: string): Record<string, string> | null | "throws" {
+  let match: (pathname: string) => NextParams | false;
+  const keys: NextKey[] = [];
+  try {
+    pathToRegexp(source, keys, { delimiter: "/", strict: true, sensitive: false });
+    match = getPathMatch(source, {
+      strict: true,
+      removeUnnamedParams: true,
+      regexModifier: (regex: string) => modifyRouteRegex(regex),
+    });
+  } catch {
+    return "throws";
+  }
+  const params = match(pathname);
+  if (!params) return null;
+  const result: Record<string, string> = {};
+  for (const key of keys) {
+    if (typeof key.name !== "string") continue;
+    const value = params[key.name];
+    result[key.name] = Array.isArray(value) ? value.join(key.prefix + key.suffix) : (value ?? "");
+  }
+  return result;
+}
+
+const SOURCES = [
+  "/",
+  "/about",
+  "/about/",
+  "/Case/Path",
+  "/blog/:slug",
+  "/blog/:slug.md",
+  "/blog/:slug.html",
+  "/blog-:slug",
+  "/:a-:b",
+  "/user/:id.:format",
+  "/:auth-method",
+  "/docs/:path*",
+  "/docs/:path+",
+  "/files/:path*.md",
+  "/files/:path+.md",
+  "/:path*",
+  "/:path+/:tail?",
+  "/:path*/:tail?",
+  "/:a/:b?",
+  "/x/:locale?",
+  "/x/:locale(en|sv)?",
+  "/:locale(en|sv)?",
+  "/:locale(en|sv)?/about",
+  "/:locale(en|sv)?/settings/:path*",
+  "/:locale(en|sv)?/:slug(\\d+)?",
+  "/:locale/files/:path*",
+  "/docs/:rest(.*)",
+  "/:path(.*)",
+  "/(.*)",
+  "/api/(.*)",
+  "/foo/(bar|baz)/:id",
+  "/n/:id(\\d+)",
+  "/n/:id(\\d+)*",
+  "/n/:id(\\d+)+",
+  "/v/:version(v\\d+)/:rest*",
+  "/static/:file(.*\\.js)",
+  "/foo{-:bar}?",
+  "/foo{-:bar}+",
+  "/files/:name{.:ext}?",
+  "/a\\:b",
+  "/foo\\/:bar(\\d+)?",
+  "/:a(\\d+)?-:b",
+  "/with space",
+  "/%E2%82%AC/:slug",
+  // Invalid in path-to-regexp; Next.js fails the build for these.
+  "/:a:b",
+  "/foo:path*",
+  "/:id(a(b))",
+  "/:",
+  "/(",
+];
+
+const PATHNAMES = [
+  "/",
+  "//",
+  "/about",
+  "/about/",
+  "/ABOUT",
+  "/about//",
+  "/case/path",
+  "/blog/x",
+  "/blog/x/",
+  "/blog/x.md",
+  "/blog/x.md/",
+  "/blog/.md",
+  "/blog/x.y.md",
+  "/blog/x.html",
+  "/blog-hello",
+  "/blog-",
+  "/a-b",
+  "/a-b-c",
+  "/a-",
+  "/user/1.json",
+  "/user/1",
+  "/user/1.2.json",
+  "/auth-method",
+  "/auth",
+  "/docs",
+  "/docs/",
+  "/docs/a",
+  "/docs/a/",
+  "/docs/a/b",
+  "/docs//a",
+  "/files/.md",
+  "/files/a.md",
+  "/files/a/b.md",
+  "/files/a/b.md/",
+  "/files/readme",
+  "/files/readme.txt",
+  "/files/archive.tar.gz",
+  "/x",
+  "/x/",
+  "/x/en",
+  "/x/EN",
+  "/x/de",
+  "/x/en/y",
+  "/en",
+  "/SV",
+  "/en/about",
+  "/SV/about",
+  "/de/about",
+  "/settings",
+  "/settings/a",
+  "/sv/settings",
+  "/sv/settings/a/b",
+  "/en/12",
+  "/12",
+  "/en/files/a/b",
+  "/foo/bar/1",
+  "/foo/qux/1",
+  "/api",
+  "/api/",
+  "/api/x/y",
+  "/n/12",
+  "/n/12/34",
+  "/n/",
+  "/n/ab",
+  "/v/v2",
+  "/v/v2/a/b",
+  "/v/x",
+  "/static/a.js",
+  "/static/a/b.js",
+  "/static/a.css",
+  "/foo",
+  "/foo-x",
+  "/foo-x-y",
+  "/foo-",
+  "/files/name",
+  "/a:b",
+  "/foo/1",
+  "/1-x",
+  "/-x",
+  "/with space",
+  "/%E2%82%AC/x",
+  "/a/b/c",
+];
+
+describe("config sources match like Next.js", () => {
+  beforeEach(() => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("matches the same pathnames with the same params as Next.js path-to-regexp", () => {
+    for (const source of SOURCES) {
+      for (const pathname of PATHNAMES) {
+        const expected = nextMatch(source, pathname);
+        const actual = matchConfigPattern(pathname, source);
+        const label = `${source} ← ${pathname}`;
+        if (expected === "throws") expect(actual, label).toBeNull();
+        else expect(actual === null ? null : { ...actual }, label).toEqual(expected);
+      }
+    }
+  });
+
+  it("rejects sources path-to-regexp cannot compile with a warning", () => {
+    // Distinct from SOURCES so the compile cache is cold and the warning fires.
+    for (const source of ["/:c:d", "/bar:path+", "/:id(c(d))", "/x/:", "/x/("]) {
+      expect(nextMatch(source, "/x"), source).toBe("throws");
+      expect(matchConfigPattern("/x", source), source).toBeNull();
+      expect(console.warn, source).toHaveBeenLastCalledWith(
+        expect.stringContaining(`Ignoring invalid next.config.js source "${source}"`),
+      );
+    }
+  });
+});
+
+describe("config source matching regressions", () => {
+  it("captures a regex param across segments", () => {
+    expect(matchConfigPattern("/docs/a/b", "/docs/:rest(.*)")).toEqual({ rest: "a/b" });
+    expect(matchConfigPattern("/docs/", "/docs/:rest(.*)")).toEqual({ rest: "" });
+    expect(matchConfigPattern("/api/x/y", "/api/(.*)")).toEqual({});
+  });
+
+  it("drops the slash before an optional or zero-or-more param", () => {
+    expect(matchConfigPattern("/x", "/x/:locale?")).toEqual({ locale: "" });
+    expect(matchConfigPattern("/x/en", "/x/:locale?")).toEqual({ locale: "en" });
+    expect(matchConfigPattern("/settings", "/:locale(en|sv)?/settings/:path*")).toEqual({
+      locale: "",
+      path: "",
+    });
+    expect(matchConfigPattern("/sv/settings/a/b", "/:locale(en|sv)?/settings/:path*")).toEqual({
+      locale: "sv",
+      path: "a/b",
+    });
+    expect(matchConfigPattern("/de/settings", "/:locale(en|sv)?/settings/:path*")).toBeNull();
+    expect(matchConfigPattern("/", "/:locale(en|sv)?")).toEqual({ locale: "" });
+  });
+
+  it("does not expose unnamed groups as params", () => {
+    expect(matchConfigPattern("/foo/bar/1", "/foo/(bar|baz)/:id")).toEqual({ id: "1" });
+  });
+
+  it("treats `.` before a param as an optional-capable prefix", () => {
+    expect(matchConfigPattern("/files/name", "/files/:name{.:ext}?")).toEqual({
+      name: "name",
+      ext: "",
+    });
+    expect(matchConfigPattern("/files/archive.tar.gz", "/files/:name{.:ext}?")).toEqual({
+      name: "archive.tar",
+      ext: "gz",
+    });
+    expect(matchConfigPattern("/user/1.json", "/user/:id.:format")).toEqual({
+      id: "1",
+      format: "json",
+    });
+  });
+
+  it("repeats a constrained param per segment", () => {
+    expect(matchConfigPattern("/n/12/34", "/n/:id(\\d+)*")).toEqual({ id: "12/34" });
+    expect(matchConfigPattern("/n/12/ab", "/n/:id(\\d+)*")).toBeNull();
+    expect(matchConfigPattern("/n", "/n/:id(\\d+)*")).toEqual({ id: "" });
+    expect(matchConfigPattern("/n", "/n/:id(\\d+)+")).toBeNull();
+  });
+
+  it("requires a non-empty segment before a literal suffix", () => {
+    expect(matchConfigPattern("/files/a/b.md", "/files/:path*.md")).toEqual({ path: "a/b" });
+    expect(matchConfigPattern("/files.md", "/files/:path*.md")).toEqual({ path: "" });
+    expect(matchConfigPattern("/files/.md", "/files/:path*.md")).toBeNull();
+    expect(matchConfigPattern("/blog/.md", "/blog/:slug.md")).toBeNull();
+  });
+
+  it("splits a catch-all followed by an optional param like Next.js", () => {
+    // The greedy repeat takes every segment; the optional param stays empty.
+    expect(matchConfigPattern("/a/b/c", "/:path+/:tail?")).toEqual({ path: "a/b/c", tail: "" });
+    expect(matchConfigPattern("/a", "/:path+/:tail?")).toEqual({ path: "a", tail: "" });
+    expect(matchConfigPattern("/a/b", "/:path*/:tail?")).toEqual({ path: "a/b", tail: "" });
+    expect(matchConfigPattern("/", "/:path*/:tail?")).toEqual({ path: "", tail: "" });
+  });
+
+  it("follows path-to-regexp's param name lexer", () => {
+    // `-method` is literal text after the `auth` param.
+    expect(matchConfigPattern("/auth-method", "/:auth-method")).toEqual({ auth: "auth" });
+    expect(matchConfigPattern("/sign-method", "/:auth-method")).toEqual({ auth: "sign" });
+    expect(matchConfigPattern("/auth", "/:auth-method")).toBeNull();
+  });
+
+  it("accepts the trailing slash Next.js accepts and no more", () => {
+    expect(matchConfigPattern("/about/", "/about")).toEqual({});
+    expect(matchConfigPattern("/about//", "/about")).toBeNull();
+    expect(matchConfigPattern("/about", "/about/")).toBeNull();
+    expect(matchConfigPattern("/about/", "/about/")).toEqual({});
+    expect(matchConfigPattern("/docs/a/", "/docs/:rest(.*)")).toEqual({ rest: "a/" });
+  });
+
+  it("matches case-insensitively", () => {
+    expect(matchConfigPattern("/CASE/PATH", "/Case/Path")).toEqual({});
+    expect(matchConfigPattern("/x/EN", "/x/:locale(en|sv)?")).toEqual({ locale: "EN" });
+  });
+
+  it("matches headers sources with the same rules", () => {
+    const ctx = requestContextFromRequest(new Request("http://localhost/"));
+    const headers = [
+      { source: "/api/:path*", headers: [{ key: "x-api", value: "1" }] },
+      { source: "/static/:file(.*\\.js)", headers: [{ key: "x-js", value: "1" }] },
+      { source: "/x/:locale?", headers: [{ key: "x-locale", value: "1" }] },
+      // A glob is not a path-to-regexp source; Next.js fails the build.
+      { source: "/glob/*", headers: [{ key: "x-glob", value: "1" }] },
+    ];
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect(matchHeaders("/api", headers, ctx)).toEqual([{ key: "x-api", value: "1" }]);
+      expect(matchHeaders("/api/a/b/", headers, ctx)).toEqual([{ key: "x-api", value: "1" }]);
+      expect(matchHeaders("/apix", headers, ctx)).toEqual([]);
+      expect(matchHeaders("/static/a/b.js", headers, ctx)).toEqual([{ key: "x-js", value: "1" }]);
+      expect(matchHeaders("/static/a.css", headers, ctx)).toEqual([]);
+      expect(matchHeaders("/x", headers, ctx)).toEqual([{ key: "x-locale", value: "1" }]);
+      expect(matchHeaders("/glob/a", headers, ctx)).toEqual([]);
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+
+  it("substitutes captured params into rewrite and redirect destinations", () => {
+    const ctx = requestContextFromRequest(new Request("http://localhost/"));
+    expect(
+      matchRewrite("/docs/a/b", [{ source: "/docs/:rest(.*)", destination: "/d/:rest" }], ctx),
+    ).toBe("/d/a/b");
+    expect(
+      matchRedirect("/x", [{ source: "/x/:locale?", destination: "/y", permanent: false }], ctx)
+        ?.destination,
+    ).toBe("/y");
+  });
+});
+
+describe("matchRedirect locale-static index agrees with the compiled source", () => {
+  const ctx = requestContextFromRequest(new Request("http://localhost/"));
+
+  it("leaves sources with params after the locale segment to the linear scan", () => {
+    const redirects = [
+      { source: "/:locale(en|fr)?/admin/:path*", destination: "/login", permanent: false },
+      // Shape emitted by applyLocaleToRoutes for an i18n `/docs/:slug` redirect.
+      {
+        source: "/:nextInternalLocale(en|fr)/docs/:slug",
+        destination: "/:nextInternalLocale/guides/:slug",
+        permanent: false,
+      },
+      { source: "/:locale(en|fr)?/blog/:id+", destination: "/posts/:id+", permanent: false },
+    ];
+    for (const pathname of [
+      "/admin",
+      "/admin/settings",
+      "/en/admin/x",
+      "/fr/admin",
+      "/fr/admin/a/b",
+    ]) {
+      expect(matchRedirect(pathname, redirects, ctx)?.destination, pathname).toBe("/login");
+    }
+    expect(matchRedirect("/de/admin/settings", redirects, ctx)).toBeNull();
+    expect(matchRedirect("/fr/docs/intro", redirects, ctx)?.destination).toBe("/fr/guides/intro");
+    expect(matchRedirect("/fr/blog/a/b", redirects, ctx)?.destination).toBe("/posts/a/b");
+    expect(matchRedirect("/fr/blog", redirects, ctx)).toBeNull();
+  });
+
+  it("leaves slash-ending sources to the linear scan", () => {
+    const redirects = [
+      { source: "/:locale(en|fr)?/about/", destination: "/team/", permanent: false },
+      // Shape emitted by applyLocaleToRoutes for an i18n `/docs/` redirect.
+      {
+        source: "/:nextInternalLocale(en|fr)/docs/",
+        destination: "/:nextInternalLocale/guides/",
+        permanent: false,
+      },
+    ];
+    expect(matchRedirect("/about/", redirects, ctx)?.destination).toBe("/team/");
+    expect(matchRedirect("/fr/about/", redirects, ctx)?.destination).toBe("/team/");
+    expect(matchRedirect("/fr/about", redirects, ctx)).toBeNull();
+    expect(matchRedirect("/fr/docs/", redirects, ctx)?.destination).toBe("/fr/guides/");
+  });
+
+  it("leaves hyphenated param names and pattern alternatives to the linear scan", () => {
+    const redirects = [
+      // path-to-regexp reads `:my` followed by the literal `-locale`, so the
+      // `(en|fr)` group is an unnamed param of its own.
+      { source: "/:my-locale(en|fr)/about", destination: "/a", permanent: false },
+      // `.*` can span more than the first segment.
+      { source: "/:prefix(.*)/contact", destination: "/c", permanent: false },
+    ];
+    expect(matchRedirect("/x-localeen/about", redirects, ctx)?.destination).toBe("/a");
+    expect(matchRedirect("/en/about", redirects, ctx)).toBeNull();
+    expect(matchRedirect("/a/b/contact", redirects, ctx)?.destination).toBe("/c");
+    expect(matchRedirect("/contact", redirects, ctx)).toBeNull();
+  });
+
+  it("matches indexed sources exactly like the compiled source", () => {
+    const sources = [
+      "/:locale(en|fr)?/about",
+      "/:nextInternalLocale(en|fr)/about",
+      "/:locale(en-US|fr)?/a/b",
+      "/:locale(en|fr)?/a.b~c",
+    ];
+    for (const source of sources) {
+      const redirects = [{ source, destination: "/dest", permanent: false }];
+      for (const pathname of [
+        "/about",
+        "/about/",
+        "/about//",
+        "/en/about",
+        "/EN/about/",
+        "/de/about",
+        "/fr//about",
+        "/en-us/a/b",
+        "/a/b",
+        "/fr/a.b~c",
+        "/en/en/about",
+      ]) {
+        expect(matchRedirect(pathname, redirects, ctx) !== null, `${source} ← ${pathname}`).toBe(
+          matchConfigPattern(pathname, source) !== null,
+        );
+      }
+    }
+  });
+});
+
+describe("config sources do not backtrack catastrophically", () => {
+  // Sources whose compiled regexes are linear. A near-miss pathname of 16 KB
+  // takes well under a millisecond per match; catastrophic backtracking would
+  // take seconds or never finish.
+  const LINEAR_SOURCES = [
+    "/:path*",
+    "/:path+/:tail?",
+    "/:path*/:tail?",
+    "/:a/:b?",
+    "/:a-:b",
+    "/:a.:b",
+    "/blog-:slug",
+    "/files/:path*.md",
+    "/files/:path+.md",
+    "/:locale(en|sv)?/:path*",
+    "/:locale/files/:path*",
+    "/n/:id(\\d+)*",
+    "/:year(\\d+)/:month(\\d+)",
+    "/docs/:rest(.*)",
+    "/:a(.*)/:b",
+    "/(.*)",
+    "/foo{-:bar}+",
+    "/files/:name{.:ext}?",
+  ];
+  const ADVERSARIAL_PATHNAMES = [
+    "/" + "a/".repeat(8_000) + "!",
+    "/" + "a".repeat(16_000) + "/",
+    "/" + "-".repeat(16_000) + "/x",
+    "/" + ".".repeat(16_000) + "/x",
+    "/" + "a-".repeat(8_000) + "/",
+    "/" + "a.".repeat(8_000) + "/",
+    "/foo" + "-a".repeat(8_000) + "/",
+    "/files/" + "a/".repeat(8_000) + "x.mdx",
+    "/n/" + "1/".repeat(8_000) + "x",
+    "/" + "1".repeat(16_000) + "/x/y",
+    "//" + "/".repeat(16_000),
+  ];
+
+  it("matches near-miss pathnames in linear time", () => {
+    for (const source of LINEAR_SOURCES) {
+      for (const pathname of ADVERSARIAL_PATHNAMES) {
+        const start = performance.now();
+        matchConfigPattern(pathname, source);
+        const elapsed = performance.now() - start;
+        expect(elapsed, `${source} ← ${pathname.slice(0, 24)}… (${pathname.length})`).toBeLessThan(
+          250,
+        );
+      }
+    }
+  });
+
+  it("rejects custom param patterns that backtrack catastrophically", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      for (const source of [
+        "/:a((?:a+)+)",
+        "/:a((?:a|a)*)b",
+        "/:a((?:a*)*)",
+        "/:a(\\d*\\d*)x",
+        "/:a(a*a*)b",
+        // A repeated param that can match "" or "/" has many partitions.
+        "/:a(.*)*/end",
+        "/:a([^/]*)+/end",
+        "/:a(.+)+/end",
+      ]) {
+        expect(matchConfigPattern("/" + "a".repeat(64) + "!", source), source).toBeNull();
+        expect(warn, source).toHaveBeenLastCalledWith(
+          expect.stringContaining(`Ignoring next.config.js source "${source}" (ReDoS risk)`),
+        );
+      }
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+});
