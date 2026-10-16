@@ -550,14 +550,9 @@ type CompiledConfigSource = {
 function compileConfigSourceUncached(
   source: string,
 ): CompiledConfigSource | { kind: "invalid" | "unsafe"; error: string } {
-  let tokens: PathToken[];
-  let re: RegExp;
-  try {
-    tokens = parsePathPattern(source, { delimiter: "/" });
-    re = new RegExp(`${pathTokensToRegExpSource(tokens)}(?:\\/)?$`, "i");
-  } catch (error) {
-    return { kind: "invalid", error: error instanceof Error ? error.message : String(error) };
-  }
+  const parsed = parseConfigSource(source);
+  if ("kind" in parsed) return parsed;
+  const { tokens, re } = parsed;
   const unsafeReason = unsafePathTokensReason(tokens, { ignoreCase: true });
   if (unsafeReason) return { kind: "unsafe", error: unsafeReason };
   const keys: Array<string | number> = [];
@@ -565,6 +560,17 @@ function compileConfigSourceUncached(
     if (typeof token !== "string" && token.pattern) keys.push(token.name);
   }
   return { re, keys };
+}
+
+function parseConfigSource(
+  source: string,
+): { tokens: PathToken[]; re: RegExp } | { kind: "invalid"; error: string } {
+  try {
+    const tokens = parsePathPattern(source, { delimiter: "/" });
+    return { tokens, re: new RegExp(`${pathTokensToRegExpSource(tokens)}(?:\\/)?$`, "i") };
+  } catch (error) {
+    return { kind: "invalid", error: error instanceof Error ? error.message : String(error) };
+  }
 }
 
 /**
@@ -590,9 +596,9 @@ function validationRegExpLength(source: string): number | null {
 /**
  * Why `source` is not a valid redirects/rewrites/headers source, or null.
  * Mirrors the source checks in Next.js's checkCustomRoutes, which fail the
- * build; config loading calls this to do the same. ReDoS-unsafe sources only
- * warn and are skipped when matched: Next.js accepts them, and the safety
- * check is conservative.
+ * build; config loading calls this to do the same. ReDoS-unsafe sources are
+ * not errors, since Next.js accepts them and the safety check is
+ * conservative: see prepareConfigSource.
  *
  * https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/lib/load-custom-routes.ts
  */
@@ -600,11 +606,20 @@ export function configSourceError(source: unknown): string | null {
   if (!source) return "`source` is missing";
   if (typeof source !== "string") return "`source` is not a string";
   if (!source.startsWith("/")) return "`source` does not start with /";
-  const compiled = compileConfigSourceUncached(source);
-  if ("kind" in compiled && compiled.kind === "invalid") return compiled.error;
+  const parsed = parseConfigSource(source);
+  if ("kind" in parsed) return parsed.error;
   const length = validationRegExpLength(source);
   if (length !== null && length > 4096) return "`source` exceeds max built length of 4096";
   return null;
+}
+
+/**
+ * Compile and cache a valid source at config load, so a ReDoS-unsafe one is
+ * reported as skipped then, rather than on the first request that reaches
+ * it, and its analysis is not repeated per request.
+ */
+export function prepareConfigSource(source: string): void {
+  compileConfigSource(source);
 }
 
 function compileConfigSource(source: string): CompiledConfigSource | null {

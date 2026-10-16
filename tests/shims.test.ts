@@ -9808,6 +9808,34 @@ describe("middleware matcher patterns", () => {
     }
   });
 
+  it("decides repeated params that can match empty or a slash by their ambiguity", async () => {
+    const { compileMiddlewareMatcherPattern } =
+      await import("../packages/vinext/src/server/middleware-matcher-pattern.js");
+
+    // Each repeat starts with `/`, which the param cannot read or can read
+    // only one way, so these run in linear time.
+    for (const matcher of ["/:p([a-z]*)+", "/:p(a?)+", "/:p([^/]*)*", "/:p(a|)+", "/:p(\\w*)*"]) {
+      const compiled = compileMiddlewareMatcherPattern(matcher);
+      expect(compiled.regexp, matcher).toBeInstanceOf(RegExp);
+      const start = performance.now();
+      for (const pathname of [
+        `/${"a/".repeat(8_000)}!`,
+        `/${"a".repeat(16_000)}!`,
+        `/${"/".repeat(16_000)}!`,
+      ]) {
+        compiled.regexp!.test(pathname);
+      }
+      expect(performance.now() - start, matcher).toBeLessThan(500);
+    }
+    // A param that can read the `/` between repeats splits a path many ways.
+    for (const matcher of ["/:p(.*)+", "/:p(\\/?)*", "/:path(.*)*/end"]) {
+      expect(compileMiddlewareMatcherPattern(matcher), matcher).toMatchObject({
+        kind: "unsafe",
+        error: expect.stringContaining("exponentially ambiguous repetition"),
+      });
+    }
+  });
+
   it("handles fixed-width nested repeats and simple class intersections", async () => {
     const { compileMiddlewareMatcherPattern } =
       await import("../packages/vinext/src/server/middleware-matcher-pattern.js");

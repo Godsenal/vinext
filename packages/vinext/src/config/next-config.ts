@@ -17,7 +17,12 @@ import { DEFAULT_PAGE_EXTENSIONS, normalizePageExtensions } from "../routing/fil
 import { getHtmlLimitedBotRegex } from "../utils/html-limited-bots.js";
 import { flattenPluginOptions } from "../utils/plugin-options.js";
 import { isUnknownRecord } from "../utils/record.js";
-import { applyLocaleToRoutes, configSourceError, isExternalUrl } from "./config-matchers.js";
+import {
+  applyLocaleToRoutes,
+  configSourceError,
+  isExternalUrl,
+  prepareConfigSource,
+} from "./config-matchers.js";
 import { loadTsconfigResolutionForRoot } from "./tsconfig-paths.js";
 import { loadCommonJsModule, shouldRetryAsCommonJs } from "../utils/commonjs-loader.js";
 export const VINEXT_NEXT_CONFIG_PLUGIN_PROPERTY = "__vinextNextConfig";
@@ -2164,6 +2169,18 @@ export async function resolveNextConfig(
       fallback: applyLocaleToRoutes(rewrites.fallback, i18n, "rewrite", opts),
     };
     headers = applyLocaleToRoutes(headers, i18n, "header", opts);
+  }
+
+  // Compile the sources requests will match now, so one the ReDoS check
+  // rejects is reported when the config loads.
+  for (const route of [
+    ...redirects,
+    ...rewrites.beforeFiles,
+    ...rewrites.afterFiles,
+    ...rewrites.fallback,
+    ...headers,
+  ]) {
+    prepareConfigSource(route.source);
   }
 
   const images = config.images

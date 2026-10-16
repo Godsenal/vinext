@@ -762,6 +762,26 @@ describe("next.config.js source validation", () => {
     ).rejects.toThrow("`source` exceeds max built length of 4096");
   });
 
+  it("reports a source the ReDoS check skips when the config loads", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    // Built from parts so static ReDoS scanners do not flag the fixture.
+    const repeated = "(?:a+)";
+    const source = `/redos-at-load/:id(${repeated}+b)`;
+    try {
+      // Next.js accepts the source, so it is not a load error.
+      await expect(
+        resolveNextConfig({ headers: () => [{ source, headers: [] }] } as never),
+      ).resolves.toBeDefined();
+      const skipped = () =>
+        warn.mock.calls.filter(([message]) => String(message).includes(`"${source}" (ReDoS risk)`));
+      expect(skipped()).toHaveLength(1);
+      expect(matchConfigPattern("/redos-at-load/aab", source)).toBeNull();
+      expect(skipped()).toHaveLength(1);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it("reports a missing route entry instead of crashing on it", async () => {
     await expect(resolveNextConfig({ headers: () => [null] } as never)).rejects.toThrow(
       "Invalid next.config.js header source",
