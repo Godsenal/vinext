@@ -9749,6 +9749,24 @@ describe("middleware matcher patterns", () => {
     }
   });
 
+  it("analyzes long bounded ranges without unrolling them all", async () => {
+    const { compileMiddlewareMatcherPattern } =
+      await import("../packages/vinext/src/server/middleware-matcher-pattern.js");
+
+    // Each skippable copy unrolled to a new first set made this take seconds.
+    for (const matcher of ["/:id(a{0,16384})", "/:id([a-z]{1,16384})"]) {
+      const started = performance.now();
+      expect(compileMiddlewareMatcherPattern(matcher).regexp, matcher).toBeInstanceOf(RegExp);
+      expect(performance.now() - started, matcher).toBeLessThan(2_000);
+    }
+    // Stops at the product budget rather than exploring the whole product.
+    const started = performance.now();
+    expect(compileMiddlewareMatcherPattern("/{x:id([a-z]{1000}|[a-z]{1001})}+")).toMatchObject({
+      kind: "unsafe",
+    });
+    expect(performance.now() - started).toBeLessThan(2_000);
+  });
+
   it("rejects a chain of overlapping repeats across adjacent params", async () => {
     const { compileMiddlewareMatcherPattern } =
       await import("../packages/vinext/src/server/middleware-matcher-pattern.js");

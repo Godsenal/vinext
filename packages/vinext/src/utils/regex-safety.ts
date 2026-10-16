@@ -50,7 +50,11 @@ const MAX_POSITIONS = 16_384;
 // positions are read as unbounded instead.
 const MAX_UNROLLED_REPEAT = 1_024;
 const MAX_AUTOMATON_EDGES = 262_144;
-const MAX_PRODUCT_EDGES = 2_000_000;
+// Map entries read while building the automaton: unrolling a long repeat
+// whose copies may be skipped, such as `a{0,16384}`, copies ever larger
+// first and last sets.
+const MAX_AUTOMATON_WORK = 4_000_000;
+const MAX_PRODUCT_EDGES = 500_000;
 
 function canonicalizeIgnoreCase(character: string): string {
   const upper = character.toUpperCase();
@@ -1050,8 +1054,11 @@ class PositionAutomaton {
   /** Each edge's target, listed once per path that builds it. */
   readonly follow: number[][] = [];
   exceeded = false;
+  /** Whether a repeat past MAX_UNROLLED_REPEAT positions was unrolled. */
+  unrolledLongRepeat = false;
   private readonly edges: PathCounts[] = [new Map()];
   private edgeCount = 0;
+  private work = 0;
   private readonly sizes = new WeakMap<RegexNode, number>();
 
   constructor(private readonly maxUnrolledRepeat: number) {}
@@ -1086,7 +1093,14 @@ class PositionAutomaton {
     return { first: new Map([[position, 1]]), last: new Map([[position, 1]]), empty: 0 };
   }
 
+  private spend(work: number): void {
+    this.work += work;
+    if (this.work > MAX_AUTOMATON_WORK) this.exceeded = true;
+  }
+
   private connect(from: PathCounts, to: PathCounts): void {
+    this.spend(from.size * to.size);
+    if (this.exceeded) return;
     for (const [source, sourceCount] of from) {
       const targets = this.edges[source]!;
       for (const [target, targetCount] of to) {
@@ -1102,6 +1116,7 @@ class PositionAutomaton {
 
   private concat(left: PositionFragment, right: PositionFragment): PositionFragment {
     this.connect(left.last, right.first);
+    this.spend(left.first.size + right.first.size + left.last.size + right.last.size);
     return {
       first: addPaths(new Map(left.first), right.first, left.empty),
       last: addPaths(new Map(right.last), left.last, right.empty),
@@ -1152,6 +1167,7 @@ class PositionAutomaton {
    */
   private loop(fragment: PositionFragment, required: boolean): PositionFragment {
     this.connect(fragment.last, fragment.first);
+    this.spend(fragment.first.size);
     if (!required) return { ...fragment, empty: 1 };
     return {
       first: addPaths(new Map(fragment.first), fragment.first, fragment.empty),
@@ -1218,6 +1234,7 @@ class PositionAutomaton {
       }
       case "repeat": {
         if (this.unrollsTooFar(node)) return this.loop(this.fragment(node.child), node.min > 0);
+        if (this.size(node) > MAX_UNROLLED_REPEAT) this.unrolledLongRepeat = true;
         // Iterations up to the minimum may match empty; later ones may not.
         let fragment: PositionFragment = { first: new Map(), last: new Map(), empty: 1 };
         const required = Number.isFinite(node.max) ? node.min : Math.max(node.min - 1, 0);
@@ -1385,26 +1402,28 @@ function hasExponentialAmbiguity(graph: AmbiguityGraph): boolean | null {
     return overlap;
   };
 
-  // Iterative Tarjan over the product states reachable from (0, 0).
+  // Iterative Tarjan over the product states reachable from (0, 0). States
+  // are numbered in visiting order, so the per-state data are dense arrays.
   const index = new Map<number, number>();
-  const lowLink = new Map<number, number>();
-  const component = new Map<number, number>();
+  const lowLink: number[] = [];
+  const component: number[] = [];
   const stack: number[] = [];
-  const onStack = new Set<number>();
+  const onStack: boolean[] = [];
   const parallelEdges: Array<[number, number]> = [];
-  let nextIndex = 0;
   let components = 0;
   let edges = 0;
 
-  const successors = (state: number): number[] => {
+  // The successors of every state on the DFS path, each frame's after its
+  // parent's.
+  const pending: number[] = [];
+  const pushSuccessors = (state: number): void => {
     const left = Math.floor(state / size);
     const right = state % size;
-    const result: number[] = [];
     const leftFollow = follow[left]!;
     const rightFollow = follow[right]!;
     for (let i = 0; i < leftFollow.length; i++) {
       for (let j = 0; j < rightFollow.length; j++) {
-        if (++edges > MAX_PRODUCT_EDGES) return result;
+        if (++edges > MAX_PRODUCT_EDGES) return;
         const leftTarget = leftFollow[i]!;
         const rightTarget = rightFollow[j]!;
         if (!symbolsOverlap(leftTarget, rightTarget)) continue;
@@ -1412,56 +1431,75 @@ function hasExponentialAmbiguity(graph: AmbiguityGraph): boolean | null {
         if (left === right && leftTarget === rightTarget && i !== j) {
           parallelEdges.push([state, target]);
         }
-        result.push(target);
+        pending.push(target);
       }
     }
-    return result;
   };
 
-  const frames: Array<{ state: number; successors: number[]; next: number }> = [];
+  const states: number[] = [];
+  // The DFS path as parallel arrays: each frame's state id, and where its
+  // successors start and end in `pending`, and the next one to visit.
+  const frameIds: number[] = [];
+  const frameStart: number[] = [];
+  const frameNext: number[] = [];
+  const frameEnd: number[] = [];
   const visit = (state: number): void => {
-    index.set(state, nextIndex);
-    lowLink.set(state, nextIndex);
-    nextIndex++;
-    stack.push(state);
-    onStack.add(state);
-    frames.push({ state, successors: successors(state), next: 0 });
+    const id = states.length;
+    index.set(state, id);
+    states.push(state);
+    lowLink.push(id);
+    component.push(-1);
+    onStack.push(true);
+    stack.push(id);
+    frameIds.push(id);
+    frameStart.push(pending.length);
+    frameNext.push(pending.length);
+    pushSuccessors(state);
+    frameEnd.push(pending.length);
   };
 
   visit(0);
-  while (frames.length > 0) {
+  while (frameIds.length > 0) {
     if (edges > MAX_PRODUCT_EDGES) return null;
-    const frame = frames[frames.length - 1]!;
-    if (frame.next < frame.successors.length) {
-      const target = frame.successors[frame.next++]!;
-      if (!index.has(target)) {
+    const top = frameIds.length - 1;
+    const id = frameIds[top]!;
+    if (frameNext[top]! < frameEnd[top]!) {
+      const target = pending[frameNext[top]!++]!;
+      const targetId = index.get(target);
+      if (targetId === undefined) {
         visit(target);
-      } else if (onStack.has(target)) {
-        lowLink.set(frame.state, Math.min(lowLink.get(frame.state)!, index.get(target)!));
+      } else if (onStack[targetId]) {
+        lowLink[id] = Math.min(lowLink[id]!, targetId);
       }
       continue;
     }
-    frames.pop();
-    const parent = frames[frames.length - 1];
-    if (parent) {
-      lowLink.set(parent.state, Math.min(lowLink.get(parent.state)!, lowLink.get(frame.state)!));
+    frameIds.pop();
+    frameNext.pop();
+    frameEnd.pop();
+    pending.length = frameStart.pop()!;
+    if (top > 0) {
+      const parent = frameIds[top - 1]!;
+      lowLink[parent] = Math.min(lowLink[parent]!, lowLink[id]!);
     }
-    if (lowLink.get(frame.state) !== index.get(frame.state)) continue;
+    if (lowLink[id] !== id) continue;
     let hasDiagonal = false;
     let hasOffDiagonal = false;
     let member: number;
     do {
       member = stack.pop()!;
-      onStack.delete(member);
-      component.set(member, components);
-      if (Math.floor(member / size) === member % size) hasDiagonal = true;
+      onStack[member] = false;
+      component[member] = components;
+      const state = states[member]!;
+      if (Math.floor(state / size) === state % size) hasDiagonal = true;
       else hasOffDiagonal = true;
-    } while (member !== frame.state);
+    } while (member !== id);
     components++;
     if (hasDiagonal && hasOffDiagonal) return true;
   }
 
-  return parallelEdges.some(([from, to]) => component.get(from) === component.get(to));
+  return parallelEdges.some(
+    ([from, to]) => component[index.get(from)!] === component[index.get(to)!],
+  );
 }
 
 /**
@@ -1484,16 +1522,16 @@ export function analyzeRegexAmbiguity(
   if (parser.exceededBudget || parser.index !== pattern.length) return "analysis budget exceeded";
   // Unroll repeats exactly while the automaton fits, and only read long
   // repeats as loops when it does not.
-  const exact = analyzePositionAutomaton(node, MAX_POSITIONS);
-  if (exact !== "analysis budget exceeded") return exact;
-  return analyzePositionAutomaton(node, MAX_UNROLLED_REPEAT);
+  const exact = new PositionAutomaton(MAX_POSITIONS);
+  const issue = analyzePositionAutomaton(exact, node);
+  if (issue !== "analysis budget exceeded" || !exact.unrolledLongRepeat) return issue;
+  return analyzePositionAutomaton(new PositionAutomaton(MAX_UNROLLED_REPEAT), node);
 }
 
 function analyzePositionAutomaton(
+  automaton: PositionAutomaton,
   node: RegexNode,
-  maxUnrolledRepeat: number,
 ): RegexSafetyIssue | null {
-  const automaton = new PositionAutomaton(maxUnrolledRepeat);
   automaton.build(node);
   if (automaton.exceeded) return "analysis budget exceeded";
   const graph = applyLookaheadGuards(automaton);
