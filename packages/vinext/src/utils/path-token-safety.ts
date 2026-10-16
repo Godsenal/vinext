@@ -1,11 +1,12 @@
 import {
   analyzeRegexSafety,
+  analyzeRegexRepetitionChains,
   mayHaveNamedGroups,
   regexAtomsMayOverlap,
   regexExactWidth,
   regexMayConsumeCharacter,
 } from "./regex-safety.js";
-import type { PathKey, PathToken } from "./path-to-regexp.js";
+import { pathTokensToRegExpSource, type PathKey, type PathToken } from "./path-to-regexp.js";
 
 function patternMatches(pattern: string, value: string): boolean {
   try {
@@ -147,6 +148,14 @@ function unsafeTokenReason(
 
   if (token.modifier !== "*" && token.modifier !== "+") return null;
 
+  // A fixed-width P splits its repeats by input length alone, so neither
+  // check below applies to it (width zero is the empty-value case).
+  const width = regexExactWidth(token.pattern, { namedGroups });
+  if (width === 0) {
+    return `repeated parameter "${token.name}" may match an empty value or path delimiter`;
+  }
+  if (width !== null) return null;
+
   // Repeating parameters are joined by the token prefix/suffix. If their own
   // constraint can also consume a slash (or the empty string), the same input
   // has many equivalent partitions. Patterns such as `/:path(.*)*/end` then
@@ -160,9 +169,8 @@ function unsafeTokenReason(
   // next S begins, so the split is unique; likewise for S's last code unit
   // read from the right. Only when P can consume both may it take part of S,
   // as in `/{a:id(a+)}*X`. Code units, since the RegExp has no `u` flag.
-  // A fixed-width P is safe regardless: the input length fixes the split.
   const separator = token.suffix + token.prefix;
-  if (separator !== "" && regexExactWidth(token.pattern, { namedGroups }) === null) {
+  if (separator !== "") {
     const mayConsume = (character: string) =>
       regexMayConsumeCharacter(token.pattern, character, {
         ignoreCase: options.ignoreCase,
@@ -178,8 +186,9 @@ function unsafeTokenReason(
 
 /**
  * Reject path-to-regexp tokens whose custom patterns can backtrack
- * catastrophically once compiled. Literal text and default params compile to
- * linear regexes, so only each param's pattern and how it repeats are checked.
+ * catastrophically once compiled. Each param's pattern and how it repeats are
+ * checked, then the sequence of params in the compiled RegExp, so adjacent
+ * params such as `/:a(a+):b(a+):c(a+)` cannot form an overlapping chain.
  */
 export function unsafePathTokensReason(
   tokens: PathToken[],
@@ -195,5 +204,21 @@ export function unsafePathTokensReason(
     const reason = unsafeTokenReason(token, namedGroups, options);
     if (reason) return reason;
   }
+  // Each param was checked above; a chain of overlapping repeats can still
+  // span params. Tokens that do not compile yet are checked again by the
+  // caller once normalized, or rejected as invalid.
+  let source: string;
+  try {
+    source = pathTokensToRegExpSource(tokens);
+  } catch {
+    return null;
+  }
+  const sequenceIssue = analyzeRegexRepetitionChains(source, {
+    ignoreCase: options.ignoreCase,
+    namedGroups,
+  });
+  if (sequenceIssue === "analysis budget exceeded")
+    return "source exceeds the regex analysis budget";
+  if (sequenceIssue) return `source contains ${sequenceIssue}`;
   return null;
 }

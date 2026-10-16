@@ -631,6 +631,20 @@ describe("next.config.js source validation", () => {
     }
   });
 
+  it("checks sources again after adding the i18n locale prefix", async () => {
+    // Fits the limit as written; the `/:nextInternalLocale(en|fr)` prefix
+    // takes it over, so Next.js rejects it in its second check.
+    const source = "/" + "a".repeat(4_072);
+    const nextLength = (value: string) => tryToParsePath(value).regexStr!.length;
+    expect(nextLength(source)).toBeLessThanOrEqual(4096);
+    expect(nextLength(`/:nextInternalLocale(en|fr)${source}`)).toBeGreaterThan(4096);
+    const headers = () => [{ source, headers: [] }];
+    await expect(resolveNextConfig({ headers } as never)).resolves.toBeDefined();
+    await expect(
+      resolveNextConfig({ headers, i18n: { locales: ["en", "fr"], defaultLocale: "en" } } as never),
+    ).rejects.toThrow("`source` exceeds max built length of 4096");
+  });
+
   it("leaves ReDoS-unsafe sources to warn and skip when matched", async () => {
     // Next.js accepts these, and the ReDoS check is conservative: it also
     // flags linear shapes such as this slug pattern.
@@ -681,6 +695,11 @@ describe("config sources do not backtrack catastrophically", () => {
     // Fixed-width repeats split by length alone.
     "/{a:id(a)}+",
     "/{a:id([a-z]{2})}*",
+    "/{a:id(\\/)}+",
+    "/:a(a+):b(a+)",
+    "/:a(\\d+)/:b(\\d+)/:c(\\d+)",
+    "/:a?/:b?/:c?/:d?",
+    "/:a-:b-:c-:d",
   ];
   const ADVERSARIAL_PATHNAMES = [
     "/" + "a/".repeat(8_000) + "!",
@@ -692,6 +711,8 @@ describe("config sources do not backtrack catastrophically", () => {
     "/x" + ".a".repeat(8_000) + "/",
     "/" + "en/".repeat(5_000) + "x",
     "/" + "a".repeat(16_001) + "/",
+    "/" + "a/".repeat(8_000),
+    "/" + "1/".repeat(5_000) + "x",
     "/" + "a.".repeat(8_000) + "/",
     "/foo" + "-a".repeat(8_000) + "/",
     "/files/" + "a/".repeat(8_000) + "x.mdx",
@@ -747,6 +768,10 @@ describe("config sources do not backtrack catastrophically", () => {
         "/{\u{1F600}:id([\u{1F600}]+)}+X",
         // `(?!\/)` only rules out "/" as the first character of the group.
         "/:p((?!\\/)(?i:[a-z/]+))+",
+        // Adjacent params form one chain of overlapping repeats.
+        "/:a(a+):b(a+):c(a+)",
+        "/:a(.*):b(.*):c(.*)",
+        "/:a(\\d+)(\\d+)(\\d+)",
       ]) {
         expect(matchConfigPattern("/" + "a".repeat(64) + "!", source), source).toBeNull();
         expect(warn, source).toHaveBeenLastCalledWith(

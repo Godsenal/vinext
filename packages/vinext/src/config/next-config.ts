@@ -2109,6 +2109,14 @@ export async function resolveNextConfig(
       fallback: applyLocaleToRoutes(rewrites.fallback, i18n, "rewrite", opts),
     };
     headers = applyLocaleToRoutes(headers, i18n, "header", opts);
+    // Next.js checks the routes again after adding the locale prefix.
+    validateConfigSources("redirect", redirects);
+    validateConfigSources("rewrite", [
+      ...rewrites.beforeFiles,
+      ...rewrites.afterFiles,
+      ...rewrites.fallback,
+    ]);
+    validateConfigSources("header", headers);
   }
 
   const images = config.images

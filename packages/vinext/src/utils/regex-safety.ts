@@ -821,7 +821,12 @@ function findSequenceIssue(
   if (ambiguousExpansionFactor(node) > MAX_SEQUENCE_EXPANSIONS) {
     return "ambiguous sequence expansion";
   }
+  return findOverlappingRepetitionChain(node);
+}
 
+function findOverlappingRepetitionChain(
+  node: Extract<RegexNode, { kind: "sequence" }>,
+): RegexSafetyIssue | null {
   let pendingRepetitionEnds: Array<RegexSymbol[] | null> = [];
   const comparisons = { count: 0 };
   let overlappingBoundaryCount = 0;
@@ -892,6 +897,51 @@ function findSafetyIssue(node: RegexNode): RegexSafetyIssue | null {
       return findSafetyIssue(node.child);
     }
   }
+}
+
+function findRepetitionChainDeep(node: RegexNode): RegexSafetyIssue | null {
+  switch (node.kind) {
+    case "atom":
+      return null;
+    case "assertion":
+    case "repeat":
+      return findRepetitionChainDeep(node.child);
+    case "sequence": {
+      const chainIssue = findOverlappingRepetitionChain(node);
+      if (chainIssue) return chainIssue;
+      for (const child of node.children) {
+        const issue = findRepetitionChainDeep(child);
+        if (issue) return issue;
+      }
+      return null;
+    }
+    case "alternation":
+      for (const branch of node.branches) {
+        const issue = findRepetitionChainDeep(branch);
+        if (issue) return issue;
+      }
+      return null;
+  }
+}
+
+/**
+ * Only analyzeRegexSafety's check for chains of overlapping variable repeats
+ * in a sequence. For a RegExp compiled from separately checked parts, where
+ * each part is known to be safe but a chain across parts is not.
+ */
+export function analyzeRegexRepetitionChains(
+  pattern: string,
+  options: { ignoreCase?: boolean; namedGroups?: boolean } = {},
+): RegexSafetyIssue | null {
+  if (pattern.length > MAX_PATTERN_LENGTH) return "analysis budget exceeded";
+  const parser = new RegexParser(
+    pattern,
+    options.ignoreCase === true,
+    options.namedGroups ?? mayHaveNamedGroups(pattern),
+  );
+  const node = parser.parse();
+  if (parser.exceededBudget) return "analysis budget exceeded";
+  return findRepetitionChainDeep(node);
 }
 
 /**

@@ -9713,6 +9713,25 @@ describe("middleware matcher patterns", () => {
       "/{a:id(A+)}*X",
       // A fixed-width repeat splits by length alone.
       "/{a:id(a)}+",
+      "/{a:id(\\/)}+",
+    ]) {
+      expect(compileMiddlewareMatcherPattern(matcher).regexp, matcher).toBeInstanceOf(RegExp);
+    }
+  });
+
+  it("rejects a chain of overlapping repeats across adjacent params", async () => {
+    const { compileMiddlewareMatcherPattern } =
+      await import("../packages/vinext/src/server/middleware-matcher-pattern.js");
+
+    expect(compileMiddlewareMatcherPattern("/:a(a+):b(a+):c(a+)")).toMatchObject({
+      kind: "unsafe",
+      error: expect.stringContaining("overlapping sequential repetition"),
+    });
+    for (const matcher of [
+      "/:a(a+):b(a+)",
+      "/(foo.*|bar)/:path*",
+      "/:a(\\d+)/:b(\\d+)/:c(\\d+)",
+      "/foo-:path*",
     ]) {
       expect(compileMiddlewareMatcherPattern(matcher).regexp, matcher).toBeInstanceOf(RegExp);
     }
