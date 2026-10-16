@@ -109,6 +109,8 @@ const SOURCES = [
   "/%E2%82%AC/:slug",
   "/:id?/:id?",
   "/:id/:id",
+  "/:id/:id*",
+  "/:id/:id+",
   "/{-:a([a-z]+)-}+",
   // Invalid in path-to-regexp; Next.js fails the build for these.
   "/:a:b",
@@ -296,6 +298,9 @@ describe("Pages client sync matcher agrees with the server matcher", () => {
       ["/docs/:path*/", "/docs/a/"],
       ["/\u20ac/:slug", "/\u20ac/x"],
       ["/docs/:path*", "/docs//a"],
+      // Duplicate names keep the last capture that matched.
+      ["/:id/:id*", "/foo"],
+      ["/:id/:id", "/a/b"],
     ]) {
       expect(matchSimpleClientConfigSource(pathname, source), source).toBeUndefined();
     }
@@ -633,6 +638,9 @@ describe("config sources do not backtrack catastrophically", () => {
     "/{-:a([a-z]+)-}+",
     "/:lang(en|fr)*",
     "/{ab:id(a+)cd}+",
+    // Fixed-width repeats split by length alone.
+    "/{a:id(a)}+",
+    "/{a:id([a-z]{2})}*",
   ];
   const ADVERSARIAL_PATHNAMES = [
     "/" + "a/".repeat(8_000) + "!",
@@ -643,6 +651,7 @@ describe("config sources do not backtrack catastrophically", () => {
     "/" + "-a-".repeat(5_000) + "/",
     "/x" + ".a".repeat(8_000) + "/",
     "/" + "en/".repeat(5_000) + "x",
+    "/" + "a".repeat(16_001) + "/",
     "/" + "a.".repeat(8_000) + "/",
     "/foo" + "-a".repeat(8_000) + "/",
     "/files/" + "a/".repeat(8_000) + "x.mdx",
@@ -650,6 +659,19 @@ describe("config sources do not backtrack catastrophically", () => {
     "/" + "1".repeat(16_000) + "/x/y",
     "//" + "/".repeat(16_000),
   ];
+
+  it("accepts sources whose compiled regexes are linear", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      for (const source of LINEAR_SOURCES) {
+        // A distinct pathname per source keeps the compile cache honest.
+        matchConfigPattern(`/linear-probe${source}`, source);
+        expect(warn, source).not.toHaveBeenCalled();
+      }
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
 
   it("matches near-miss pathnames without catastrophic backtracking", () => {
     for (const source of LINEAR_SOURCES) {

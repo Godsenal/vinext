@@ -9711,6 +9711,8 @@ describe("middleware matcher patterns", () => {
       "/{ab:id(a+)cd}+",
       // Middleware matchers are case-sensitive.
       "/{a:id(A+)}*X",
+      // A fixed-width repeat splits by length alone.
+      "/{a:id(a)}+",
     ]) {
       expect(compileMiddlewareMatcherPattern(matcher).regexp, matcher).toBeInstanceOf(RegExp);
     }

@@ -2,6 +2,7 @@ import {
   analyzeRegexSafety,
   mayHaveNamedGroups,
   regexAtomsMayOverlap,
+  regexExactWidth,
   regexMayConsumeCharacter,
 } from "./regex-safety.js";
 import type { PathKey, PathToken } from "./path-to-regexp.js";
@@ -159,8 +160,9 @@ function unsafeTokenReason(
   // next S begins, so the split is unique; likewise for S's last code unit
   // read from the right. Only when P can consume both may it take part of S,
   // as in `/{a:id(a+)}*X`. Code units, since the RegExp has no `u` flag.
+  // A fixed-width P is safe regardless: the input length fixes the split.
   const separator = token.suffix + token.prefix;
-  if (separator !== "") {
+  if (separator !== "" && regexExactWidth(token.pattern, { namedGroups }) === null) {
     const mayConsume = (character: string) =>
       regexMayConsumeCharacter(token.pattern, character, {
         ignoreCase: options.ignoreCase,

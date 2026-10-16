@@ -998,6 +998,25 @@ export function regexMayConsumeCharacter(
   return mayConsumeSymbol(node, literalSymbol(character, ignoreCase));
 }
 
+/**
+ * The number of code units every match of `pattern` consumes, or null when
+ * it varies or cannot be determined.
+ */
+export function regexExactWidth(
+  pattern: string,
+  options: { ignoreCase?: boolean; namedGroups?: boolean } = {},
+): number | null {
+  if (pattern.length > MAX_PATTERN_LENGTH) return null;
+  const parser = new RegexParser(
+    pattern,
+    options.ignoreCase === true,
+    options.namedGroups ?? mayHaveNamedGroups(pattern),
+  );
+  const node = parser.parse();
+  if (parser.exceededBudget || parser.index !== pattern.length) return null;
+  return exactWidth(node);
+}
+
 export function regexAtomsMayOverlap(left: string, right: string, ignoreCase = false): boolean {
   const leftParser = new RegexParser(left, ignoreCase, true);
   const rightParser = new RegexParser(right, ignoreCase, true);

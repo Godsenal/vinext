@@ -57,6 +57,9 @@ export function matchSimpleClientConfigSource(
       if (index !== sourceParts.length - 1) return undefined;
       const rest = pathParts.slice(index).join("/");
       if (catchAll[2] === "+" && rest === "") return null;
+      // Duplicate names keep the last capture that matched; leave them to
+      // the exact matcher.
+      if (catchAll[1]! in params) return undefined;
       params[catchAll[1]!] = rest;
       return params;
     }
@@ -64,6 +67,7 @@ export function matchSimpleClientConfigSource(
     const param = PARAM_SEGMENT_RE.exec(sourcePart);
     if (param) {
       if (pathPart === undefined || pathPart === "") return null;
+      if (param[1]! in params) return undefined;
       params[param[1]!] = pathPart;
       continue;
     }
