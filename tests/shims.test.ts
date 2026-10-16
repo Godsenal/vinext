@@ -9840,11 +9840,13 @@ describe("middleware matcher patterns", () => {
     const { compileMiddlewareMatcherPattern } =
       await import("../packages/vinext/src/server/middleware-matcher-pattern.js");
 
-    // The capture always reads `a` or one run of `x`, and `(?!é|x)é` never
-    // matches, so each path is read one way.
+    // The capture always reads `a` or one run of `x` or `a`, which the
+    // engine compares one way, and `(?!é|x)é` never matches, so each path is
+    // read one way.
     for (const matcher of [
       "/:id((?<x>a)\\k<x>+)",
       "/:a(x+)/:id(y\\1)+",
+      "/:a((?<g>a|aa?))/:id(\\k<g>)+",
       "/:id(x(?:(?!é|x)é|é))+",
     ]) {
       const compiled = compileMiddlewareMatcherPattern(matcher);
@@ -9853,6 +9855,7 @@ describe("middleware matcher patterns", () => {
       compiled.regexp!.test(`/${"a".repeat(16_000)}!`);
       compiled.regexp!.test(`/${"xé/".repeat(8_000)}!`);
       compiled.regexp!.test(`/xx/${"yxx/".repeat(8_000)}!`);
+      compiled.regexp!.test(`/aa/${"aa/".repeat(8_000)}!`);
       expect(performance.now() - start, matcher).toBeLessThan(500);
     }
     // A capture that may not take part leaves its backreference reading
@@ -9864,6 +9867,8 @@ describe("middleware matcher patterns", () => {
       "/:id((?!(?<g>x))(?:\\k<g>a|a)+)",
       // A capture that may read nothing does too.
       "/:id((?<g>x*)(?:\\k<g>a|a)+)",
+      // `g` captured `a`, so `(?!ab)` does not apply where it is compared.
+      `/:x((?<g>${"(?!ab)a"})c)/:id(\\k<g>?a?b)+`,
       "/:id(x(?:(?!ê|x)é|é))+",
     ]) {
       expect(compileMiddlewareMatcherPattern(matcher), matcher).toMatchObject({ kind: "unsafe" });

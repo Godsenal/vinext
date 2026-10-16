@@ -319,16 +319,35 @@ class RegexParser {
 
   /**
    * A backreference matches the text its group captured, or nothing when the
-   * group did not take part. That text is one the group's body reads, so the
-   * body stands in for it, optional when the group may not have taken part.
-   * The engine reads the text one way, so the stand-in only adds paths. An
-   * open or unknown group may have captured any text.
+   * group did not take part. A group that reads one fixed word captured that
+   * word. Otherwise the text is a run of the characters the group reads, as
+   * long as the group reads, which one repeat of their class reads one way
+   * per length, as the engine compares the text one way. Lookarounds in the
+   * group only constrained the capture, so they are not replayed. An open or
+   * unknown group may have captured any text.
    */
   private backreference(group: number | undefined): RegexNode {
     const body = group === undefined || this.skippedGroup ? undefined : this.groups[group];
-    if (!body) return this.node({ kind: "atom", symbol: null, fixedWidth: false });
-    if (!this.optionalGroups.has(group!)) return body;
-    return this.node({ kind: "repeat", child: body, min: 0, max: 1 });
+    const characters = body && capturedCharacters(body);
+    if (!body || characters === null) {
+      return this.node({ kind: "atom", symbol: null, fixedWidth: false });
+    }
+    const optional = this.optionalGroups.has(group!);
+    const words = fixedWords(body, { words: 0, symbols: 0, exceeded: false });
+    const distinct = new Set(words?.map((word) => word.map((symbol) => symbol.key).join("\0")));
+    if (words && distinct.size === 1) {
+      const children = words[0]!.map((symbol) =>
+        this.node({ kind: "atom", symbol, fixedWidth: true }),
+      );
+      const word = this.node({ kind: "sequence", children });
+      return optional ? this.node({ kind: "repeat", child: word, min: 0, max: 1 }) : word;
+    }
+    const [min, max] = widthRange(body, new WeakMap());
+    if (characters === undefined || max === 0) {
+      return this.node({ kind: "sequence", children: [] });
+    }
+    const child = this.node({ kind: "atom", symbol: characters, fixedWidth: true });
+    return this.node({ kind: "repeat", child, min: optional ? 0 : min, max });
   }
 
   private parseGroup(): RegexNode {
@@ -588,6 +607,96 @@ function lookaheadCharacters(node: RegexNode): RegexSymbol[] | null {
     characters.push(symbol);
   }
   return characters;
+}
+
+/**
+ * One symbol for every character `node` reads outside lookarounds, undefined
+ * when it reads none, or null when it may read text of unknown shape.
+ */
+function capturedCharacters(node: RegexNode): RegexSymbol | null | undefined {
+  const literals = new Map<string, Extract<RegexSymbol, { kind: "literal" }>>();
+  const values = new Set<string>();
+  let nonAscii: NonAsciiDomain = "none";
+  let any = false;
+  const visit = (current: RegexNode): boolean => {
+    switch (current.kind) {
+      case "atom": {
+        const symbol = current.symbol;
+        if (symbol === null || !current.fixedWidth) return false;
+        if (symbol.kind === "literal") literals.set(symbol.key, symbol);
+        else if (symbol.kind === "class") {
+          for (const value of symbol.values) values.add(value);
+          nonAscii = unionNonAscii(nonAscii, symbol.nonAscii);
+        } else any = true;
+        return true;
+      }
+      case "assertion":
+        return true;
+      case "sequence":
+        return current.children.every(visit);
+      case "alternation":
+        return current.branches.every(visit);
+      case "repeat":
+        return visit(current.child);
+    }
+  };
+  if (!visit(node)) return null;
+  if (any) {
+    return { kind: "opaque", key: "opaque:[\\s\\S]", pattern: "[\\s\\S]", ignoreCase: false };
+  }
+  if (literals.size === 1 && values.size === 0 && nonAscii === "none") {
+    return literals.values().next().value!;
+  }
+  for (const literal of literals.values()) {
+    if (literal.key.charCodeAt(0) <= 0x7f) values.add(literal.key);
+    else
+      nonAscii = unionNonAscii(
+        nonAscii,
+        /\s/.test(literal.value) ? "whitespace" : "non-whitespace",
+      );
+  }
+  if (values.size === 0 && nonAscii === "none") return undefined;
+  return createClassSymbol(values, nonAscii);
+}
+
+/** The fewest and most characters `node` reads, the most possibly Infinity. */
+function widthRange(
+  node: RegexNode,
+  cache: WeakMap<RegexNode, [number, number]>,
+): [number, number] {
+  const cached = cache.get(node);
+  if (cached) return cached;
+  let range: [number, number];
+  switch (node.kind) {
+    case "atom":
+      range = node.fixedWidth ? [1, 1] : [0, Infinity];
+      break;
+    case "assertion":
+      range = [0, 0];
+      break;
+    case "sequence":
+      range = [0, 0];
+      for (const child of node.children) {
+        const [min, max] = widthRange(child, cache);
+        range = [range[0] + min, range[1] + max];
+      }
+      break;
+    case "alternation":
+      range = [Infinity, 0];
+      for (const branch of node.branches) {
+        const [min, max] = widthRange(branch, cache);
+        range = [Math.min(range[0], min), Math.max(range[1], max)];
+      }
+      if (node.branches.length === 0) range = [0, 0];
+      break;
+    case "repeat": {
+      const [min, max] = widthRange(node.child, cache);
+      range = [node.min * min, max === 0 ? 0 : node.max * max];
+      break;
+    }
+  }
+  cache.set(node, range);
+  return range;
 }
 
 function exactWidth(node: RegexNode): number | null {
