@@ -290,6 +290,8 @@ describe("Pages client sync matcher agrees with the server matcher", () => {
     "/FOO.x",
     "/foo",
     "/foo//",
+    "/foo/bar",
+    "/foo.json",
   ];
   const CLIENT_SOURCES = [
     ...SOURCES,
@@ -309,6 +311,11 @@ describe("Pages client sync matcher agrees with the server matcher", () => {
     "/foo/:id(\\d+)?",
     "/foo/:id(x|(y))*",
     "/foo/:id([)]+)",
+    "/foo/:id(\\d+)?/bar",
+    "/foo/:id?/bar",
+    "/foo.:ext*.json",
+    "/foo/:id?/:slug?",
+    "/foo/:id(b)?ar",
   ];
 
   it("returns the server's params whenever it does not defer", () => {
@@ -331,8 +338,9 @@ describe("Pages client sync matcher agrees with the server matcher", () => {
   });
 
   it("rules out a source whose optional param prefix the pathname lacks", () => {
-    // Only the prefix before an optional param ending the source may be
-    // absent, so `/foobar` cannot reach `/foo.:ext?` or `/foo/:id?`.
+    // An optional param's prefix may be absent, but then whatever follows
+    // the param must be there, so `/foobar` cannot reach `/foo.:ext?`,
+    // `/foo/:id?` or `/foo/:id?/bar`.
     for (const source of [
       "/foo.:ext?",
       "/foo/:id?",
@@ -343,6 +351,9 @@ describe("Pages client sync matcher agrees with the server matcher", () => {
       "/foo/:id(\\d+)?",
       "/foo/:id(x|(y))*",
       "/foo/:id([)]+)",
+      "/foo/:id(\\d+)?/bar",
+      "/foo/:id?/bar",
+      "/foo.:ext*.json",
     ]) {
       expect(clientConfigSourceCouldMatch("/foobar", source), source).toBe(false);
     }
@@ -353,7 +364,11 @@ describe("Pages client sync matcher agrees with the server matcher", () => {
       ["/foo/:id?bar", "/foobar"],
       ["/foo/:id(\\d+)?", "/foo"],
       ["/foo/:id(\\d+)", "/foo/1"],
-      ["/foo/:id(b)?ar", "/foobar"],
+      ["/foo/:id(b)?ar", "/fooar"],
+      ["/foo/:id?/bar", "/foo/bar"],
+      ["/foo.:ext*.json", "/foo.json"],
+      // The `/` before `:slug?` is that param's own optional prefix.
+      ["/foo/:id?/:slug?", "/foo"],
     ] as const) {
       expect(clientConfigSourceCouldMatch(pathname, source), source).toBe(true);
     }

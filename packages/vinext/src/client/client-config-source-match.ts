@@ -144,15 +144,18 @@ function customPatternEnd(source: string, start: number): number {
  * Every match starts with the source's literal text up to its first param,
  * group or escape. A `/` or `.` right before a `:name?` or `:name*` param
  * (custom pattern or not) is that param's optional prefix, so it is only
- * required when the param is read; when such a param ends the source, the
- * rest of the pathname is empty or starts with that prefix (or is one
- * trailing slash).
+ * required when the param is read. The rest of the pathname then starts with
+ * that prefix or with the literal character after the param; when the param
+ * ends the source, the rest may instead be empty or one trailing slash.
  */
 export function clientConfigSourceCouldMatch(pathname: string, source: string): boolean {
   const wildcardIndex = source.search(/[:(\\{*+?]/);
   let literalPrefix = wildcardIndex === -1 ? source : source.slice(0, wildcardIndex);
   let optionalPrefix: string | null = null;
-  let paramEndsSource = false;
+  // The character that must follow a skippable param, "" when it ends the
+  // source, or null when unknown: a special character, or one followed by a
+  // param or group, as a `/` or `.` there is that next param's prefix.
+  let after: string | null = null;
   if (wildcardIndex !== -1 && /[/.]$/.test(literalPrefix)) {
     const name = /^:\w+/.exec(source.slice(wildcardIndex));
     let end = name ? wildcardIndex + name[0].length : -1;
@@ -161,7 +164,8 @@ export function clientConfigSourceCouldMatch(pathname: string, source: string): 
     const optional = modifier === "?" || modifier === "*";
     if (end === -1 || optional) {
       optionalPrefix = literalPrefix.slice(-1);
-      paramEndsSource = optional && end + 1 === source.length;
+      const next = source[end + 1] ?? "";
+      if (optional && !/[:(){}*+?\\]/.test(next + (source[end + 2] ?? ""))) after = next;
       literalPrefix = literalPrefix.slice(0, -1);
     }
   }
@@ -172,7 +176,9 @@ export function clientConfigSourceCouldMatch(pathname: string, source: string): 
   const path = asciiLowerCase(pathname);
   const prefix = literalPrefix === "/" ? "" : asciiLowerCase(literalPrefix);
   if (!path.startsWith(prefix)) return false;
-  if (!paramEndsSource) return true;
+  if (after === null) return true;
   const rest = path.slice(prefix.length);
-  return rest === "" || rest === "/" || rest.startsWith(optionalPrefix!);
+  if (rest.startsWith(optionalPrefix!)) return true;
+  if (after === "") return rest === "" || rest === "/";
+  return !isAscii(after) || rest.startsWith(asciiLowerCase(after));
 }

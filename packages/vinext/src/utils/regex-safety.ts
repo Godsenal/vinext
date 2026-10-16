@@ -166,7 +166,19 @@ function simpleClassSymbol(raw: string, ignoreCase: boolean): RegexSymbol | null
  * drops when they hold a case-sensitive symbol.
  */
 function hasScopedIgnoreCase(pattern: string): boolean {
-  return /\(\?[ims]*i[ims]*(?:-[ims]+)?:/.test(pattern);
+  const scoped = /\?[ims]*i[ims]*(?:-[ims]+)?:/y;
+  let inClass = false;
+  for (let index = 0; index < pattern.length; index++) {
+    const character = pattern[index];
+    if (character === "\\") index++;
+    else if (character === "[") inClass = true;
+    else if (character === "]") inClass = false;
+    else if (!inClass && character === "(") {
+      scoped.lastIndex = index + 1;
+      if (scoped.test(pattern)) return true;
+    }
+  }
+  return false;
 }
 
 /** Capturing groups in `pattern`, named or not, outside classes and escapes. */

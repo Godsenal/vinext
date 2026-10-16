@@ -9909,6 +9909,9 @@ describe("middleware matcher patterns", () => {
     });
     for (const matcher of [
       "/:id((?i:ab)+)",
+      // An escaped `\(` opens no scoped flag group, so `A+` keeps the
+      // case-sensitive `a+` repeats on either side apart.
+      "/:a(a+):b(A+):c(a+\\(?i:)",
       "/:id((?-i:a)b)",
       "/:id((?s:.)x)",
       "/:id(\\8+)",
