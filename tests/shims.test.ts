@@ -9733,6 +9733,10 @@ describe("middleware matcher patterns", () => {
       "/x{--:id}+",
       // Next.js accepts sources up to 4096 characters.
       "/" + "a".repeat(4_095),
+      // Unrolled exactly while it fits: as `a+` the repeat would overlap the
+      // repeated token's "a" prefix.
+      "/{a:id(a{1025})}+X",
+      "/{a:id(a{8000})}+X",
       // Read as `a+` rather than unrolled.
       "/:id(a{16385})",
       "/:id([a-z]{2,20000})",

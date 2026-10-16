@@ -46,7 +46,8 @@ const MAX_SEQUENCE_EXPANSIONS = 256;
 const MAX_SAFE_OVERLAPPING_VARIABLE_BOUNDARIES = 1;
 // Above Next.js's 4096-character source limit, plus room for unrolled repeats.
 const MAX_POSITIONS = 16_384;
-// Positions one bounded repeat may unroll to before it is read as unbounded.
+// When unrolling every repeat exceeds a budget, repeats past this many
+// positions are read as unbounded instead.
 const MAX_UNROLLED_REPEAT = 1_024;
 const MAX_AUTOMATON_EDGES = 262_144;
 const MAX_PRODUCT_EDGES = 2_000_000;
@@ -1031,10 +1032,10 @@ function addPaths(target: PathCounts, source: PathCounts, factor = 1): PathCount
  * consuming atom, entered by reading that atom's symbol, plus start state 0.
  * Repeats are unrolled, `x{1,3}` as `x(?:x(?:x)?)?`, so each state is one
  * place the backtracking engine can be. A repeat that would unroll past
- * MAX_UNROLLED_REPEAT is read as `x+` (or `x*`) instead: each of its paths
- * is still a distinct path there, so that only adds ambiguity. Fragments
- * count their paths, and edges keep that count: `(a*)*` builds `a -> a` twice and `\/(?:|)` ends
- * at "/" two ways, and each is two ways for the engine to move. Like the
+ * `maxUnrolledRepeat` positions is read as `x+` (or `x*`) instead: each of
+ * its paths is still a distinct path there, so that only adds ambiguity.
+ * Fragments count their paths, and edges keep that count: `(a*)*` builds
+ * `a -> a` twice and `\/(?:|)` ends at "/" two ways, and each is two ways for the engine to move. Like the
  * engine, a repeat past its minimum never takes an empty iteration.
  * Assertions are read as empty, which only adds paths, except a negative
  * lookahead right before a single-character atom, which path-to-regexp emits
@@ -1052,6 +1053,8 @@ class PositionAutomaton {
   private readonly edges: PathCounts[] = [new Map()];
   private edgeCount = 0;
   private readonly sizes = new WeakMap<RegexNode, number>();
+
+  constructor(private readonly maxUnrolledRepeat: number) {}
 
   build(node: RegexNode): void {
     const fragment = this.fragment(node);
@@ -1139,7 +1142,7 @@ class PositionAutomaton {
   }
 
   private unrollsTooFar(node: Extract<RegexNode, { kind: "repeat" }>): boolean {
-    return this.size(node.child) * this.copies(node) > MAX_UNROLLED_REPEAT;
+    return this.size(node.child) * this.copies(node) > this.maxUnrolledRepeat;
   }
 
   /**
@@ -1479,7 +1482,18 @@ export function analyzeRegexAmbiguity(
   );
   const node = parser.parse();
   if (parser.exceededBudget || parser.index !== pattern.length) return "analysis budget exceeded";
-  const automaton = new PositionAutomaton();
+  // Unroll repeats exactly while the automaton fits, and only read long
+  // repeats as loops when it does not.
+  const exact = analyzePositionAutomaton(node, MAX_POSITIONS);
+  if (exact !== "analysis budget exceeded") return exact;
+  return analyzePositionAutomaton(node, MAX_UNROLLED_REPEAT);
+}
+
+function analyzePositionAutomaton(
+  node: RegexNode,
+  maxUnrolledRepeat: number,
+): RegexSafetyIssue | null {
+  const automaton = new PositionAutomaton(maxUnrolledRepeat);
   automaton.build(node);
   if (automaton.exceeded) return "analysis budget exceeded";
   const graph = applyLookaheadGuards(automaton);

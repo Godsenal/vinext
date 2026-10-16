@@ -822,6 +822,10 @@ describe("config sources do not backtrack catastrophically", () => {
     // The `(?!ab)` guard path-to-regexp adds keeps each repeat out of "ab".
     "/{ab:id}+",
     "/x{--:id}+",
+    // Unrolled exactly while it fits: as `a+` the repeat would overlap the
+    // repeated token's "a" prefix.
+    "/{a:id(a{1025})}+X",
+    "/{a:id(a{8000})}+X",
     // Long bounded repeats are read as unbounded rather than unrolled.
     "/:id(a{16385})",
     "/:id([a-z]{2,20000})",
