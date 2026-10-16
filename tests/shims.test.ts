@@ -9731,6 +9731,9 @@ describe("middleware matcher patterns", () => {
       // path-to-regexp guards each repeat with `(?!ab)`.
       "/{ab:id}+",
       "/x{--:id}+",
+      // Next.js accepts sources up to 4096 characters.
+      "/" + "a".repeat(4_095),
+      "/" + "a/".repeat(2_044) + ":path*",
     ]) {
       expect(compileMiddlewareMatcherPattern(matcher).regexp, matcher).toBeInstanceOf(RegExp);
     }

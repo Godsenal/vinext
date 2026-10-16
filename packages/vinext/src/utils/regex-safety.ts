@@ -44,7 +44,8 @@ const MAX_WORD_SYMBOLS = 32_768;
 const MAX_OPAQUE_COMPARISONS = 4_096;
 const MAX_SEQUENCE_EXPANSIONS = 256;
 const MAX_SAFE_OVERLAPPING_VARIABLE_BOUNDARIES = 1;
-const MAX_POSITIONS = 4_096;
+// Above Next.js's 4096-character source limit, plus room for unrolled repeats.
+const MAX_POSITIONS = 16_384;
 const MAX_AUTOMATON_EDGES = 262_144;
 const MAX_PRODUCT_EDGES = 2_000_000;
 
@@ -1064,7 +1065,8 @@ class PositionAutomaton {
     excluded: RegexSymbol | null = null,
     guard: RegexSymbol[] | null = null,
   ): number {
-    if (this.symbols.length >= MAX_POSITIONS) this.exceeded = true;
+    // The start state is not counted.
+    if (this.symbols.length > MAX_POSITIONS) this.exceeded = true;
     this.symbols.push(symbol);
     this.excluded.push(excluded);
     this.guards.push(guard);
@@ -1227,7 +1229,7 @@ function applyLookaheadGuards(automaton: PositionAutomaton): AmbiguityGraph | nu
     ].join("\u0001");
     let id = ids.get(key);
     if (id === undefined) {
-      if (graph.symbols.length >= MAX_POSITIONS) return null;
+      if (graph.symbols.length > MAX_POSITIONS) return null;
       id = graph.symbols.length;
       ids.set(key, id);
       graph.symbols.push(symbol);
