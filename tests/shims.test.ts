@@ -9700,6 +9700,7 @@ describe("middleware matcher patterns", () => {
       "/:id(a?a?b)+",
       "/:id(|)+/end",
       "/:id(a?|b?)+/end",
+      "/{ab:id((?:(?!ab)a|a))}+",
     ]) {
       expect(compileMiddlewareMatcherPattern(matcher), matcher).toMatchObject({
         kind: "unsafe",
@@ -9727,6 +9728,9 @@ describe("middleware matcher patterns", () => {
       "/:id([a-z]+\\/[a-z]+)+",
       "/:id(a?)+/end",
       "/:id(a|)+/end",
+      // path-to-regexp guards each repeat with `(?!ab)`.
+      "/{ab:id}+",
+      "/x{--:id}+",
     ]) {
       expect(compileMiddlewareMatcherPattern(matcher).regexp, matcher).toBeInstanceOf(RegExp);
     }
@@ -25873,6 +25877,38 @@ describe("Pages Router _next/data client navigation", () => {
       expect(await Router.push("/from/123")).toBe(true);
       expect(destinationLoader).toHaveBeenCalledTimes(1);
       expect(win.__NEXT_DATA__).toMatchObject({ page: "/target", query: { id: "123" } });
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("resolves dot segments in a rewrite destination before substituting params", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const destinationLoader = vi.fn(async () => makePageModule("destination"));
+    const { win } = createDataNavWindow({
+      loaders: { "/": vi.fn(async () => makePageModule("home")), "/target": destinationLoader },
+      ssgPatterns: [],
+      sspPatterns: [],
+    });
+    // Like the server, `/target/:id/..` is parsed to `/target/` first, so `id`
+    // goes unused and is appended to the query.
+    (win as any).__VINEXT_CLIENT_REWRITES__ = {
+      beforeFiles: [{ source: "/From/:id", destination: "/target/:id/.." }],
+      afterFiles: [],
+      fallback: [],
+    };
+    (globalThis as any).window = win;
+    globalThis.fetch = vi.fn(async () => new Response("{}")) as typeof fetch;
+    try {
+      vi.resetModules();
+      const Router = (await import("../packages/vinext/src/shims/router.js")).default;
+      expect(await Router.push("/from/x")).toBe(true);
+      expect(destinationLoader).toHaveBeenCalledTimes(1);
+      expect(win.__NEXT_DATA__).toMatchObject({ page: "/target", query: { id: "x" } });
     } finally {
       vi.resetModules();
       if (previousWindow === undefined) delete (globalThis as any).window;

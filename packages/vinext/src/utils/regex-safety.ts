@@ -1031,13 +1031,16 @@ function addPaths(target: PathCounts, source: PathCounts, factor = 1): PathCount
  * edges keep that count: `(a*)*` builds `a -> a` twice and `\/(?:|)` ends
  * at "/" two ways, and each is two ways for the engine to move. Like the
  * engine, a repeat past its minimum never takes an empty iteration.
- * Assertions are read as empty, which only adds paths, except that `(?!x)`
- * right before a single-character atom removes `x` from what it reads:
- * path-to-regexp guards a param that follows text with that lookahead.
+ * Assertions are read as empty, which only adds paths, except a negative
+ * lookahead right before a single-character atom, which path-to-regexp emits
+ * to keep a param out of the text after it: `(?!-)` or `(?![ab])` removes
+ * those characters from what the atom reads, and a literal word such as
+ * `(?!ab)` is kept as a guard for applyLookaheadGuards.
  */
 class PositionAutomaton {
   readonly symbols: Array<RegexSymbol | null> = [null];
   readonly excluded: Array<RegexSymbol | null> = [null];
+  readonly guards: Array<RegexSymbol[] | null> = [null];
   /** Each edge's target, listed once per path that builds it. */
   readonly follow: number[][] = [];
   exceeded = false;
@@ -1056,10 +1059,15 @@ class PositionAutomaton {
     }
   }
 
-  private position(symbol: RegexSymbol | null, excluded: RegexSymbol | null = null): number {
+  private position(
+    symbol: RegexSymbol | null,
+    excluded: RegexSymbol | null = null,
+    guard: RegexSymbol[] | null = null,
+  ): number {
     if (this.symbols.length >= MAX_POSITIONS) this.exceeded = true;
     this.symbols.push(symbol);
     this.excluded.push(excluded);
+    this.guards.push(guard);
     this.edges.push(new Map());
     return this.symbols.length - 1;
   }
@@ -1112,22 +1120,31 @@ class PositionAutomaton {
         for (let index = 0; index < node.children.length; index++) {
           const child = node.children[index]!;
           const next = node.children[index + 1];
-          const excluded = child.kind === "assertion" ? child.child : null;
-          if (
-            child.kind === "assertion" &&
-            child.negativeLookahead &&
-            excluded?.kind === "atom" &&
-            (excluded.symbol?.kind === "literal" || excluded.symbol?.kind === "class") &&
-            next?.kind === "atom" &&
-            next.symbol !== null &&
-            next.fixedWidth
-          ) {
-            fragment = this.concat(
-              fragment,
-              this.single(this.position(next.symbol, excluded.symbol)),
-            );
-            index++;
-            continue;
+          const lookahead =
+            child.kind === "assertion" && child.negativeLookahead ? child.child : null;
+          if (lookahead && next?.kind === "atom" && next.symbol !== null && next.fixedWidth) {
+            let position: number | null = null;
+            if (
+              lookahead.kind === "atom" &&
+              (lookahead.symbol?.kind === "literal" || lookahead.symbol?.kind === "class")
+            ) {
+              position = this.position(next.symbol, lookahead.symbol);
+            } else if (
+              lookahead.kind === "sequence" &&
+              lookahead.children.every(
+                (part) => part.kind === "atom" && part.symbol?.kind === "literal",
+              )
+            ) {
+              const word = lookahead.children.map(
+                (part) => (part as Extract<RegexNode, { kind: "atom" }>).symbol!,
+              );
+              position = this.position(next.symbol, null, word);
+            }
+            if (position !== null) {
+              fragment = this.concat(fragment, this.single(position));
+              index++;
+              continue;
+            }
           }
           fragment = this.concat(fragment, this.fragment(child));
         }
@@ -1166,6 +1183,112 @@ class PositionAutomaton {
   }
 }
 
+type AmbiguityGraph = {
+  symbols: Array<RegexSymbol | null>;
+  /** Characters each state's symbol does not read. */
+  excluded: RegexSymbol[][];
+  /** Each edge's target, listed once per path that takes it. */
+  follow: number[][];
+};
+
+/**
+ * The automaton with each literal `(?!word)` guard enforced. A state also
+ * records how far each pending guard word has matched, and a step that would
+ * complete one is dropped, as the engine's lookahead fails there. A symbol is
+ * split only at the characters a guard checks next, so every input still
+ * takes as many paths as it does in the engine.
+ */
+function applyLookaheadGuards(automaton: PositionAutomaton): AmbiguityGraph | null {
+  const { excluded, follow, guards, symbols } = automaton;
+  const staticExclusions = (position: number): RegexSymbol[] =>
+    excluded[position] ? [excluded[position]!] : [];
+  if (!guards.some((guard) => guard !== null)) {
+    return { symbols, excluded: symbols.map((_, position) => staticExclusions(position)), follow };
+  }
+
+  const graph: AmbiguityGraph = { symbols: [null], excluded: [[]], follow: [[]] };
+  // Pending guards as [guarded position, characters matched so far].
+  const states: Array<{ position: number; pending: Array<[number, number]> }> = [
+    { position: 0, pending: [] },
+  ];
+  const ids = new Map<string, number>();
+  const queue = [0];
+  const stateFor = (
+    position: number,
+    symbol: RegexSymbol | null,
+    without: RegexSymbol[],
+    pending: Array<[number, number]>,
+  ): number | null => {
+    const key = [
+      position,
+      symbol?.key ?? "",
+      without.map((character) => character.key).join("\0"),
+      pending.map(([guard, matched]) => `${guard}:${matched}`).join(","),
+    ].join("\u0001");
+    let id = ids.get(key);
+    if (id === undefined) {
+      if (graph.symbols.length >= MAX_POSITIONS) return null;
+      id = graph.symbols.length;
+      ids.set(key, id);
+      graph.symbols.push(symbol);
+      graph.excluded.push(without);
+      graph.follow.push([]);
+      states.push({ position, pending });
+      queue.push(id);
+    }
+    return id;
+  };
+
+  while (queue.length > 0) {
+    const id = queue.pop()!;
+    const { position, pending } = states[id]!;
+    for (const target of follow[position]!) {
+      const symbol = symbols[target]!;
+      const guard = guards[target]!;
+      const checked = new Map<string, RegexSymbol>();
+      for (const [guarded, matched] of pending) {
+        const character = guards[guarded]![matched]!;
+        checked.set(character.key, character);
+      }
+      if (guard) checked.set(guard[0]!.key, guard[0]!);
+
+      // Each checked character the symbol may read, then everything else.
+      const parts: Array<{
+        symbol: RegexSymbol | null;
+        character: string | null;
+        without: RegexSymbol[];
+      }> = [];
+      const exclusions = staticExclusions(target);
+      for (const character of checked.values()) {
+        if (symbol !== null && !symbolsMayOverlap(symbol, character)) continue;
+        if (exclusions.some((exclusion) => symbolsMayOverlap(exclusion, character))) continue;
+        parts.push({ symbol: character, character: character.key, without: [] });
+      }
+      if (symbol?.kind !== "literal" || !checked.has(symbol.key)) {
+        parts.push({ symbol, character: null, without: [...exclusions, ...checked.values()] });
+      }
+
+      for (const part of parts) {
+        const next: Array<[number, number]> = [];
+        let blocked = false;
+        const advance = (guarded: number, matched: number) => {
+          if (part.character !== guards[guarded]![matched]!.key) return;
+          if (matched + 1 === guards[guarded]!.length) blocked = true;
+          else next.push([guarded, matched + 1]);
+        };
+        for (const [guarded, matched] of pending) advance(guarded, matched);
+        if (guard) advance(target, 0);
+        if (blocked) continue;
+        next.sort((left, right) => left[0] - right[0] || left[1] - right[1]);
+        const nextId = stateFor(target, part.symbol, part.without, next);
+        if (nextId === null) return null;
+        graph.follow[id]!.push(nextId);
+      }
+    }
+  }
+  return graph;
+}
+
 /**
  * Whether two paths through the automaton can leave the same state and meet
  * again in it after reading the same text, by different states or by
@@ -1177,19 +1300,21 @@ class PositionAutomaton {
  * parallel pair. States unreachable from the start are never explored, and
  * dead ends are kept, since the engine explores those paths too.
  */
-function hasExponentialAmbiguity(automaton: PositionAutomaton): boolean | null {
-  const { excluded, follow, symbols } = automaton;
+function hasExponentialAmbiguity(graph: AmbiguityGraph): boolean | null {
+  const { excluded, follow, symbols } = graph;
   const size = symbols.length;
   // Whether `symbol` minus `without` may share a character with `other`.
   // Exact when `other` is a single character; conservative otherwise.
   const remainderMayOverlap = (
     symbol: RegexSymbol | null,
-    without: RegexSymbol | null,
+    without: RegexSymbol[],
     other: RegexSymbol | null,
   ): boolean => {
     if (symbol == null || other == null) return true;
     if (!symbolsMayOverlap(symbol, other)) return false;
-    return without == null || other.kind !== "literal" || !symbolsMayOverlap(without, other);
+    return (
+      other.kind !== "literal" || !without.some((character) => symbolsMayOverlap(character, other))
+    );
   };
   const overlaps = new Map<number, boolean>();
   const symbolsOverlap = (left: number, right: number): boolean => {
@@ -1304,7 +1429,9 @@ export function analyzeRegexAmbiguity(
   const automaton = new PositionAutomaton();
   automaton.build(node);
   if (automaton.exceeded) return "analysis budget exceeded";
-  const ambiguous = hasExponentialAmbiguity(automaton);
+  const graph = applyLookaheadGuards(automaton);
+  if (graph === null) return "analysis budget exceeded";
+  const ambiguous = hasExponentialAmbiguity(graph);
   if (ambiguous === null) return "analysis budget exceeded";
   return ambiguous ? "exponentially ambiguous repetition" : null;
 }

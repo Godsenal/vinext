@@ -70,6 +70,8 @@ function nextMatch(source: string, pathname: string): Record<string, string> | n
 }
 
 const SOURCES = [
+  "/{ab:id}+",
+  "/x{--:id}+",
   "/",
   "/about",
   "/about/",
@@ -128,6 +130,11 @@ const SOURCES = [
 ];
 
 const PATHNAMES = [
+  "/abxabY",
+  "/abxaab",
+  "/abab",
+  "/x--a--b",
+  "/x--a---b",
   "/",
   "//",
   "/about",
@@ -812,6 +819,9 @@ describe("config sources do not backtrack catastrophically", () => {
     "/:id(a?)+/end",
     "/:id(a|)+/end",
     "/:id((?:)|a)+/end",
+    // The `(?!ab)` guard path-to-regexp adds keeps each repeat out of "ab".
+    "/{ab:id}+",
+    "/x{--:id}+",
   ];
   const ADVERSARIAL_PATHNAMES = [
     "/" + "a/".repeat(8_000) + "!",
@@ -833,6 +843,8 @@ describe("config sources do not backtrack catastrophically", () => {
     "//" + "/".repeat(16_000),
     "/" + "en-US/".repeat(3_000) + "!",
     "/" + "a/b/".repeat(4_000) + "!",
+    "/" + "ab".repeat(8_000) + "!",
+    "/x" + "--a".repeat(5_000) + "-!",
   ];
 
   it("accepts sources whose compiled regexes are linear", () => {
@@ -889,6 +901,8 @@ describe("config sources do not backtrack catastrophically", () => {
         // And two empty matches: each "/" segment has two parses.
         "/:id(|)+/end",
         "/:id(a?|b?)+/end",
+        // A guard that leaves both alternatives able to read "a".
+        "/{ab:id((?:(?!ab)a|a))}+",
         // Adjacent params form one chain of overlapping repeats.
         "/:a(a+):b(a+):c(a+)",
         "/:a(.*):b(.*):c(.*)",

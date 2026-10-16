@@ -1892,6 +1892,16 @@ function shouldEvaluateClientConfigRule(
   return ruleBasePath === false ? !state.hadBasePath : state.hadBasePath;
 }
 
+function isSerializedRewriteDestination(destination: string): boolean {
+  if (!destination.startsWith("/") || destination.startsWith("//")) return true;
+  try {
+    const parsed = new URL(destination, "http://n");
+    return parsed.pathname + parsed.search + parsed.hash === destination;
+  } catch {
+    return false;
+  }
+}
+
 function isExternalClientConfigUrl(url: string): boolean {
   return /^[a-z][a-z0-9+.-]*:/i.test(url) || url.startsWith("//");
 }
@@ -1937,6 +1947,9 @@ function resolveClientConfigRewriteSync(href: string): ClientConfigRewriteResolu
     const params = matchSimpleClientConfigSource(routeContext.pathname, rewrite.source);
     if (params === undefined) return undefined;
     if (params === null) continue;
+    // The exact matcher URL-parses a local destination template before it
+    // substitutes params, which may drop dot segments and the params in them.
+    if (!isSerializedRewriteDestination(rewrite.destination)) return undefined;
     if (clientRewriteAppendsParams(rewrite.destination, params)) return undefined;
 
     const rewritten = substituteDestinationParams(rewrite.destination, params, "rewrite");
