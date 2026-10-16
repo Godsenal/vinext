@@ -9944,6 +9944,12 @@ describe("middleware matcher patterns", () => {
     expect(analyzeRegexSafety("(?=(?:a+)+X)a*")).toBe("exponentially ambiguous repetition");
     expect(analyzeRegexSafety("(?!(?:a|aa)+$)x")).toBe("exponentially ambiguous repetition");
     expect(isSafeRegex("(?=.*foo)")).toBe(true);
+    // A body outside any repeat runs once per match attempt, so it may be
+    // quadratic like the rest of the pattern. Under a repeat it may run at
+    // every position, so it must be linear.
+    expect(isSafeRegex("(?=[^/]+.*X)")).toBe(true);
+    expect(isSafeRegex("(?:(?=[^/]+.*X).)*")).toBe(false);
+    expect(isSafeRegex("(?=.*a.*a.*b)")).toBe(false);
 
     // `[ab]`, `[ac]` and `[bc]` overlap pairwise, but no one character is in
     // all three, so the loops cannot share a word.
@@ -9958,6 +9964,36 @@ describe("middleware matcher patterns", () => {
     const notSpace = "(?:(?!\\s)[\\s\\S])*";
     expect(isSafeRegex(`${notSpace}\\s${notSpace}\\s${notSpace}X`)).toBe(true);
     expect(isSafeRegex("[\\s\\S]*\\s[\\s\\S]*\\s[\\s\\S]*X")).toBe(false);
+  });
+
+  it("accepts the next-intl middleware matchers", async () => {
+    const { compileMiddlewareMatcherPattern } =
+      await import("../packages/vinext/src/server/middleware-matcher-pattern.js");
+
+    // next-intl's documented matchers skip paths with a dot through a
+    // quadratic lookahead that runs once per match.
+    for (const matcher of [
+      "/((?!api|trpc|_next|_vercel|.*\\..*).*)",
+      "/((?!_next|.*/opengraph-image|.*\\..*).*)",
+    ]) {
+      const compiled = compileMiddlewareMatcherPattern(matcher);
+      expect(compiled.regexp, matcher).toBeInstanceOf(RegExp);
+      expect(compiled.regexp!.test("/en/about"), matcher).toBe(true);
+      expect(compiled.regexp!.test("/favicon.ico"), matcher).toBe(false);
+      const start = performance.now();
+      for (const pathname of [
+        `/${"a".repeat(16_000)}`,
+        `/${"a/".repeat(8_000)}`,
+        `/${".".repeat(16_000)}`,
+      ]) {
+        compiled.regexp!.test(pathname);
+      }
+      expect(performance.now() - start, matcher).toBeLessThan(500);
+    }
+    expect(compileMiddlewareMatcherPattern("/((?!.*a.*a.*b).*)")).toMatchObject({
+      kind: "unsafe",
+      error: expect.stringContaining("polynomially ambiguous repetition"),
+    });
   });
 
   it("keeps analysis cheap for long alternations", async () => {

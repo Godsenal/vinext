@@ -2195,22 +2195,33 @@ export function analyzeRegexAmbiguity(
   return analyzeNodeAmbiguity(node);
 }
 
-/** The lookaround bodies in `node` that read text, outside other lookarounds. */
-function assertionBodies(node: RegexNode, bodies: RegexNode[] = []): RegexNode[] {
+type AssertionBody = { body: RegexNode; repeated: boolean };
+
+/**
+ * The lookaround bodies in `node` that read text, outside other lookarounds,
+ * and whether a repeat may run each one more than once per match attempt.
+ */
+function assertionBodies(
+  node: RegexNode,
+  repeated = false,
+  bodies: AssertionBody[] = [],
+): AssertionBody[] {
   switch (node.kind) {
     case "atom":
       break;
     case "assertion":
-      if (node.child.kind !== "sequence" || node.child.children.length > 0) bodies.push(node.child);
+      if (node.child.kind !== "sequence" || node.child.children.length > 0) {
+        bodies.push({ body: node.child, repeated });
+      }
       break;
     case "sequence":
-      for (const child of node.children) assertionBodies(child, bodies);
+      for (const child of node.children) assertionBodies(child, repeated, bodies);
       break;
     case "alternation":
-      for (const branch of node.branches) assertionBodies(branch, bodies);
+      for (const branch of node.branches) assertionBodies(branch, repeated, bodies);
       break;
     case "repeat":
-      assertionBodies(node.child, bodies);
+      assertionBodies(node.child, repeated || node.max > 1, bodies);
       break;
   }
   return bodies;
@@ -2218,8 +2229,9 @@ function assertionBodies(node: RegexNode, bodies: RegexNode[] = []): RegexNode[]
 
 /**
  * The automaton reads a lookaround as empty, but the engine still runs its
- * body wherever it is reached, possibly once per position of the input. Each
- * body is analyzed on its own and must be linear.
+ * body wherever it is reached. Each body is analyzed on its own, and one
+ * under a repeat, which may run at every position of the input, must be
+ * linear.
  */
 function analyzeNodeAmbiguity(
   node: RegexNode,
@@ -2233,8 +2245,8 @@ function analyzeNodeAmbiguity(
     issue = analyzePositionAutomaton(new PositionAutomaton(MAX_UNROLLED_REPEAT), node, maxDegree);
   }
   if (issue) return issue;
-  for (const body of assertionBodies(node)) {
-    const bodyIssue = analyzeNodeAmbiguity(body, 0);
+  for (const { body, repeated } of assertionBodies(node)) {
+    const bodyIssue = analyzeNodeAmbiguity(body, repeated ? 0 : maxDegree);
     if (bodyIssue) return bodyIssue;
   }
   return null;
