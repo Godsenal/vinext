@@ -9953,6 +9953,19 @@ describe("middleware matcher patterns", () => {
     expect(isSafeRegex("(?:(?=[^/]+.*X).)*")).toBe(false);
     expect(isSafeRegex("(?=.*a.*a.*b)")).toBe(false);
     expect(isSafeRegex("^(?=a*a*X)")).toBe(true);
+    // Backtracking through text of varying length reaches a lookaround at
+    // each position, and each path to a position runs it again.
+    const [quadratic, linear] = ["a*a*X", "a*X"];
+    expect(analyzeRegexSafety(`^a*(?=${quadratic})$`)).toBe("polynomially ambiguous repetition");
+    expect(analyzeRegexSafety(`^a*a*(?=${linear})$`)).toBe("polynomially ambiguous repetition");
+    expect(analyzeRegexSafety(`(?:(?=${quadratic})a+){2}`)).toBe(
+      "polynomially ambiguous repetition",
+    );
+    expect(analyzeRegexSafety(`^a*(?=${linear})$`)).toBeNull();
+    // A few positions only multiply the body's cost by a constant.
+    expect(analyzeRegexSafety(`(?:(?=${quadratic})a){2}`)).toBeNull();
+    expect(analyzeRegexSafety(`^a{0,3}(?=${quadratic})`)).toBeNull();
+    expect(analyzeRegexSafety("^(?:/(en|de))?/((?!api|_next|.*\\..*).*)$")).toBeNull();
 
     // `[ab]`, `[ac]` and `[bc]` overlap pairwise, but no one character is in
     // all three, so the loops cannot share a word.
@@ -10030,6 +10043,17 @@ describe("middleware matcher patterns", () => {
     start = performance.now();
     expect(analyzeRegexSafety(`(?:(?!${"a".repeat(4_000)}b).)*`)).toBe("analysis budget exceeded");
     expect(performance.now() - start).toBeLessThan(1_000);
+
+    // Copies of one guard share its characters.
+    start = performance.now();
+    expect(analyzeRegexSafety(`(?:(?!${"a|".repeat(8_000)}a).){0,2000}`)).toBeNull();
+    expect(performance.now() - start).toBeLessThan(1_000);
+
+    // A large loop of product states is read without spreading it into one
+    // call.
+    start = performance.now();
+    expect(analyzeRegexSafety("(?:a{499})*|(?:a{503})*")).toBe("analysis budget exceeded");
+    expect(performance.now() - start).toBeLessThan(2_000);
   });
 
   it("reads `.` as matching line terminators under the s flag", async () => {

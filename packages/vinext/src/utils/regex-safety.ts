@@ -48,6 +48,10 @@ const MAX_SAFE_OVERLAPPING_VARIABLE_BOUNDARIES = 1;
 // One ambiguous pair of loops, such as `[^/]+.*`, makes a near miss take
 // quadratic time; a chain of two, such as `a+.*a+`, cubic.
 const MAX_POLYNOMIAL_DEGREE = 1;
+// A lookaround the engine can reach at no more than this many positions per
+// match attempt, as after `(?:/(en|de))?` or in `(?:(?=…).){2}`, costs a
+// constant factor more than one run.
+const MAX_FIXED_ASSERTION_POSITIONS = 16;
 // Above Next.js's 4096-character source limit, plus room for unrolled repeats.
 const MAX_POSITIONS = 16_384;
 // When unrolling every repeat exceeds a budget, repeats past this many
@@ -632,14 +636,14 @@ class RegexParser {
  */
 function lookaheadCharacters(node: RegexNode): RegexSymbol[] | null {
   const branches = node.kind === "alternation" ? node.branches : [node];
-  const characters: RegexSymbol[] = [];
+  const characters = new Map<string, RegexSymbol>();
   for (const branch of branches) {
     if (branch.kind !== "atom") return null;
     const symbol = branch.symbol;
     if (symbol?.kind !== "literal" && symbol?.kind !== "class") return null;
-    characters.push(symbol);
+    characters.set(symbol.key, symbol);
   }
-  return characters;
+  return [...characters.values()];
 }
 
 /**
@@ -1448,6 +1452,11 @@ class PositionAutomaton {
   private edgeCount = 0;
   private work = 0;
   private readonly sizes = new WeakMap<RegexNode, number>();
+  /** Each guarding lookahead's characters or literal word, shared by copies. */
+  private readonly lookaheads = new WeakMap<
+    RegexNode,
+    { characters: RegexSymbol[] | null; word: RegexSymbol[] | null }
+  >();
 
   constructor(
     private readonly maxUnrolledRepeat: number,
@@ -1482,6 +1491,29 @@ class PositionAutomaton {
 
   private single(position: number): PositionFragment {
     return { first: new Map([[position, 1]]), last: new Map([[position, 1]]), empty: 0 };
+  }
+
+  private lookaheadGuard(lookahead: RegexNode): {
+    characters: RegexSymbol[] | null;
+    word: RegexSymbol[] | null;
+  } {
+    let guard = this.lookaheads.get(lookahead);
+    if (guard) return guard;
+    const characters = lookaheadCharacters(lookahead);
+    let word: RegexSymbol[] | null = null;
+    if (
+      !characters &&
+      lookahead.kind === "sequence" &&
+      lookahead.children.length > 1 &&
+      lookahead.children.every((part) => part.kind === "atom" && part.symbol?.kind === "literal")
+    ) {
+      word = lookahead.children.map(
+        (part) => (part as Extract<RegexNode, { kind: "atom" }>).symbol!,
+      );
+    }
+    guard = { characters, word };
+    this.lookaheads.set(lookahead, guard);
+    return guard;
   }
 
   private spend(work: number): void {
@@ -1601,22 +1633,12 @@ class PositionAutomaton {
             guarded.symbol !== null &&
             guarded.fixedWidth
           ) {
+            const { characters, word } = this.lookaheadGuard(lookahead);
+            // Later steps check each of its characters for every copy.
+            this.spend((characters ?? word)?.length ?? 0);
             let position: number | null = null;
-            const characters = lookaheadCharacters(lookahead);
-            if (characters) {
-              position = this.position(guarded.symbol, characters);
-            } else if (
-              lookahead.kind === "sequence" &&
-              lookahead.children.length > 1 &&
-              lookahead.children.every(
-                (part) => part.kind === "atom" && part.symbol?.kind === "literal",
-              )
-            ) {
-              const word = lookahead.children.map(
-                (part) => (part as Extract<RegexNode, { kind: "atom" }>).symbol!,
-              );
-              position = this.position(guarded.symbol, [], word);
-            }
+            if (characters) position = this.position(guarded.symbol, characters);
+            else if (word) position = this.position(guarded.symbol, [], word);
             if (position !== null) {
               fragment = this.concat(fragment, this.single(position));
               if (next!.kind === "repeat") {
@@ -2012,7 +2034,9 @@ function analyzeProduct(
     } while (member !== id);
     components++;
     if (hasDiagonal && offDiagonal.length > 0) return { exponential: true };
-    if (members > 1 || selfLoops.has(states[id]!)) loopPairs.push(...offDiagonal);
+    if (members > 1 || selfLoops.has(states[id]!)) {
+      for (const pair of offDiagonal) loopPairs.push(pair);
+    }
   }
 
   const exponential = parallelEdges.some(
@@ -2249,58 +2273,73 @@ type AssertionBody = { body: RegexNode; repeated: boolean };
 
 /**
  * The lookaround bodies in `node` that read text, outside other lookarounds,
- * and whether a repeat may run each one more than once per match attempt.
+ * and whether the engine may run each one at more than a few positions per
+ * match attempt: after text whose length varies more than that, which it
+ * backtracks through, or under a repeat that may run that many times.
+ * `positions` counts the positions an enclosing context allows.
  */
 function assertionBodies(
   node: RegexNode,
-  repeated = false,
+  positions = 1,
   bodies: AssertionBody[] = [],
+  widths = new WeakMap<RegexNode, [number, number]>(),
 ): AssertionBody[] {
   switch (node.kind) {
     case "atom":
       break;
     case "assertion":
       if (node.child.kind !== "sequence" || node.child.children.length > 0) {
-        bodies.push({ body: node.child, repeated });
+        bodies.push({ body: node.child, repeated: positions > MAX_FIXED_ASSERTION_POSITIONS });
       }
       break;
-    case "sequence":
-      for (const child of node.children) assertionBodies(child, repeated, bodies);
+    case "sequence": {
+      let reached = positions;
+      for (const child of node.children) {
+        assertionBodies(child, reached, bodies, widths);
+        const [min, max] = widthRange(child, widths);
+        reached *= max - min + 1;
+      }
       break;
+    }
     case "alternation":
-      for (const branch of node.branches) assertionBodies(branch, repeated, bodies);
+      for (const branch of node.branches) assertionBodies(branch, positions, bodies, widths);
       break;
-    case "repeat":
-      assertionBodies(node.child, repeated || node.max > 1, bodies);
+    case "repeat": {
+      const [min, max] = widthRange(node.child, widths);
+      // Each copy past the first starts wherever the copies before it end.
+      const copies = node.max > 1 ? node.max * (max - min + 1) : 1;
+      assertionBodies(node.child, positions * copies, bodies, widths);
       break;
+    }
   }
   return bodies;
 }
 
 /**
  * The automaton reads a lookaround as empty, but the engine still runs its
- * body wherever it is reached. Each body is analyzed on its own, and one
- * under a repeat, which may run at every position of the input, must be
- * linear.
+ * body wherever it is reached. Each body is analyzed on its own. One that
+ * may run at a growing number of positions must stay a degree lower, and so
+ * must the rest of the pattern, as each path to a position runs it again.
  */
 function analyzeNodeAmbiguity(
   node: RegexNode,
   maxDegree = MAX_POLYNOMIAL_DEGREE,
   budget: AnalysisBudget = { automatonWork: 0, productEdges: 0 },
 ): RegexSafetyIssue | null {
+  // A body without a variable repeat reads fixed-length words, as above.
+  const bodies = assertionBodies(node).filter(({ body }) => containsVariableRepetition(body));
+  const degree = bodies.some(({ repeated }) => repeated) ? maxDegree - 1 : maxDegree;
   // Unroll repeats exactly while the automaton fits, and only read long
   // repeats as loops when it does not.
   const exact = new PositionAutomaton(MAX_POSITIONS, budget);
-  let issue = analyzePositionAutomaton(exact, node, maxDegree, budget);
+  let issue = analyzePositionAutomaton(exact, node, degree, budget);
   if (issue === "analysis budget exceeded" && exact.unrolledLongRepeat) {
     const loops = new PositionAutomaton(MAX_UNROLLED_REPEAT, budget);
-    issue = analyzePositionAutomaton(loops, node, maxDegree, budget);
+    issue = analyzePositionAutomaton(loops, node, degree, budget);
   }
   if (issue) return issue;
-  for (const { body, repeated } of assertionBodies(node)) {
-    // A body without a variable repeat reads fixed-length words, as above.
-    if (!containsVariableRepetition(body)) continue;
-    const bodyIssue = analyzeNodeAmbiguity(body, repeated ? 0 : maxDegree, budget);
+  for (const { body, repeated } of bodies) {
+    const bodyIssue = analyzeNodeAmbiguity(body, repeated ? maxDegree - 1 : maxDegree, budget);
     if (bodyIssue) return bodyIssue;
   }
   return null;
