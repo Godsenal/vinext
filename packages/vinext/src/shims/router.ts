@@ -105,6 +105,7 @@ import { substituteDestinationParams } from "../config/destination-params.js";
 import type { ClientRewrite } from "../client/client-rewrites.js";
 import {
   clientConfigSourceCouldMatch,
+  clientRewriteAppendsParams,
   matchSimpleClientConfigSource,
 } from "../client/client-config-source-match.js";
 
@@ -1936,6 +1937,7 @@ function resolveClientConfigRewriteSync(href: string): ClientConfigRewriteResolu
     const params = matchSimpleClientConfigSource(routeContext.pathname, rewrite.source);
     if (params === undefined) return undefined;
     if (params === null) continue;
+    if (clientRewriteAppendsParams(rewrite.destination, params)) return undefined;
 
     const rewritten = substituteDestinationParams(rewrite.destination, params, "rewrite");
     if (isExternalClientConfigUrl(rewritten)) return { kind: "document" };

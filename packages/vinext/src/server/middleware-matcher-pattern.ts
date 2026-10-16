@@ -122,7 +122,7 @@ export function compileMiddlewareMatcherPattern(source: string): CompiledMiddlew
     };
   }
 
-  const unsafeReason = unsafePathTokensReason(tokens);
+  const unsafeReason = unsafePathTokensReason(tokens, { ignoreCase: false });
   if (unsafeReason) return { kind: "unsafe", error: unsafeReason };
 
   try {
@@ -131,7 +131,7 @@ export function compileMiddlewareMatcherPattern(source: string): CompiledMiddlew
     // Match Next.js 16.2.7's path-to-regexp 6.3 normalization: repeating
     // tokens without a prefix/suffix receive a slash prefix and are retried.
     const normalizedTokens = normalizePathTokens(tokens);
-    const normalizedUnsafeReason = unsafePathTokensReason(normalizedTokens);
+    const normalizedUnsafeReason = unsafePathTokensReason(normalizedTokens, { ignoreCase: false });
     if (normalizedUnsafeReason) return { kind: "unsafe", error: normalizedUnsafeReason };
     try {
       return { regexp: middlewareRegExp(normalizedTokens) };

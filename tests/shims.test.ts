@@ -9688,10 +9688,16 @@ describe("middleware matcher patterns", () => {
       await import("../packages/vinext/src/server/middleware-matcher-pattern.js");
 
     // `/{a:id(a+)}*X` joins repeats with "a", so `a+` can take either side.
-    for (const matcher of ["/{a:id(a+)}*X", "/{a:id(a+)}+X", "/x{-:id([a-z-]+)}+"]) {
+    // Surrogates count separately: the RegExp has no `u` flag.
+    for (const matcher of [
+      "/{a:id(a+)}*X",
+      "/{a:id(a+)}+X",
+      "/x{-:id([a-z-]+)}+",
+      "/{\u{1F600}:id([\u{1F600}]+)}+X",
+    ]) {
       expect(compileMiddlewareMatcherPattern(matcher), matcher).toMatchObject({
         kind: "unsafe",
-        error: expect.stringContaining("may match its own separator"),
+        error: expect.stringContaining("may match part of its own separator"),
       });
     }
 
@@ -9701,6 +9707,10 @@ describe("middleware matcher patterns", () => {
       "/foo{-:bar}+",
       "/x{.:ext}*",
       "/{-:id([a-z]+)-}+",
+      // The `cd` before the next `ab` fixes where each repeat ends.
+      "/{ab:id(a+)cd}+",
+      // Middleware matchers are case-sensitive.
+      "/{a:id(A+)}*X",
     ]) {
       expect(compileMiddlewareMatcherPattern(matcher).regexp, matcher).toBeInstanceOf(RegExp);
     }
@@ -25797,6 +25807,38 @@ describe("Pages Router _next/data client navigation", () => {
         "/posts/1?tab=2",
       );
       expect(win.__NEXT_DATA__.page).toBe("/landing/[id]");
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("appends unused source params to the rewrite query like the server", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const destinationLoader = vi.fn(async () => makePageModule("destination"));
+    const { win } = createDataNavWindow({
+      loaders: { "/": vi.fn(async () => makePageModule("home")), "/target": destinationLoader },
+      ssgPatterns: [],
+      sspPatterns: [],
+    });
+    // The case-insensitive sync match must not skip the `?id=123` that
+    // Next.js appends when the destination uses none of the params.
+    (win as any).__VINEXT_CLIENT_REWRITES__ = {
+      beforeFiles: [{ source: "/From/:id", destination: "/target" }],
+      afterFiles: [],
+      fallback: [],
+    };
+    (globalThis as any).window = win;
+    globalThis.fetch = vi.fn(async () => new Response("{}")) as typeof fetch;
+    try {
+      vi.resetModules();
+      const Router = (await import("../packages/vinext/src/shims/router.js")).default;
+      expect(await Router.push("/from/123")).toBe(true);
+      expect(destinationLoader).toHaveBeenCalledTimes(1);
+      expect(win.__NEXT_DATA__).toMatchObject({ page: "/target", query: { id: "123" } });
     } finally {
       vi.resetModules();
       if (previousWindow === undefined) delete (globalThis as any).window;

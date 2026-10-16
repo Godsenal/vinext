@@ -17,7 +17,7 @@ import { DEFAULT_PAGE_EXTENSIONS, normalizePageExtensions } from "../routing/fil
 import { getHtmlLimitedBotRegex } from "../utils/html-limited-bots.js";
 import { flattenPluginOptions } from "../utils/plugin-options.js";
 import { isUnknownRecord } from "../utils/record.js";
-import { applyLocaleToRoutes, isExternalUrl } from "./config-matchers.js";
+import { applyLocaleToRoutes, configSourceError, isExternalUrl } from "./config-matchers.js";
 import { loadTsconfigResolutionForRoot } from "./tsconfig-paths.js";
 import { loadCommonJsModule, shouldRetryAsCommonJs } from "../utils/commonjs-loader.js";
 export const VINEXT_NEXT_CONFIG_PLUGIN_PROPERTY = "__vinextNextConfig";
@@ -1709,6 +1709,25 @@ function normalizeI18nConfig(value: unknown): NextI18nConfig | null {
 }
 
 /**
+ * Fail config loading on a source that cannot be compiled, as Next.js fails
+ * the build (load-custom-routes.ts checkCustomRoutes), instead of silently
+ * skipping a redirect or security header per request.
+ */
+function validateConfigSources(type: string, routes: ReadonlyArray<{ source: unknown }>): void {
+  const invalid: string[] = [];
+  for (const route of routes) {
+    if (typeof route?.source !== "string") continue;
+    const error = configSourceError(route.source);
+    if (error) invalid.push(`  ${JSON.stringify(route.source)}: ${error}`);
+  }
+  if (invalid.length > 0) {
+    throw new Error(
+      `Invalid next.config.js ${type} source${invalid.length === 1 ? "" : "s"}:\n${invalid.join("\n")}`,
+    );
+  }
+}
+
+/**
  * Resolve a NextConfig into a fully-resolved ResolvedNextConfig.
  * Awaits async functions for redirects/rewrites/headers.
  */
@@ -1886,6 +1905,14 @@ export async function resolveNextConfig(
   if (config.headers) {
     headers = await config.headers();
   }
+
+  validateConfigSources("redirect", redirects);
+  validateConfigSources("rewrite", [
+    ...rewrites.beforeFiles,
+    ...rewrites.afterFiles,
+    ...rewrites.fallback,
+  ]);
+  validateConfigSources("header", headers);
 
   // Probe wrapped webpack config for client and server resolution. Alias and
   // MDX extraction use the client result, matching the previous behavior.

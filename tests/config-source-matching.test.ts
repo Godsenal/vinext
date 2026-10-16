@@ -7,8 +7,10 @@ import {
   matchRewrite,
   requestContextFromRequest,
 } from "../packages/vinext/src/config/config-matchers.js";
+import { resolveNextConfig } from "../packages/vinext/src/config/next-config.js";
 import {
   clientConfigSourceCouldMatch,
+  clientRewriteAppendsParams,
   matchSimpleClientConfigSource,
 } from "../packages/vinext/src/client/client-config-source-match.js";
 
@@ -310,6 +312,24 @@ describe("Pages client sync matcher agrees with the server matcher", () => {
     }
   });
 
+  it("defers rewrites that append unused source params to the query", () => {
+    const ctx = requestContextFromRequest(new Request("http://localhost/"));
+    // The sync path only substitutes params, so it defers exactly the
+    // rewrites where the server also appends them to the query.
+    for (const [source, destination, pathname, server, defers] of [
+      ["/From/:id", "/target", "/from/123", "/target?id=123", true],
+      ["/from/:id", "/target?x=1", "/from/123", "/target?x=1&id=123", true],
+      ["/from/:id", "/target/:id", "/from/123", "/target/123", false],
+      ["/from/:id/:tab", "/target/:id", "/from/1/2", "/target/1", false],
+      ["/docs/:path*", "/d/:path*", "/docs/a/b", "/d/a/b", false],
+      ["/about", "/target", "/about", "/target", false],
+    ] as const) {
+      expect(matchRewrite(pathname, [{ source, destination }], ctx), source).toBe(server);
+      const params = matchSimpleClientConfigSource(pathname, source)!;
+      expect(clientRewriteAppendsParams(destination, params), source).toBe(defers);
+    }
+  });
+
   it("matches the shapes it models", () => {
     expect(matchSimpleClientConfigSource("/About/", "/about")).toEqual({});
     expect(matchSimpleClientConfigSource("/\u212Aey", "/key")).toBeNull();
@@ -547,6 +567,28 @@ describe("matchRedirect locale-static index agrees with the compiled source", ()
   });
 });
 
+describe("next.config.js source validation", () => {
+  it.each([
+    ["redirects", { redirects: () => [{ source: "/:a:b", destination: "/", permanent: false }] }],
+    ["rewrites", { rewrites: () => ({ beforeFiles: [{ source: "/x/(", destination: "/" }] }) }],
+    ["headers", { headers: () => [{ source: "/:id(a{2,1})", headers: [] }] }],
+    ["ReDoS-unsafe", { headers: () => [{ source: "/:a((?:a+)+)", headers: [] }] }],
+  ])("fails config loading on an invalid %s source like Next.js", async (_label, config) => {
+    await expect(resolveNextConfig(config as never)).rejects.toThrow(
+      /Invalid next\.config\.js (redirect|rewrite|header) source/,
+    );
+  });
+
+  it("accepts valid sources", async () => {
+    const config = await resolveNextConfig({
+      redirects: () => [{ source: "/old/:path*", destination: "/new/:path*", permanent: true }],
+      headers: () => [{ source: "/:locale(en|sv)?/about", headers: [] }],
+    } as never);
+    expect(config.redirects).toHaveLength(1);
+    expect(config.headers).toHaveLength(1);
+  });
+});
+
 describe("config sources do not backtrack catastrophically", () => {
   // Sources whose compiled regexes are linear: a 16 KB near-miss pathname
   // takes well under a millisecond per match. The bound catches exponential
@@ -573,6 +615,7 @@ describe("config sources do not backtrack catastrophically", () => {
     "/x{.:ext}*",
     "/{-:a([a-z]+)-}+",
     "/:lang(en|fr)*",
+    "/{ab:id(a+)cd}+",
   ];
   const ADVERSARIAL_PATHNAMES = [
     "/" + "a/".repeat(8_000) + "!",
@@ -621,10 +664,12 @@ describe("config sources do not backtrack catastrophically", () => {
         "/{a:id(a+)}*X",
         "/{a:id(a+)}+X",
         "/x{-:id([a-z-]+)}+",
+        // The RegExp has no `u` flag, so `[😀]` takes either surrogate.
+        "/{\u{1F600}:id([\u{1F600}]+)}+X",
       ]) {
         expect(matchConfigPattern("/" + "a".repeat(64) + "!", source), source).toBeNull();
         expect(warn, source).toHaveBeenLastCalledWith(
-          expect.stringContaining(`Ignoring next.config.js source "${source}" (ReDoS risk)`),
+          expect.stringContaining(`Ignoring invalid next.config.js source "${source}": ReDoS risk`),
         );
       }
     } finally {

@@ -81,6 +81,27 @@ export function matchSimpleClientConfigSource(
 }
 
 /**
+ * Whether a rewrite to `destination` appends the source `params` to its
+ * query. Next.js does that when the destination's path, host and hash use
+ * none of them; the sync path does not, so it defers these rewrites.
+ */
+export function clientRewriteAppendsParams(
+  destination: string,
+  params: Record<string, string>,
+): boolean {
+  const keys = Object.keys(params);
+  if (keys.length === 0) return false;
+  const hashIndex = destination.indexOf("#");
+  const beforeHash = hashIndex === -1 ? destination : destination.slice(0, hashIndex);
+  const queryIndex = beforeHash.indexOf("?");
+  const withoutQuery =
+    (queryIndex === -1 ? beforeHash : beforeHash.slice(0, queryIndex)) +
+    (hashIndex === -1 ? "" : destination.slice(hashIndex));
+  // Fast-path param names are `\w+`, so they need no escaping.
+  return !keys.some((key) => new RegExp(`:${key}(?![A-Za-z0-9_])`).test(withoutQuery));
+}
+
+/**
  * Cheap pre-check: false only when `source` can never match `pathname`.
  * Every match starts with the source's literal text up to its first param,
  * group or escape, minus a trailing `/` or `.` that may be an optional

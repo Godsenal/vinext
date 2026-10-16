@@ -120,7 +120,19 @@ function hasOverlappingSequentialRepetition(pattern: string): boolean {
   return false;
 }
 
-function unsafeTokenReason(token: PathKey, namedGroups: boolean): string | null {
+export type PathTokenSafetyOptions = {
+  /**
+   * Whether the compiled RegExp uses the `i` flag. The per-pattern checks
+   * stay case-insensitive, which only makes them more conservative.
+   */
+  ignoreCase: boolean;
+};
+
+function unsafeTokenReason(
+  token: PathKey,
+  namedGroups: boolean,
+  options: PathTokenSafetyOptions,
+): string | null {
   const regexSafetyIssue = analyzeRegexSafety(token.pattern, { ignoreCase: true, namedGroups });
   if (regexSafetyIssue) {
     if (regexSafetyIssue === "analysis budget exceeded") {
@@ -142,11 +154,20 @@ function unsafeTokenReason(token: PathKey, namedGroups: boolean): string | null 
   if (patternMatches(token.pattern, "") || patternMatches(token.pattern, "/")) {
     return `repeated parameter "${token.name}" may match an empty value or path delimiter`;
   }
-  // The same ambiguity arises when the constraint can consume part of the
-  // separator between repeats, as in `/{a:id(a+)}*X`.
-  for (const character of new Set(token.suffix + token.prefix)) {
-    if (regexMayConsumeCharacter(token.pattern, character, { ignoreCase: true, namedGroups })) {
-      return `repeated parameter "${token.name}" may match its own separator`;
+  // The repeats compile to `P(?:SP)*` with separator S = suffix + prefix.
+  // If P can never consume S's first code unit, every P ends right where the
+  // next S begins, so the split is unique; likewise for S's last code unit
+  // read from the right. Only when P can consume both may it take part of S,
+  // as in `/{a:id(a+)}*X`. Code units, since the RegExp has no `u` flag.
+  const separator = token.suffix + token.prefix;
+  if (separator !== "") {
+    const mayConsume = (character: string) =>
+      regexMayConsumeCharacter(token.pattern, character, {
+        ignoreCase: options.ignoreCase,
+        namedGroups,
+      });
+    if (mayConsume(separator[0]!) && mayConsume(separator[separator.length - 1]!)) {
+      return `repeated parameter "${token.name}" may match part of its own separator`;
     }
   }
 
@@ -158,7 +179,10 @@ function unsafeTokenReason(token: PathKey, namedGroups: boolean): string | null 
  * catastrophically once compiled. Literal text and default params compile to
  * linear regexes, so only each param's pattern and how it repeats are checked.
  */
-export function unsafePathTokensReason(tokens: PathToken[]): string | null {
+export function unsafePathTokensReason(
+  tokens: PathToken[],
+  options: PathTokenSafetyOptions,
+): string | null {
   // Every token pattern is compiled into one RegExp, so a named group in any
   // of them turns `\k<name>` in another into a backreference.
   const namedGroups = tokens.some(
@@ -166,7 +190,7 @@ export function unsafePathTokensReason(tokens: PathToken[]): string | null {
   );
   for (const token of tokens) {
     if (typeof token === "string") continue;
-    const reason = unsafeTokenReason(token, namedGroups);
+    const reason = unsafeTokenReason(token, namedGroups, options);
     if (reason) return reason;
   }
   return null;

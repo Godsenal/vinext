@@ -540,41 +540,60 @@ type CompiledConfigSource = {
  * path-to-regexp 6 with `strict: true`, `delimiter: "/"` and case-insensitive
  * matching, then `modifyRouteRegex` appends an optional trailing slash.
  *
- * Returns null (with a warning) for sources path-to-regexp rejects — Next.js
- * fails the build for those — and for custom param patterns that could
- * backtrack catastrophically.
+ * Returns an error for sources path-to-regexp rejects and for custom param
+ * patterns that could backtrack catastrophically.
  *
  * https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/server/lib/router-utils/filesystem.ts
  * https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/shared/lib/router/utils/path-match.ts
  */
+function compileConfigSourceUncached(source: string): CompiledConfigSource | { error: string } {
+  let tokens: PathToken[];
+  let re: RegExp;
+  try {
+    tokens = parsePathPattern(source, { delimiter: "/" });
+    re = new RegExp(`${pathTokensToRegExpSource(tokens)}(?:\\/)?$`, "i");
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : String(error) };
+  }
+  const unsafeReason = unsafePathTokensReason(tokens, { ignoreCase: true });
+  if (unsafeReason) {
+    return {
+      error:
+        `ReDoS risk: ${unsafeReason}. ` +
+        `Simplify the pattern to make repeated matches fixed and unambiguous`,
+    };
+  }
+  const keys: Array<string | number> = [];
+  for (const token of tokens) {
+    if (typeof token !== "string" && token.pattern) keys.push(token.name);
+  }
+  return { re, keys };
+}
+
+/**
+ * Why `source` cannot be used as a redirects/rewrites/headers source, or
+ * null when it compiles. Next.js fails the build for sources it cannot parse;
+ * config loading calls this to do the same.
+ */
+export function configSourceError(source: string): string | null {
+  const compiled = compileConfigSourceUncached(source);
+  return "error" in compiled ? compiled.error : null;
+}
+
+/**
+ * Cached compileConfigSourceUncached. Config loading rejects bad sources, so
+ * the warning only fires for rules that bypassed it (such as in tests).
+ */
 function compileConfigSource(source: string): CompiledConfigSource | null {
   return getCachedRegex(_compiledSourceCache, source, () => {
-    let tokens: PathToken[];
-    let re: RegExp;
-    try {
-      tokens = parsePathPattern(source, { delimiter: "/" });
-      re = new RegExp(`${pathTokensToRegExpSource(tokens)}(?:\\/)?$`, "i");
-    } catch (error) {
+    const compiled = compileConfigSourceUncached(source);
+    if ("error" in compiled) {
       console.warn(
-        `[vinext] Ignoring invalid next.config.js source "${source}": ${
-          error instanceof Error ? error.message : String(error)
-        }`,
+        `[vinext] Ignoring invalid next.config.js source "${source}": ${compiled.error}`,
       );
       return null;
     }
-    const unsafeReason = unsafePathTokensReason(tokens);
-    if (unsafeReason) {
-      console.warn(
-        `[vinext] Ignoring next.config.js source "${source}" (ReDoS risk): ${unsafeReason}.\n` +
-          `  Simplify the pattern to make repeated matches fixed and unambiguous.`,
-      );
-      return null;
-    }
-    const keys: Array<string | number> = [];
-    for (const token of tokens) {
-      if (typeof token !== "string" && token.pattern) keys.push(token.name);
-    }
-    return { re, keys };
+    return compiled;
   });
 }
 
