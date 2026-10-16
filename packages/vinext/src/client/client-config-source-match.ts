@@ -44,6 +44,16 @@ export function matchSimpleClientConfigSource(
   if (source === "/") return path === "/" ? Object.create(null) : null;
 
   const sourceParts = source.split("/");
+  // An unmodelled segment may change how earlier ones match (`/foo/:id?bar`
+  // matches `/foobar`), so check every segment's shape first.
+  for (let index = 1; index < sourceParts.length; index++) {
+    const sourcePart = sourceParts[index]!;
+    if (CATCH_ALL_SEGMENT_RE.test(sourcePart)) {
+      if (index !== sourceParts.length - 1) return undefined;
+    } else if (!PARAM_SEGMENT_RE.test(sourcePart) && !LITERAL_SEGMENT_RE.test(sourcePart)) {
+      return undefined;
+    }
+  }
   const pathParts = path.split("/");
   // Null prototype, so a `:__proto__` param is stored as an own value.
   const params: Record<string, string> = Object.create(null);
@@ -117,18 +127,34 @@ export function clientRewriteAppendsParams(
 /**
  * Cheap pre-check: false only when `source` can never match `pathname`.
  * Every match starts with the source's literal text up to its first param,
- * group or escape, minus a trailing `/` or `.` that may be an optional
- * param's prefix.
+ * group or escape. A `/` or `.` right before a `:name?` or `:name*` param is
+ * that param's optional prefix, so it is only required when the param is
+ * read; when such a param ends the source, the rest of the pathname is empty
+ * or starts with that prefix (or is one trailing slash).
  */
 export function clientConfigSourceCouldMatch(pathname: string, source: string): boolean {
   const wildcardIndex = source.search(/[:(\\{*+?]/);
   let literalPrefix = wildcardIndex === -1 ? source : source.slice(0, wildcardIndex);
+  let optionalPrefix: string | null = null;
+  let paramEndsSource = false;
   if (wildcardIndex !== -1 && /[/.]$/.test(literalPrefix)) {
-    literalPrefix = literalPrefix.slice(0, -1);
+    const param = /^:\w+([?*+])?/.exec(source.slice(wildcardIndex));
+    const next = param ? source[wildcardIndex + param[0].length] : undefined;
+    const required = param !== null && next !== "(" && (param[1] === undefined || param[1] === "+");
+    if (!required) {
+      optionalPrefix = literalPrefix.slice(-1);
+      paramEndsSource = param !== null && param[1] !== undefined && next === undefined;
+      literalPrefix = literalPrefix.slice(0, -1);
+    }
   }
   // A literal source matches with one trailing slash too.
-  literalPrefix = stripOneTrailingSlash(literalPrefix);
-  if (literalPrefix === "/") return true;
+  if (wildcardIndex === -1) literalPrefix = stripOneTrailingSlash(literalPrefix);
+  if (literalPrefix === "/" && optionalPrefix === null) return true;
   if (!isAscii(literalPrefix)) return true;
-  return asciiLowerCase(pathname).startsWith(asciiLowerCase(literalPrefix));
+  const path = asciiLowerCase(pathname);
+  const prefix = literalPrefix === "/" ? "" : asciiLowerCase(literalPrefix);
+  if (!path.startsWith(prefix)) return false;
+  if (!paramEndsSource) return true;
+  const rest = path.slice(prefix.length);
+  return rest === "" || rest === "/" || rest.startsWith(optionalPrefix!);
 }

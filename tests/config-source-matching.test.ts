@@ -278,8 +278,31 @@ describe("Pages client sync matcher agrees with the server matcher", () => {
     vi.restoreAllMocks();
   });
 
-  const CLIENT_PATHNAMES = [...PATHNAMES, "/About/", "/\u212Aey", "/DOCS/A/B", "/x/en/"];
-  const CLIENT_SOURCES = [...SOURCES, "/key", "/docs/:path*/", "/:a/b/:c", "/Docs/:path+"];
+  const CLIENT_PATHNAMES = [
+    ...PATHNAMES,
+    "/About/",
+    "/\u212Aey",
+    "/DOCS/A/B",
+    "/x/en/",
+    "/foobar",
+    "/foo.x.y",
+    "/foo/x/",
+    "/FOO.x",
+  ];
+  const CLIENT_SOURCES = [
+    ...SOURCES,
+    "/key",
+    "/docs/:path*/",
+    "/:a/b/:c",
+    "/Docs/:path+",
+    "/foo.:ext?",
+    "/foo.:ext*",
+    "/foo/:id?",
+    "/foo/:id+",
+    "/foo/:id?bar",
+    "/foo.:ext(x)?",
+    "/:id?",
+  ];
 
   it("returns the server's params whenever it does not defer", () => {
     for (const source of CLIENT_SOURCES) {
@@ -297,6 +320,22 @@ describe("Pages client sync matcher agrees with the server matcher", () => {
         if (clientConfigSourceCouldMatch(pathname, source)) continue;
         expect(matchConfigPattern(pathname, source), `${source} ← ${pathname}`).toBeNull();
       }
+    }
+  });
+
+  it("rules out a source whose optional param prefix the pathname lacks", () => {
+    // Only the prefix before an optional param ending the source may be
+    // absent, so `/foobar` cannot reach `/foo.:ext?` or `/foo/:id?`.
+    for (const source of ["/foo.:ext?", "/foo/:id?", "/foo/:id+", "/foo.:ext"]) {
+      expect(clientConfigSourceCouldMatch("/foobar", source), source).toBe(false);
+    }
+    for (const [source, pathname] of [
+      ["/foo.:ext?", "/foo"],
+      ["/foo.:ext?", "/foo/"],
+      ["/foo.:ext?", "/FOO.x"],
+      ["/foo/:id?bar", "/foobar"],
+    ] as const) {
+      expect(clientConfigSourceCouldMatch(pathname, source), source).toBe(true);
     }
   });
 
