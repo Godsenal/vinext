@@ -822,6 +822,12 @@ describe("config sources do not backtrack catastrophically", () => {
     // The `(?!ab)` guard path-to-regexp adds keeps each repeat out of "ab".
     "/{ab:id}+",
     "/x{--:id}+",
+    // Long bounded repeats are read as unbounded rather than unrolled.
+    "/:id(a{16385})",
+    "/:id([a-z]{2,20000})",
+    "/{x:id(a{3000})}+",
+    // An empty lookahead never matches.
+    "/:id((?!(?:))a)",
   ];
   const ADVERSARIAL_PATHNAMES = [
     "/" + "a/".repeat(8_000) + "!",

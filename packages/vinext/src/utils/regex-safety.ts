@@ -46,6 +46,8 @@ const MAX_SEQUENCE_EXPANSIONS = 256;
 const MAX_SAFE_OVERLAPPING_VARIABLE_BOUNDARIES = 1;
 // Above Next.js's 4096-character source limit, plus room for unrolled repeats.
 const MAX_POSITIONS = 16_384;
+// Positions one bounded repeat may unroll to before it is read as unbounded.
+const MAX_UNROLLED_REPEAT = 1_024;
 const MAX_AUTOMATON_EDGES = 262_144;
 const MAX_PRODUCT_EDGES = 2_000_000;
 
@@ -1028,8 +1030,10 @@ function addPaths(target: PathCounts, source: PathCounts, factor = 1): PathCount
  * The position (Glushkov) automaton of a parsed RegExp: one state per
  * consuming atom, entered by reading that atom's symbol, plus start state 0.
  * Repeats are unrolled, `x{1,3}` as `x(?:x(?:x)?)?`, so each state is one
- * place the backtracking engine can be. Fragments count their paths, and
- * edges keep that count: `(a*)*` builds `a -> a` twice and `\/(?:|)` ends
+ * place the backtracking engine can be. A repeat that would unroll past
+ * MAX_UNROLLED_REPEAT is read as `x+` (or `x*`) instead: each of its paths
+ * is still a distinct path there, so that only adds ambiguity. Fragments
+ * count their paths, and edges keep that count: `(a*)*` builds `a -> a` twice and `\/(?:|)` ends
  * at "/" two ways, and each is two ways for the engine to move. Like the
  * engine, a repeat past its minimum never takes an empty iteration.
  * Assertions are read as empty, which only adds paths, except a negative
@@ -1047,6 +1051,7 @@ class PositionAutomaton {
   exceeded = false;
   private readonly edges: PathCounts[] = [new Map()];
   private edgeCount = 0;
+  private readonly sizes = new WeakMap<RegexNode, number>();
 
   build(node: RegexNode): void {
     const fragment = this.fragment(node);
@@ -1101,10 +1106,55 @@ class PositionAutomaton {
     };
   }
 
-  /** `fragment` repeated without bound; `empty` is the count of empty matches. */
-  private loop(fragment: PositionFragment, empty: number): PositionFragment {
+  /** The positions `node` unrolls to. */
+  private size(node: RegexNode): number {
+    let size = this.sizes.get(node);
+    if (size !== undefined) return size;
+    switch (node.kind) {
+      case "atom":
+        size = 1;
+        break;
+      case "assertion":
+        size = 0;
+        break;
+      case "sequence":
+        size = node.children.reduce((total, child) => total + this.size(child), 0);
+        break;
+      case "alternation":
+        size = node.branches.reduce((total, branch) => total + this.size(branch), 0);
+        break;
+      case "repeat": {
+        const child = this.size(node.child);
+        size = this.unrollsTooFar(node) ? child : child * this.copies(node);
+        break;
+      }
+    }
+    this.sizes.set(node, size);
+    return size;
+  }
+
+  /** How many copies of its child `node` unrolls to. */
+  private copies(node: Extract<RegexNode, { kind: "repeat" }>): number {
+    return Number.isFinite(node.max) ? node.max : Math.max(node.min, 1);
+  }
+
+  private unrollsTooFar(node: Extract<RegexNode, { kind: "repeat" }>): boolean {
+    return this.size(node.child) * this.copies(node) > MAX_UNROLLED_REPEAT;
+  }
+
+  /**
+   * `fragment` repeated without bound, at least once when `required`. A
+   * required first iteration may match empty and be followed by one that
+   * does not, so it can also start where the second iteration starts.
+   */
+  private loop(fragment: PositionFragment, required: boolean): PositionFragment {
     this.connect(fragment.last, fragment.first);
-    return { ...fragment, empty };
+    if (!required) return { ...fragment, empty: 1 };
+    return {
+      first: addPaths(new Map(fragment.first), fragment.first, fragment.empty),
+      last: fragment.last,
+      empty: fragment.empty,
+    };
   }
 
   private fragment(node: RegexNode): PositionFragment {
@@ -1113,7 +1163,7 @@ class PositionAutomaton {
       case "atom": {
         const fragment = this.single(this.position(node.symbol));
         // An unmodelled atom, such as a backreference, may match any text.
-        return node.symbol === null ? this.loop(fragment, 1) : fragment;
+        return node.symbol === null ? this.loop(fragment, false) : fragment;
       }
       case "assertion":
         return { first: new Map(), last: new Map(), empty: 1 };
@@ -1133,6 +1183,7 @@ class PositionAutomaton {
               position = this.position(next.symbol, lookahead.symbol);
             } else if (
               lookahead.kind === "sequence" &&
+              lookahead.children.length > 1 &&
               lookahead.children.every(
                 (part) => part.kind === "atom" && part.symbol?.kind === "literal",
               )
@@ -1163,6 +1214,7 @@ class PositionAutomaton {
         return fragment;
       }
       case "repeat": {
+        if (this.unrollsTooFar(node)) return this.loop(this.fragment(node.child), node.min > 0);
         // Iterations up to the minimum may match empty; later ones may not.
         let fragment: PositionFragment = { first: new Map(), last: new Map(), empty: 1 };
         const required = Number.isFinite(node.max) ? node.min : Math.max(node.min - 1, 0);
@@ -1170,8 +1222,7 @@ class PositionAutomaton {
           fragment = this.concat(fragment, this.fragment(node.child));
         }
         if (!Number.isFinite(node.max)) {
-          const child = this.fragment(node.child);
-          return this.concat(fragment, this.loop(child, node.min === 0 ? 1 : child.empty));
+          return this.concat(fragment, this.loop(this.fragment(node.child), node.min > 0));
         }
         // Nest the optional copies so a shorter run has a single parse.
         let optional: PositionFragment = { first: new Map(), last: new Map(), empty: 1 };

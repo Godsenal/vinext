@@ -9733,6 +9733,12 @@ describe("middleware matcher patterns", () => {
       "/x{--:id}+",
       // Next.js accepts sources up to 4096 characters.
       "/" + "a".repeat(4_095),
+      // Read as `a+` rather than unrolled.
+      "/:id(a{16385})",
+      "/:id([a-z]{2,20000})",
+      "/:id(a{20000,})",
+      // An empty lookahead never matches.
+      "/:id((?!(?:))a)",
       "/" + "a/".repeat(2_044) + ":path*",
     ]) {
       expect(compileMiddlewareMatcherPattern(matcher).regexp, matcher).toBeInstanceOf(RegExp);
