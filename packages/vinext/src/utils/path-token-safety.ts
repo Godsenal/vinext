@@ -1,4 +1,9 @@
-import { analyzeRegexSafety, mayHaveNamedGroups, regexAtomsMayOverlap } from "./regex-safety.js";
+import {
+  analyzeRegexSafety,
+  mayHaveNamedGroups,
+  regexAtomsMayOverlap,
+  regexMayConsumeCharacter,
+} from "./regex-safety.js";
 import type { PathKey, PathToken } from "./path-to-regexp.js";
 
 function patternMatches(pattern: string, value: string): boolean {
@@ -136,6 +141,13 @@ function unsafeTokenReason(token: PathKey, namedGroups: boolean): string | null 
   // that cannot cross the path delimiter, so each segment has one owner.
   if (patternMatches(token.pattern, "") || patternMatches(token.pattern, "/")) {
     return `repeated parameter "${token.name}" may match an empty value or path delimiter`;
+  }
+  // The same ambiguity arises when the constraint can consume part of the
+  // separator between repeats, as in `/{a:id(a+)}*X`.
+  for (const character of new Set(token.suffix + token.prefix)) {
+    if (regexMayConsumeCharacter(token.pattern, character, { ignoreCase: true, namedGroups })) {
+      return `repeated parameter "${token.name}" may match its own separator`;
+    }
   }
 
   return null;

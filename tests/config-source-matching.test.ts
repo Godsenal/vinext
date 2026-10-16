@@ -105,6 +105,9 @@ const SOURCES = [
   "/:a(\\d+)?-:b",
   "/with space",
   "/%E2%82%AC/:slug",
+  "/:id?/:id?",
+  "/:id/:id",
+  "/{-:a([a-z]+)-}+",
   // Invalid in path-to-regexp; Next.js fails the build for these.
   "/:a:b",
   "/foo:path*",
@@ -196,6 +199,9 @@ const PATHNAMES = [
   "/with space",
   "/%E2%82%AC/x",
   "/a/b/c",
+  "/-a-",
+  "/-a--b-",
+  "/-a-b-",
 ];
 
 describe("config sources match like Next.js", () => {
@@ -290,6 +296,17 @@ describe("Pages client sync matcher agrees with the server matcher", () => {
       ["/docs/:path*", "/docs//a"],
     ]) {
       expect(matchSimpleClientConfigSource(pathname, source), source).toBeUndefined();
+    }
+  });
+
+  it("returns a null-prototype params object", () => {
+    for (const params of [
+      matchSimpleClientConfigSource("/foo/x", "/foo/:__proto__"),
+      matchConfigPattern("/foo/x", "/foo/:__proto__"),
+    ]) {
+      expect(Object.getPrototypeOf(params)).toBeNull();
+      expect(Object.hasOwn(params!, "__proto__")).toBe(true);
+      expect(params!["__proto__"]).toBe("x");
     }
   });
 
@@ -419,6 +436,14 @@ describe("config source matching regressions", () => {
     ).toBe("/y");
   });
 
+  it("keeps a matched duplicate param when a later one is unmatched", () => {
+    // Next.js's regexpToFunction skips unmatched captures.
+    const ctx = requestContextFromRequest(new Request("http://localhost/"));
+    expect({ ...matchConfigPattern("/x", "/:id?/:id?") }).toEqual({ id: "x" });
+    expect(matchRewrite("/x", [{ source: "/:id?/:id?", destination: "/d" }], ctx)).toBe("/d?id=x");
+    expect(matchRewrite("/x", [{ source: "/:id?/:id?", destination: "/d/:id" }], ctx)).toBe("/d/x");
+  });
+
   it("appends only the source params that matched to the rewrite query", () => {
     // Expected values from Next.js prepareDestination with getPathMatch params.
     const ctx = requestContextFromRequest(new Request("http://localhost/"));
@@ -545,6 +570,9 @@ describe("config sources do not backtrack catastrophically", () => {
     "/(.*)",
     "/foo{-:bar}+",
     "/files/:name{.:ext}?",
+    "/x{.:ext}*",
+    "/{-:a([a-z]+)-}+",
+    "/:lang(en|fr)*",
   ];
   const ADVERSARIAL_PATHNAMES = [
     "/" + "a/".repeat(8_000) + "!",
@@ -552,6 +580,9 @@ describe("config sources do not backtrack catastrophically", () => {
     "/" + "-".repeat(16_000) + "/x",
     "/" + ".".repeat(16_000) + "/x",
     "/" + "a-".repeat(8_000) + "/",
+    "/" + "-a-".repeat(5_000) + "/",
+    "/x" + ".a".repeat(8_000) + "/",
+    "/" + "en/".repeat(5_000) + "x",
     "/" + "a.".repeat(8_000) + "/",
     "/foo" + "-a".repeat(8_000) + "/",
     "/files/" + "a/".repeat(8_000) + "x.mdx",
@@ -586,6 +617,10 @@ describe("config sources do not backtrack catastrophically", () => {
         "/:a(.*)*/end",
         "/:a([^/]*)+/end",
         "/:a(.+)+/end",
+        // A repeated param that can match part of its own separator.
+        "/{a:id(a+)}*X",
+        "/{a:id(a+)}+X",
+        "/x{-:id([a-z-]+)}+",
       ]) {
         expect(matchConfigPattern("/" + "a".repeat(64) + "!", source), source).toBeNull();
         expect(warn, source).toHaveBeenLastCalledWith(

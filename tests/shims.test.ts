@@ -9683,6 +9683,29 @@ describe("middleware matcher patterns", () => {
     expect(compileMiddlewareMatcherPattern("/:path((?:k|K)+)").regexp).toBeInstanceOf(RegExp);
   });
 
+  it("rejects a repeated param whose pattern can consume its separator", async () => {
+    const { compileMiddlewareMatcherPattern } =
+      await import("../packages/vinext/src/server/middleware-matcher-pattern.js");
+
+    // `/{a:id(a+)}*X` joins repeats with "a", so `a+` can take either side.
+    for (const matcher of ["/{a:id(a+)}*X", "/{a:id(a+)}+X", "/x{-:id([a-z-]+)}+"]) {
+      expect(compileMiddlewareMatcherPattern(matcher), matcher).toMatchObject({
+        kind: "unsafe",
+        error: expect.stringContaining("may match its own separator"),
+      });
+    }
+
+    for (const matcher of [
+      "/:path*",
+      "/:lang(en|fr)*",
+      "/foo{-:bar}+",
+      "/x{.:ext}*",
+      "/{-:id([a-z]+)-}+",
+    ]) {
+      expect(compileMiddlewareMatcherPattern(matcher).regexp, matcher).toBeInstanceOf(RegExp);
+    }
+  });
+
   it("handles fixed-width nested repeats and simple class intersections", async () => {
     const { compileMiddlewareMatcherPattern } =
       await import("../packages/vinext/src/server/middleware-matcher-pattern.js");

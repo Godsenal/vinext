@@ -9,7 +9,7 @@
  */
 type RegexNode =
   | { kind: "atom"; symbol: RegexSymbol | null; fixedWidth: boolean }
-  | { kind: "assertion"; child: RegexNode }
+  | { kind: "assertion"; child: RegexNode; negativeLookahead?: boolean }
   | { kind: "sequence"; children: RegexNode[] }
   | { kind: "alternation"; branches: RegexNode[] }
   | { kind: "repeat"; child: RegexNode; min: number; max: number };
@@ -233,12 +233,14 @@ class RegexParser {
       return this.node({ kind: "atom", symbol: null, fixedWidth: false });
     }
     let assertion = false;
+    let negativeLookahead = false;
     if (this.pattern[this.index] === "?") {
       const marker = this.pattern[this.index + 1];
       if (marker === ":") {
         this.index += 2;
       } else if (marker === "=" || marker === "!") {
         assertion = true;
+        negativeLookahead = marker === "!";
         this.index += 2;
       } else if (
         marker === "<" &&
@@ -262,7 +264,7 @@ class RegexParser {
     const child = this.parseAlternation();
     if (this.pattern[this.index] === ")") this.index++;
     this.depth--;
-    return assertion ? this.node({ kind: "assertion", child }) : child;
+    return assertion ? this.node({ kind: "assertion", child, negativeLookahead }) : child;
   }
 
   private skipGroup(): void {
@@ -935,6 +937,62 @@ export function analyzeRegexSafety(
   const node = parser.parse();
   if (parser.exceededBudget) return "analysis budget exceeded";
   return findSafetyIssue(node);
+}
+
+function mayConsumeSymbol(node: RegexNode, target: RegexSymbol): boolean {
+  switch (node.kind) {
+    case "atom":
+      return node.symbol === null || symbolsMayOverlap(node.symbol, target);
+    case "assertion":
+      return false;
+    case "sequence":
+      for (let index = 0; index < node.children.length; index++) {
+        const child = node.children[index];
+        if (child.kind === "assertion") {
+          // `(?!x)` directly before an atom stops that atom consuming `x`;
+          // path-to-regexp emits this shape for params that follow text.
+          const excluded = child.child;
+          const next = node.children[index + 1];
+          if (
+            child.negativeLookahead &&
+            excluded.kind === "atom" &&
+            excluded.symbol?.kind === "literal" &&
+            excluded.symbol.key === target.key &&
+            next?.kind === "atom"
+          ) {
+            index++;
+          }
+          continue;
+        }
+        if (mayConsumeSymbol(child, target)) return true;
+      }
+      return false;
+    case "alternation":
+      return node.branches.some((branch) => mayConsumeSymbol(branch, target));
+    case "repeat":
+      return node.max > 0 && mayConsumeSymbol(node.child, target);
+  }
+}
+
+/**
+ * Whether some match of `pattern` may contain `character`. Approximate in the
+ * safe direction: unknown atoms and exceeded budgets report true.
+ */
+export function regexMayConsumeCharacter(
+  pattern: string,
+  character: string,
+  options: { ignoreCase?: boolean; namedGroups?: boolean } = {},
+): boolean {
+  if (pattern.length > MAX_PATTERN_LENGTH) return true;
+  const ignoreCase = options.ignoreCase === true;
+  const parser = new RegexParser(
+    pattern,
+    ignoreCase,
+    options.namedGroups ?? mayHaveNamedGroups(pattern),
+  );
+  const node = parser.parse();
+  if (parser.exceededBudget) return true;
+  return mayConsumeSymbol(node, literalSymbol(character, ignoreCase));
 }
 
 export function regexAtomsMayOverlap(left: string, right: string, ignoreCase = false): boolean {

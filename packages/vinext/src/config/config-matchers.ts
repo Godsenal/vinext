@@ -606,16 +606,23 @@ function execConfigSource(
   const match = compiled.re.exec(pathname);
   if (!match) return null;
   const params: Record<string, string> = Object.create(null);
-  const unmatched: string[] = [];
+  const matched = new Set<string>();
   for (let i = 0; i < compiled.keys.length; i++) {
     const key = compiled.keys[i];
     if (typeof key !== "string") continue;
     const value = match[i + 1];
-    if (value === undefined) unmatched.push(key);
+    // Like Next.js, an unmatched capture never overwrites a duplicate name
+    // that did match (`/:id?/:id?` on `/x` gives `{ id: "x" }`).
+    if (value === undefined) {
+      if (!matched.has(key)) params[key] = "";
+      continue;
+    }
+    matched.add(key);
     // NOTE: Do NOT decodeURIComponent here. The pathname is already decoded at
     // the request entry point. Decoding again would produce incorrect param values.
-    params[key] = value ?? "";
+    params[key] = value;
   }
+  const unmatched = Object.keys(params).filter((key) => !matched.has(key));
   return { params, unmatched };
 }
 

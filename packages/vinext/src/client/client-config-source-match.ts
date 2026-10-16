@@ -41,11 +41,12 @@ export function matchSimpleClientConfigSource(
   if (!source.startsWith("/") || pathname.includes("//")) return undefined;
   // The compiled source accepts one optional trailing slash on the pathname.
   const path = stripOneTrailingSlash(pathname);
-  if (source === "/") return path === "/" ? {} : null;
+  if (source === "/") return path === "/" ? Object.create(null) : null;
 
   const sourceParts = source.split("/");
   const pathParts = path.split("/");
-  const params: Record<string, string> = {};
+  // Null prototype, so a `:__proto__` param is stored as an own value.
+  const params: Record<string, string> = Object.create(null);
 
   for (let index = 1; index < sourceParts.length; index++) {
     const sourcePart = sourceParts[index]!;
