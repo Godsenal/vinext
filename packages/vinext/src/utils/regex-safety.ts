@@ -55,6 +55,8 @@ const MAX_AUTOMATON_EDGES = 262_144;
 // first and last sets.
 const MAX_AUTOMATON_WORK = 4_000_000;
 const MAX_PRODUCT_EDGES = 500_000;
+// Follow lists longer than this are indexed by character for the product.
+const MAX_UNINDEXED_FOLLOW = 16;
 
 function canonicalizeIgnoreCase(character: string): string {
   const upper = character.toUpperCase();
@@ -1413,6 +1415,52 @@ function hasExponentialAmbiguity(graph: AmbiguityGraph): boolean | null {
   let components = 0;
   let edges = 0;
 
+  // Each follow list's targets by the ASCII characters they may read, so a
+  // pair of disjoint alternatives is never checked or charged. `wide` holds
+  // the targets that may read other characters, which every target checks.
+  type FollowIndex = { byCharacter: Map<string, number[]>; wide: number[] };
+  const followIndexes = new Map<number, FollowIndex>();
+  const followIndex = (position: number): FollowIndex => {
+    let followed = followIndexes.get(position);
+    if (followed) return followed;
+    followed = { byCharacter: new Map(), wide: [] };
+    const targets = follow[position]!;
+    for (let j = 0; j < targets.length; j++) {
+      const symbol = symbols[targets[j]!];
+      let characters: Iterable<string> = [];
+      if (symbol?.kind === "literal") characters = [symbol.key];
+      else if (symbol?.kind === "class" && symbol.nonAscii === "none") characters = symbol.values;
+      else followed.wide.push(j);
+      for (const character of characters) {
+        let indexes = followed.byCharacter.get(character);
+        if (!indexes) followed.byCharacter.set(character, (indexes = []));
+        indexes.push(j);
+      }
+    }
+    followIndexes.set(position, followed);
+    return followed;
+  };
+  // The targets of `followed` that `target` may share a character with, or
+  // null for all of them.
+  const candidates = (target: number, followed: FollowIndex): number[] | null => {
+    const symbol = symbols[target];
+    let characters: Iterable<string>;
+    if (symbol?.kind === "literal") {
+      const indexes = followed.byCharacter.get(symbol.key) ?? [];
+      if (followed.wide.length === 0) return indexes;
+      characters = [symbol.key];
+    } else if (symbol?.kind === "class" && symbol.nonAscii === "none") {
+      characters = symbol.values;
+    } else {
+      return null;
+    }
+    const result = new Set(followed.wide);
+    for (const character of characters) {
+      for (const j of followed.byCharacter.get(character) ?? []) result.add(j);
+    }
+    return [...result];
+  };
+
   // The successors of every state on the DFS path, each frame's after its
   // parent's.
   const pending: number[] = [];
@@ -1421,10 +1469,15 @@ function hasExponentialAmbiguity(graph: AmbiguityGraph): boolean | null {
     const right = state % size;
     const leftFollow = follow[left]!;
     const rightFollow = follow[right]!;
+    // Short lists are cheaper to check pair by pair.
+    const rightIndex = rightFollow.length > MAX_UNINDEXED_FOLLOW ? followIndex(right) : null;
     for (let i = 0; i < leftFollow.length; i++) {
-      for (let j = 0; j < rightFollow.length; j++) {
+      const leftTarget = leftFollow[i]!;
+      const indexes = rightIndex ? candidates(leftTarget, rightIndex) : null;
+      const count = indexes ? indexes.length : rightFollow.length;
+      for (let k = 0; k < count; k++) {
+        const j = indexes ? indexes[k]! : k;
         if (++edges > MAX_PRODUCT_EDGES) return;
-        const leftTarget = leftFollow[i]!;
         const rightTarget = rightFollow[j]!;
         if (!symbolsOverlap(leftTarget, rightTarget)) continue;
         const target = leftTarget * size + rightTarget;

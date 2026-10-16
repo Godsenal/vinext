@@ -9767,6 +9767,21 @@ describe("middleware matcher patterns", () => {
     expect(performance.now() - started).toBeLessThan(2_000);
   });
 
+  it("accepts long lists of alternatives that share no character", async () => {
+    const { compileMiddlewareMatcherPattern } =
+      await import("../packages/vinext/src/server/middleware-matcher-pattern.js");
+
+    // 1,500 caseless CJK ideographs: checking every pair would take 2.25M
+    // steps, past the product budget.
+    const alternatives = Array.from({ length: 1_500 }, (_, index) =>
+      String.fromCharCode(0x4e00 + index),
+    ).join("|");
+    expect(compileMiddlewareMatcherPattern(`/:id(${alternatives})`).regexp).toBeInstanceOf(RegExp);
+    expect(compileMiddlewareMatcherPattern(`/{x:id(${alternatives})}+`).regexp).toBeInstanceOf(
+      RegExp,
+    );
+  });
+
   it("rejects a chain of overlapping repeats across adjacent params", async () => {
     const { compileMiddlewareMatcherPattern } =
       await import("../packages/vinext/src/server/middleware-matcher-pattern.js");
