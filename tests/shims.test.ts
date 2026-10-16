@@ -9952,6 +9952,7 @@ describe("middleware matcher patterns", () => {
     expect(isSafeRegex("(?=[^/]+.*X)")).toBe(true);
     expect(isSafeRegex("(?:(?=[^/]+.*X).)*")).toBe(false);
     expect(isSafeRegex("(?=.*a.*a.*b)")).toBe(false);
+    expect(isSafeRegex("^(?=a*a*X)")).toBe(true);
 
     // `[ab]`, `[ac]` and `[bc]` overlap pairwise, but no one character is in
     // all three, so the loops cannot share a word.
@@ -10013,6 +10014,25 @@ describe("middleware matcher patterns", () => {
     start = performance.now();
     analyzeRegexSafety(Array.from({ length: 3_000 }, () => "c*c*").join("|"));
     expect(performance.now() - start).toBeLessThan(1_000);
+
+    start = performance.now();
+    analyzeRegexSafety(`(?:${Array.from({ length: 16_000 }, () => "\\w").join("|")})?`);
+    expect(performance.now() - start).toBeLessThan(1_000);
+
+    // Every lookaround body draws on one budget, so many bodies cannot each
+    // spend a full one.
+    const lookahead = `(?=(?:${Array.from({ length: 700 }, () => "a").join("|")})?)`;
+    start = performance.now();
+    expect(analyzeRegexSafety(lookahead.repeat(20))).toBe("analysis budget exceeded");
+    expect(performance.now() - start).toBeLessThan(2_000);
+  });
+
+  it("reads `.` as matching line terminators under the s flag", async () => {
+    const { isSafeRegex } = await import("../packages/vinext/src/config/config-matchers.js");
+
+    expect(isSafeRegex("(.*\\n)+X")).toBe(true);
+    expect(isSafeRegex("(.*\\n)+X", "s")).toBe(false);
+    expect(isSafeRegex("a.*b", "s")).toBe(true);
   });
 
   it("handles fixed-width nested repeats and simple class intersections", async () => {

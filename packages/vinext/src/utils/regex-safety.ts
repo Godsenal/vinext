@@ -59,6 +59,11 @@ const MAX_AUTOMATON_EDGES = 262_144;
 // first and last sets.
 const MAX_AUTOMATON_WORK = 4_000_000;
 const MAX_PRODUCT_EDGES = 500_000;
+// One analysis may build several automata: an exact pass, a pass that reads
+// long repeats as loops, and one per lookaround body. These cap their total,
+// at what the two passes over the whole pattern may spend.
+const MAX_TOTAL_AUTOMATON_WORK = 2 * MAX_AUTOMATON_WORK;
+const MAX_TOTAL_PRODUCT_EDGES = 4 * MAX_PRODUCT_EDGES;
 // Follow lists longer than this are indexed by character for the product.
 const MAX_UNINDEXED_FOLLOW = 16;
 
@@ -238,8 +243,10 @@ class RegexParser {
     private readonly pattern: string,
     ignoreCase: boolean,
     private readonly namedGroups: boolean,
+    dotAll = false,
     private readonly context: CaptureContext = { before: 0, total: countCapturingGroups(pattern) },
   ) {
+    this.dotAll = dotAll;
     this.ignoreCase = ignoreCase || hasScopedIgnoreCase(pattern);
     this.scopeIgnoreCase = ignoreCase;
     this.captures = context.total;
@@ -1257,6 +1264,9 @@ function findRepetitionChainDeep(node: RegexNode): RegexSafetyIssue | null {
   }
 }
 
+/** The flags of the RegExp a pattern compiles to that change what it matches. */
+type RegexAnalysisOptions = { ignoreCase?: boolean; dotAll?: boolean; namedGroups?: boolean };
+
 /**
  * Only analyzeRegexSafety's check for chains of overlapping variable repeats
  * in a sequence. For a RegExp compiled from separately checked parts, where
@@ -1264,13 +1274,14 @@ function findRepetitionChainDeep(node: RegexNode): RegexSafetyIssue | null {
  */
 export function analyzeRegexRepetitionChains(
   pattern: string,
-  options: { ignoreCase?: boolean; namedGroups?: boolean } = {},
+  options: RegexAnalysisOptions = {},
 ): RegexSafetyIssue | null {
   if (pattern.length > MAX_PATTERN_LENGTH) return "analysis budget exceeded";
   const parser = new RegexParser(
     pattern,
     options.ignoreCase === true,
     options.namedGroups ?? mayHaveNamedGroups(pattern),
+    options.dotAll === true,
   );
   const node = parser.parse();
   if (parser.exceededBudget) return "analysis budget exceeded";
@@ -1309,13 +1320,14 @@ export function mayHaveNamedGroups(pattern: string): boolean {
  */
 export function analyzeRegexSafety(
   pattern: string,
-  options: { ignoreCase?: boolean; namedGroups?: boolean; captures?: CaptureContext } = {},
+  options: RegexAnalysisOptions & { captures?: CaptureContext } = {},
 ): RegexSafetyIssue | null {
   if (pattern.length > MAX_PATTERN_LENGTH) return "analysis budget exceeded";
   const parser = new RegexParser(
     pattern,
     options.ignoreCase === true,
     options.namedGroups ?? mayHaveNamedGroups(pattern),
+    options.dotAll === true,
     options.captures,
   );
   const node = parser.parse();
@@ -1386,6 +1398,9 @@ function buildSingleCharacterAlternationSymbol(
 }
 
 // Path counts saturate at two: two distinct paths are enough for ambiguity.
+/** Work spent so far across every automaton one analysis builds. */
+type AnalysisBudget = { automatonWork: number; productEdges: number };
+
 type PathCounts = Map<number, number>;
 type PositionFragment = { first: PathCounts; last: PathCounts; empty: number };
 
@@ -1431,7 +1446,10 @@ class PositionAutomaton {
   private work = 0;
   private readonly sizes = new WeakMap<RegexNode, number>();
 
-  constructor(private readonly maxUnrolledRepeat: number) {}
+  constructor(
+    private readonly maxUnrolledRepeat: number,
+    private readonly budget: AnalysisBudget,
+  ) {}
 
   build(node: RegexNode): void {
     const fragment = this.fragment(node);
@@ -1465,7 +1483,10 @@ class PositionAutomaton {
 
   private spend(work: number): void {
     this.work += work;
-    if (this.work > MAX_AUTOMATON_WORK) this.exceeded = true;
+    this.budget.automatonWork += work;
+    if (this.work > MAX_AUTOMATON_WORK || this.budget.automatonWork > MAX_TOTAL_AUTOMATON_WORK) {
+      this.exceeded = true;
+    }
   }
 
   private connect(from: PathCounts, to: PathCounts): void {
@@ -1811,6 +1832,7 @@ type ProductAnalysis =
 function analyzeProduct(
   graph: AmbiguityGraph,
   symbolsOverlap: (left: number, right: number) => boolean,
+  budget: AnalysisBudget,
 ): ProductAnalysis | null {
   const { follow, symbols } = graph;
   const size = symbols.length;
@@ -1827,6 +1849,14 @@ function analyzeProduct(
   const loopPairs: Array<[number, number]> = [];
   let components = 0;
   let edges = 0;
+  let exceeded = false;
+  // Charges each edge, and each entry the indexes below build or read.
+  const spend = (): boolean => {
+    if (++edges > MAX_PRODUCT_EDGES || ++budget.productEdges > MAX_TOTAL_PRODUCT_EDGES) {
+      exceeded = true;
+    }
+    return exceeded;
+  };
 
   // Each follow list's targets by the ASCII characters they may read, so a
   // pair of disjoint alternatives is never checked or charged. `wide` holds
@@ -1845,6 +1875,7 @@ function analyzeProduct(
       else if (symbol?.kind === "class" && symbol.nonAscii === "none") characters = symbol.values;
       else followed.wide.push(j);
       for (const character of characters) {
+        if (spend()) return followed;
         let indexes = followed.byCharacter.get(character);
         if (!indexes) followed.byCharacter.set(character, (indexes = []));
         indexes.push(j);
@@ -1869,7 +1900,10 @@ function analyzeProduct(
     }
     const result = new Set(followed.wide);
     for (const character of characters) {
-      for (const j of followed.byCharacter.get(character) ?? []) result.add(j);
+      for (const j of followed.byCharacter.get(character) ?? []) {
+        if (spend()) return [];
+        result.add(j);
+      }
     }
     return [...result];
   };
@@ -1890,7 +1924,7 @@ function analyzeProduct(
       const count = indexes ? indexes.length : rightFollow.length;
       for (let k = 0; k < count; k++) {
         const j = indexes ? indexes[k]! : k;
-        if (++edges > MAX_PRODUCT_EDGES) return;
+        if (spend()) return;
         const rightTarget = rightFollow[j]!;
         if (!symbolsOverlap(leftTarget, rightTarget)) continue;
         const target = leftTarget * size + rightTarget;
@@ -1921,13 +1955,13 @@ function analyzeProduct(
     frameIds.push(id);
     frameStart.push(pending.length);
     frameNext.push(pending.length);
-    pushSuccessors(state);
+    if (!exceeded) pushSuccessors(state);
     frameEnd.push(pending.length);
   };
 
   visit(0);
   while (frameIds.length > 0) {
-    if (edges > MAX_PRODUCT_EDGES) return null;
+    if (exceeded) return null;
     const top = frameIds.length - 1;
     const id = frameIds[top]!;
     if (frameNext[top]! < frameEnd[top]!) {
@@ -2103,6 +2137,7 @@ function polynomialDegree(
   graph: AmbiguityGraph,
   loopPairs: Array<[number, number]>,
   symbolsOverlap: (left: number, right: number) => boolean,
+  budget: AnalysisBudget,
 ): number | null {
   const { follow } = graph;
   const statesShareCharacter = tripleOverlapChecker(graph, symbolsOverlap);
@@ -2135,7 +2170,9 @@ function polynomialDegree(
         for (const nextZ of uniqueFollow[z]!) {
           if (component[nextZ] !== to || !symbolsOverlap(nextX, nextZ)) continue;
           for (const nextY of uniqueFollow[y]!) {
-            if (++edges > MAX_PRODUCT_EDGES) return null;
+            if (++edges > MAX_PRODUCT_EDGES || ++budget.productEdges > MAX_TOTAL_PRODUCT_EDGES) {
+              return null;
+            }
             if (!statesShareCharacter(nextX, nextY, nextZ)) continue;
             const next = key(nextX, nextY, nextZ);
             if (next === goal) return true;
@@ -2182,13 +2219,14 @@ function polynomialDegree(
  */
 export function analyzeRegexAmbiguity(
   pattern: string,
-  options: { ignoreCase?: boolean; namedGroups?: boolean } = {},
+  options: RegexAnalysisOptions = {},
 ): RegexSafetyIssue | null {
   if (pattern.length > MAX_PATTERN_LENGTH) return "analysis budget exceeded";
   const parser = new RegexParser(
     pattern,
     options.ignoreCase === true,
     options.namedGroups ?? mayHaveNamedGroups(pattern),
+    options.dotAll === true,
   );
   const node = parser.parse();
   if (parser.exceededBudget || parser.index !== pattern.length) return "analysis budget exceeded";
@@ -2236,17 +2274,21 @@ function assertionBodies(
 function analyzeNodeAmbiguity(
   node: RegexNode,
   maxDegree = MAX_POLYNOMIAL_DEGREE,
+  budget: AnalysisBudget = { automatonWork: 0, productEdges: 0 },
 ): RegexSafetyIssue | null {
   // Unroll repeats exactly while the automaton fits, and only read long
   // repeats as loops when it does not.
-  const exact = new PositionAutomaton(MAX_POSITIONS);
-  let issue = analyzePositionAutomaton(exact, node, maxDegree);
+  const exact = new PositionAutomaton(MAX_POSITIONS, budget);
+  let issue = analyzePositionAutomaton(exact, node, maxDegree, budget);
   if (issue === "analysis budget exceeded" && exact.unrolledLongRepeat) {
-    issue = analyzePositionAutomaton(new PositionAutomaton(MAX_UNROLLED_REPEAT), node, maxDegree);
+    const loops = new PositionAutomaton(MAX_UNROLLED_REPEAT, budget);
+    issue = analyzePositionAutomaton(loops, node, maxDegree, budget);
   }
   if (issue) return issue;
   for (const { body, repeated } of assertionBodies(node)) {
-    const bodyIssue = analyzeNodeAmbiguity(body, repeated ? 0 : maxDegree);
+    // A body without a variable repeat reads fixed-length words, as above.
+    if (!containsVariableRepetition(body)) continue;
+    const bodyIssue = analyzeNodeAmbiguity(body, repeated ? 0 : maxDegree, budget);
     if (bodyIssue) return bodyIssue;
   }
   return null;
@@ -2256,16 +2298,17 @@ function analyzePositionAutomaton(
   automaton: PositionAutomaton,
   node: RegexNode,
   maxDegree: number,
+  budget: AnalysisBudget,
 ): RegexSafetyIssue | null {
   automaton.build(node);
   if (automaton.exceeded) return "analysis budget exceeded";
   const graph = applyLookaheadGuards(automaton);
   if (graph === null) return "analysis budget exceeded";
   const symbolsOverlap = stateOverlapChecker(graph);
-  const product = analyzeProduct(graph, symbolsOverlap);
+  const product = analyzeProduct(graph, symbolsOverlap, budget);
   if (product === null) return "analysis budget exceeded";
   if (product.exponential) return "exponentially ambiguous repetition";
-  const degree = polynomialDegree(graph, product.loopPairs, symbolsOverlap);
+  const degree = polynomialDegree(graph, product.loopPairs, symbolsOverlap, budget);
   if (degree === null) return "analysis budget exceeded";
   return degree > maxDegree ? "polynomially ambiguous repetition" : null;
 }

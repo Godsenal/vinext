@@ -301,7 +301,12 @@ function stripHopByHopRequestHeaders(headers: Headers): void {
  * Returns true if the pattern appears safe, false if it's potentially dangerous.
  */
 export function isSafeRegex(pattern: string, flags?: string): boolean {
-  return analyzeRegexSafety(pattern, { ignoreCase: flags?.includes("i") }) === null;
+  return (
+    analyzeRegexSafety(pattern, {
+      ignoreCase: flags?.includes("i"),
+      dotAll: flags?.includes("s"),
+    }) === null
+  );
 }
 
 /**
