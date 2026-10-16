@@ -5,7 +5,6 @@ import { renderToReadableStream } from "react-dom/server.edge";
 import { describe, expect, it } from "vite-plus/test";
 import {
   createAppRenderDependency,
-  getPendingCssWrappedResult,
   invokeAppComponent,
   renderAfterAppDependencies,
   renderAppComponentWithDependencyBarrier,
@@ -146,6 +145,18 @@ describe("app render dependency helpers", () => {
 
         const forwardRefLayout = createLayout("forwardRef");
         const cssLayout = createLayout("css");
+        // The shape of @vitejs/plugin-rsc's __vite_rsc_wrap_css__ wrapper.
+        function wrapCss(Component) {
+          return function CssWrapper(props) {
+            return React.createElement(
+              React.Fragment,
+              null,
+              React.createElement("link", { rel: "stylesheet", href: "/layout.css" }),
+              React.createElement(Component, props),
+            );
+          };
+        }
+        const cssUseGate = new Promise((resolve) => setTimeout(resolve, 25));
         const layouts = {
           plain: createLayout("plain"),
           memo: React.memo(createLayout("memo")),
@@ -154,15 +165,14 @@ describe("app render dependency helpers", () => {
             events.push("forwardRef:ref:" + String(ref));
             return forwardRefLayout(props);
           }),
-          // The shape of @vitejs/plugin-rsc's __vite_rsc_wrap_css__ wrapper.
-          css: function CssWrapper(props) {
-            return React.createElement(
-              React.Fragment,
-              null,
-              React.createElement("link", { rel: "stylesheet", href: "/layout.css" }),
-              React.createElement(cssLayout, props),
-            );
-          },
+          css: wrapCss(cssLayout),
+          cssUse: wrapCss(function Layout() {
+            events.push("cssUse:layout:start");
+            React.use(cssUseGate);
+            events.push("cssUse:layout:end");
+            return React.createElement("section", null, "cssUse layout");
+          }),
+          cssNested: wrapCss(wrapCss(createLayout("cssNested"))),
         };
         const model = {};
 
@@ -189,7 +199,7 @@ describe("app render dependency helpers", () => {
     `);
 
     const events = JSON.parse(stdout) as string[];
-    for (const name of ["plain", "memo", "lazy", "forwardRef", "css"]) {
+    for (const name of ["plain", "memo", "lazy", "forwardRef", "css", "cssUse", "cssNested"]) {
       expect(events.indexOf(`${name}:layout:start`)).toBeLessThan(
         events.indexOf(`${name}:layout:end`),
       );
@@ -199,17 +209,25 @@ describe("app render dependency helpers", () => {
     expect(events).not.toContain("forwardRef:ref:null");
   });
 
-  it("streams a CSS-wrapped async layout's stylesheet before the layout resolves", async () => {
-    const stdout = await runInFlightServer(String.raw`
+  it.each(["async", "use"])(
+    "streams the stylesheet of a CSS-wrapped %s layout before the layout renders",
+    async (kind) => {
+      const stdout = await runInFlightServer(String.raw`
         const { createAppRenderDependency, renderAppComponentWithDependencyBarrier } = mod;
         let finishLayout;
         const layoutGate = new Promise((resolve) => {
           finishLayout = resolve;
         });
-        async function Layout() {
-          await layoutGate;
-          return React.createElement("section", null, "layout body");
-        }
+        const Layout =
+          ${JSON.stringify(kind)} === "async"
+            ? async function Layout() {
+                await layoutGate;
+                return React.createElement("section", null, "layout body");
+              }
+            : function Layout() {
+                React.use(layoutGate);
+                return React.createElement("section", null, "layout body");
+              };
         // The shape of @vitejs/plugin-rsc's __vite_rsc_wrap_css__ wrapper.
         function CssWrapper(props) {
           return React.createElement(
@@ -241,19 +259,20 @@ describe("app render dependency helpers", () => {
           flight += decoder.decode(value);
         }
         process.stdout.write(JSON.stringify({ beforeLayout, flight, released }));
-    `);
+      `);
 
-    const result = JSON.parse(stdout) as {
-      beforeLayout: { flight: string; released: boolean };
-      flight: string;
-      released: boolean;
-    };
-    expect(result.beforeLayout.flight).toContain("/layout.css");
-    expect(result.beforeLayout.flight).not.toContain("layout body");
-    expect(result.beforeLayout.released).toBe(false);
-    expect(result.flight).toContain("layout body");
-    expect(result.released).toBe(true);
-  });
+      const result = JSON.parse(stdout) as {
+        beforeLayout: { flight: string; released: boolean };
+        flight: string;
+        released: boolean;
+      };
+      expect(result.beforeLayout.flight).toContain("/layout.css");
+      expect(result.beforeLayout.flight).not.toContain("layout body");
+      expect(result.beforeLayout.released).toBe(false);
+      expect(result.flight).toContain("layout body");
+      expect(result.released).toBe(true);
+    },
+  );
 
   it("invokes a CSS-wrapped component without passing its props to an element", async () => {
     const props = { params: Promise.resolve({}), searchParams: Promise.resolve({}) };
@@ -276,59 +295,16 @@ describe("app render dependency helpers", () => {
     if (!isValidElement<{ children: [unknown, ReactElement] }>(result)) {
       throw new Error("expected an element");
     }
-    // Page ran directly, so no element got the props. React's dev build
-    // serializes an element's props as debug info, which would call `then` on
-    // params and searchParams.
-    expect(receivedProps).toEqual(props);
-    expect(result.props.children[1].type).toBe("p");
+    const inner = result.props.children[1];
+    // React's dev build serializes an element's props as debug info, which
+    // would call `then` on params and searchParams.
+    expect(inner.props).toEqual({});
+    expect(inner.type).toHaveProperty("displayName", "Page");
 
     const body = await renderHtml(result);
     expect(body).toContain('href="/page.css"');
     expect(body).toContain("<p>page</p>");
-  });
-
-  it("keeps the CSS of an async CSS-wrapped component ahead of its pending result", async () => {
-    async function Page() {
-      await Promise.resolve();
-      return createElement("p", null, "page");
-    }
-    function CssWrapper(wrapperProps: Record<string, unknown>) {
-      return createElement(Fragment, null, "css", createElement(Page, wrapperProps));
-    }
-
-    const result = invokeAppComponent(CssWrapper, { params: Promise.resolve({}) });
-    if (!isValidElement<{ children: [unknown, ReactElement] }>(result)) {
-      throw new Error("expected an element");
-    }
-    expect(result.props.children[0]).toBe("css");
-    expect(result.props.children[1].props).toEqual({});
-    const pendingResult = getPendingCssWrappedResult(result);
-    expect(pendingResult).toBeInstanceOf(Promise);
-    expect(isValidElement(await pendingResult)).toBe(true);
-    expect(await renderHtml(result)).toBe("css<p>page</p>");
-  });
-
-  it("keeps the pending result of a CSS-wrapped component that is itself CSS-wrapped", async () => {
-    async function Page() {
-      await Promise.resolve();
-      return createElement("p", null, "page");
-    }
-    function InnerCssWrapper(wrapperProps: Record<string, unknown>) {
-      return createElement(Fragment, null, "inner-css", createElement(Page, wrapperProps));
-    }
-    function OuterCssWrapper(wrapperProps: Record<string, unknown>) {
-      return createElement(
-        Fragment,
-        null,
-        "outer-css",
-        createElement(InnerCssWrapper, wrapperProps),
-      );
-    }
-
-    const result = invokeAppComponent(OuterCssWrapper, { params: Promise.resolve({}) });
-    if (!isValidElement(result)) throw new Error("expected an element");
-    expect(getPendingCssWrappedResult(result)).toBeInstanceOf(Promise);
-    expect(await renderHtml(result)).toBe("outer-css<!-- -->inner-css<p>page</p>");
+    expect(receivedProps).toEqual(props);
   });
 
   it("invokes a CSS-wrapped component that has defaultProps with them applied", async () => {
@@ -343,7 +319,13 @@ describe("app render dependency helpers", () => {
       return createElement(Fragment, null, "css", createElement(Page, wrapperProps));
     }
 
-    void invokeAppComponent(CssWrapper, props);
+    const result = invokeAppComponent(CssWrapper, props);
+    if (!isValidElement<{ children: [unknown, ReactElement] }>(result)) {
+      throw new Error("expected an element");
+    }
+    const inner = result.props.children[1];
+    expect(inner.props).toEqual({});
+    await renderHtml(result);
     expect(receivedProps).toEqual({ params: props.params, theme: "dark", size: "small" });
   });
 
@@ -363,7 +345,12 @@ describe("app render dependency helpers", () => {
       return createElement(Fragment, null, "css", createElement(Page, wrapperProps));
     }
 
-    void invokeAppComponent(CssWrapper, props);
+    const result = invokeAppComponent(CssWrapper, props);
+    if (!isValidElement<{ children: [unknown, ReactElement] }>(result)) {
+      throw new Error("expected an element");
+    }
+    expect(result.props.children[1].props).toEqual({});
+    await renderHtml(result);
     expect(receivedTheme).toEqual({ mode: "dark" });
   });
 
