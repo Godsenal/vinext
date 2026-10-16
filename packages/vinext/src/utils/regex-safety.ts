@@ -218,6 +218,8 @@ class RegexParser {
   private captureIndex = 0;
   private skippedGroup = false;
   private readonly groups: RegexNode[] = [];
+  /** Groups that may not have taken part by the time a later term runs. */
+  private readonly optionalGroups = new Set<number>();
   private readonly groupNames = new Map<string, number>();
 
   constructor(
@@ -245,12 +247,21 @@ class RegexParser {
     return node;
   }
 
+  /** Marks the groups opened since group `after` as possibly not taking part. */
+  private markGroupsOptional(after: number): void {
+    for (let group = after + 1; group <= this.captureIndex; group++) this.optionalGroups.add(group);
+  }
+
   private parseAlternation(): RegexNode {
+    const before = this.captureIndex;
     const branches = [this.parseSequence()];
     while (this.pattern[this.index] === "|") {
       this.index++;
+      // A later branch runs only when the earlier ones did not match.
+      this.markGroupsOptional(before);
       branches.push(this.parseSequence());
     }
+    if (branches.length > 1) this.markGroupsOptional(before);
     return branches.length === 1 ? branches[0] : this.node({ kind: "alternation", branches });
   }
 
@@ -270,9 +281,11 @@ class RegexParser {
   }
 
   private parseTerm(): RegexNode {
+    const before = this.captureIndex;
     const atom = this.parseAtom();
     const quantifier = this.parseQuantifier();
     if (!quantifier) return atom;
+    if (quantifier.min === 0) this.markGroupsOptional(before);
     if (this.pattern[this.index] === "?") this.index++;
     // An exact-one quantifier does not change the language or consumption of
     // its child. Remove it so it cannot hide a variable repetition from the
@@ -307,7 +320,8 @@ class RegexParser {
   /**
    * A backreference matches the text its group captured, or nothing when the
    * group did not take part. When the group is closed and reads one fixed
-   * word, that is the word or nothing. Otherwise it may match any text.
+   * word, that is the word, or the word or nothing when the group may not
+   * have taken part. Otherwise it may match any text.
    */
   private backreference(group: number | undefined): RegexNode {
     const body = group === undefined || this.skippedGroup ? undefined : this.groups[group];
@@ -318,12 +332,9 @@ class RegexParser {
     const children = words[0]!.map((symbol) =>
       this.node({ kind: "atom", symbol, fixedWidth: true }),
     );
-    return this.node({
-      kind: "repeat",
-      child: this.node({ kind: "sequence", children }),
-      min: 0,
-      max: 1,
-    });
+    const word = this.node({ kind: "sequence", children });
+    if (!this.optionalGroups.has(group!)) return word;
+    return this.node({ kind: "repeat", child: word, min: 0, max: 1 });
   }
 
   private parseGroup(): RegexNode {
@@ -336,6 +347,7 @@ class RegexParser {
     }
     let assertion = false;
     let negativeLookahead = false;
+    let negativeAssertion = false;
     let capture = false;
     const outerDotAll = this.dotAll;
     const outerIgnoreCase = this.scopeIgnoreCase;
@@ -356,12 +368,14 @@ class RegexParser {
       } else if (marker === "=" || marker === "!") {
         assertion = true;
         negativeLookahead = marker === "!";
+        negativeAssertion = negativeLookahead;
         this.index += 2;
       } else if (
         marker === "<" &&
         (this.pattern[this.index + 2] === "=" || this.pattern[this.index + 2] === "!")
       ) {
         assertion = true;
+        negativeAssertion = this.pattern[this.index + 2] === "!";
         this.index += 3;
       } else if (marker === "<") {
         const nameEnd = this.pattern.indexOf(">", this.index + 2);
@@ -380,8 +394,11 @@ class RegexParser {
     }
 
     this.foldedCaseSensitive = false;
+    const before = this.captureIndex;
     const captureNumber = capture ? ++this.captureIndex : 0;
     const child = this.parseAlternation();
+    // Groups in a negative assertion never keep a capture.
+    if (negativeAssertion) this.markGroupsOptional(before);
     if (this.pattern[this.index] === ")") this.index++;
     if (capture) this.groups[captureNumber] = child;
     const folded = this.foldedCaseSensitive;
@@ -564,29 +581,19 @@ class RegexParser {
 }
 
 /**
- * The one character class a lookahead body reads, as with `a`, `[ab]` or
- * `a|[bc]`, or null when it reads more or other characters.
+ * The characters a lookahead body reads, as with `a`, `[ab]` or `a|[bc]`, or
+ * null when it reads more or other characters.
  */
-function lookaheadCharacters(node: RegexNode): RegexSymbol | null {
-  if (node.kind === "atom") {
-    return node.symbol?.kind === "literal" || node.symbol?.kind === "class" ? node.symbol : null;
-  }
-  if (node.kind !== "alternation") return null;
-  const values = new Set<string>();
-  let nonAscii: NonAsciiDomain = "none";
-  for (const branch of node.branches) {
+function lookaheadCharacters(node: RegexNode): RegexSymbol[] | null {
+  const branches = node.kind === "alternation" ? node.branches : [node];
+  const characters: RegexSymbol[] = [];
+  for (const branch of branches) {
     if (branch.kind !== "atom") return null;
     const symbol = branch.symbol;
-    if (symbol?.kind === "literal" && symbol.value.charCodeAt(0) <= 0x7f) {
-      values.add(symbol.key);
-    } else if (symbol?.kind === "class") {
-      for (const value of symbol.values) values.add(value);
-      nonAscii = unionNonAscii(nonAscii, symbol.nonAscii);
-    } else {
-      return null;
-    }
+    if (symbol?.kind !== "literal" && symbol?.kind !== "class") return null;
+    characters.push(symbol);
   }
-  return createClassSymbol(values, nonAscii);
+  return characters;
 }
 
 function exactWidth(node: RegexNode): number | null {
@@ -1215,7 +1222,7 @@ function addPaths(target: PathCounts, source: PathCounts, factor = 1): PathCount
  */
 class PositionAutomaton {
   readonly symbols: Array<RegexSymbol | null> = [null];
-  readonly excluded: Array<RegexSymbol | null> = [null];
+  readonly excluded: RegexSymbol[][] = [[]];
   readonly guards: Array<RegexSymbol[] | null> = [null];
   /** Each edge's target, listed once per path that builds it. */
   readonly follow: number[][] = [];
@@ -1243,7 +1250,7 @@ class PositionAutomaton {
 
   private position(
     symbol: RegexSymbol | null,
-    excluded: RegexSymbol | null = null,
+    excluded: RegexSymbol[] = [],
     guard: RegexSymbol[] | null = null,
   ): number {
     // The start state is not counted.
@@ -1385,7 +1392,7 @@ class PositionAutomaton {
               const word = lookahead.children.map(
                 (part) => (part as Extract<RegexNode, { kind: "atom" }>).symbol!,
               );
-              position = this.position(guarded.symbol, null, word);
+              position = this.position(guarded.symbol, [], word);
             }
             if (position !== null) {
               fragment = this.concat(fragment, this.single(position));
@@ -1460,10 +1467,8 @@ type AmbiguityGraph = {
  */
 function applyLookaheadGuards(automaton: PositionAutomaton): AmbiguityGraph | null {
   const { excluded, follow, guards, symbols } = automaton;
-  const staticExclusions = (position: number): RegexSymbol[] =>
-    excluded[position] ? [excluded[position]!] : [];
   if (!guards.some((guard) => guard !== null)) {
-    return { symbols, excluded: symbols.map((_, position) => staticExclusions(position)), follow };
+    return { symbols, excluded, follow };
   }
 
   const graph: AmbiguityGraph = { symbols: [null], excluded: [[]], follow: [[]] };
@@ -1518,7 +1523,7 @@ function applyLookaheadGuards(automaton: PositionAutomaton): AmbiguityGraph | nu
         character: string | null;
         without: RegexSymbol[];
       }> = [];
-      const exclusions = staticExclusions(target);
+      const exclusions = excluded[target]!;
       for (const character of checked.values()) {
         if (symbol !== null && !symbolsMayOverlap(symbol, character)) continue;
         if (exclusions.some((exclusion) => symbolsMayOverlap(exclusion, character))) continue;

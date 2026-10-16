@@ -124,10 +124,12 @@ const SOURCES = [
   // Plain literal text to path-to-regexp.
   "/foo[bar]",
   "/a|b",
-  // Linear: the backreference reads the fixed `x`, and `(?!a|b)a` never
-  // matches.
+  // Linear: the backreferences read the fixed `x` and `a`, and `(?!a|b)a`
+  // and `(?!é|x)é` never match.
   "/:a(x)/:id(y\\1)+",
   "/:id(x(?:(?!a|b)a|a))+",
+  "/:a(a)/:id(\\1+)",
+  "/:id(x(?:(?!é|x)é|é))+",
   // Invalid in path-to-regexp; Next.js fails the build for these.
   "/:a:b",
   "/foo:path*",
@@ -143,6 +145,8 @@ const PATHNAMES = [
   "/x/yx/yx",
   "/x/yx/y",
   "/xa/xa",
+  "/a/aaa",
+  "/xé/xé",
   "/abxabY",
   "/abxaab",
   "/abab",

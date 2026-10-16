@@ -9836,6 +9836,22 @@ describe("middleware matcher patterns", () => {
     }
   });
 
+  it("accepts backreferences to captures that always take part and impossible lookahead branches", async () => {
+    const { compileMiddlewareMatcherPattern } =
+      await import("../packages/vinext/src/server/middleware-matcher-pattern.js");
+
+    // The capture always reads `a`, and `(?!é|x)é` never matches, so each
+    // path is read one way.
+    for (const matcher of ["/:id((?<x>a)\\k<x>+)", "/:id(x(?:(?!é|x)é|é))+"]) {
+      expect(compileMiddlewareMatcherPattern(matcher).regexp, matcher).toBeInstanceOf(RegExp);
+    }
+    // An optional capture leaves its backreference free to read nothing, and
+    // `(?!ê|x)` does not rule out `é`.
+    for (const matcher of ["/:id((?<x>a)?\\k<x>+)", "/:id(x(?:(?!ê|x)é|é))+"]) {
+      expect(compileMiddlewareMatcherPattern(matcher), matcher).toMatchObject({ kind: "unsafe" });
+    }
+  });
+
   it("handles fixed-width nested repeats and simple class intersections", async () => {
     const { compileMiddlewareMatcherPattern } =
       await import("../packages/vinext/src/server/middleware-matcher-pattern.js");
@@ -13976,6 +13992,26 @@ describe("isSafeRegex", () => {
     expect(isSafeRegex("(a+?)")).toBe(true);
     // (a*?) is non-greedy '*', still just one quantifier
     expect(isSafeRegex("(a*?)")).toBe(true);
+  });
+
+  it("reads a backreference to a capture that always takes part as its word", async () => {
+    const { isSafeRegex } = await import("../packages/vinext/src/config/config-matchers.js");
+    // The capture always reads `a`, so the backreference does too.
+    expect(isSafeRegex("^(a)\\1+$")).toBe(true);
+    expect(isSafeRegex("^(?<x>a)\\k<x>+$")).toBe(true);
+    expect(isSafeRegex("^(?:(a)b)+\\1+$")).toBe(true);
+    // A capture that may not take part leaves the backreference empty.
+    for (const pattern of [
+      "^(a)?\\1+$",
+      "^(?:(a)|b)\\1+$",
+      "^(?:b|(a))\\1+$",
+      "^(?:(a)|\\1)+$",
+      "^(?!(a))\\1+$",
+      "^(?:(a)b)*\\1+$",
+    ]) {
+      expect(isSafeRegex(pattern), pattern).toBe(false);
+    }
+    expect(isSafeRegex("^(?:(a)\\1*)+$")).toBe(false);
   });
 });
 
