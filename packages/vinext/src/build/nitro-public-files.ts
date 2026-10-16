@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "pathslash";
 import { NITRO_APP_FETCH_KEY } from "../server/nitro-public-files.js";
 
@@ -25,6 +26,22 @@ const NITRO_PUBLIC_FILES_PLUGIN = "#vinext/nitro-public-files";
 const CDN_STATIC_PRESETS = new Set(["aws-amplify"]);
 
 /**
+ * Define the Nitro runtime plugin that lets vinext's router fetch public
+ * files in-process. Nitro reads virtual modules when it sets up, before Vite
+ * resolves its config, so this runs from Nitro's setup hook; the plugin only
+ * loads once `routeNitroPublicFilesThroughRouter` registers it.
+ */
+export function defineNitroPublicFilesPlugin(options: NitroPublicFilesOptions): void {
+  options.virtual ??= {};
+  options.virtual[NITRO_PUBLIC_FILES_PLUGIN] = [
+    "export default function vinextNitroPublicFiles(nitroApp) {",
+    `  globalThis[Symbol.for(${JSON.stringify(NITRO_APP_FETCH_KEY)})] = (request) => nitroApp.fetch(request);`,
+    "}",
+    "",
+  ].join("\n");
+}
+
+/**
  * Route public/ files through vinext's router on Nitro presets that serve
  * static files in-process.
  *
@@ -50,28 +67,34 @@ export function routeNitroPublicFilesThroughRouter(
   const nitroBase = (options.baseURL ?? "/").replace(/\/+$/, "");
   if (nitroBase && nitroBase !== basePath) return null;
 
-  // Nitro serves each asset directory below its own `baseURL`.
-  const requestPrefix = (assetBaseURL: string) => nitroBase + assetBaseURL;
-  const publicAssets = options.publicAssets ?? [];
-  const routed = publicAssets.find((asset) => asset.baseURL?.startsWith(NITRO_PUBLIC_FILES_BASE));
-  if (routed?.baseURL) return requestPrefix(routed.baseURL);
-
-  const asset = publicAssets.find(
+  // Vite resolves publicDir through symlinks; Nitro keeps the path it got.
+  const realPublicDir = realPath(publicDir);
+  const asset = options.publicAssets?.find(
     (candidate) =>
-      path.resolve(candidate.dir) === path.resolve(publicDir) && (candidate.baseURL ?? "/") === "/",
+      realPath(candidate.dir) === realPublicDir &&
+      ((candidate.baseURL ?? "/") === "/" ||
+        candidate.baseURL?.startsWith(NITRO_PUBLIC_FILES_BASE)),
   );
   if (!asset) return null;
 
-  asset.baseURL = NITRO_PUBLIC_FILES_BASE + secret;
+  // A repeated call keeps the first prefix.
+  const baseURL = asset.baseURL?.startsWith(NITRO_PUBLIC_FILES_BASE)
+    ? asset.baseURL
+    : NITRO_PUBLIC_FILES_BASE + secret;
+  asset.baseURL = baseURL;
   asset.fallthrough = false;
-  options.virtual ??= {};
-  options.virtual[NITRO_PUBLIC_FILES_PLUGIN] = [
-    "export default function vinextNitroPublicFiles(nitroApp) {",
-    `  globalThis[Symbol.for(${JSON.stringify(NITRO_APP_FETCH_KEY)})] = (request) => nitroApp.fetch(request);`,
-    "}",
-    "",
-  ].join("\n");
   options.plugins ??= [];
-  options.plugins.push(NITRO_PUBLIC_FILES_PLUGIN);
-  return requestPrefix(asset.baseURL);
+  if (!options.plugins.includes(NITRO_PUBLIC_FILES_PLUGIN)) {
+    options.plugins.push(NITRO_PUBLIC_FILES_PLUGIN);
+  }
+  // Nitro serves each asset directory below its own `baseURL`.
+  return nitroBase + baseURL;
+}
+
+function realPath(dir: string): string {
+  try {
+    return path.resolve(fs.realpathSync(dir));
+  } catch {
+    return path.resolve(dir);
+  }
 }

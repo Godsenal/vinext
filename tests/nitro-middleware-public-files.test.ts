@@ -77,6 +77,7 @@ async function writeFiles(root: string, files: Record<string, string>): Promise<
 async function buildAndStart(
   root: string,
   nitroConfig: Record<string, unknown>,
+  laterPlugins: Plugin[] = [],
 ): Promise<{ server: ChildProcess; baseUrl: string }> {
   const nitroModule = (await import(
     pathToFileURL(path.join(NITRO_NODE_MODULES, "nitro/dist/vite.mjs")).href
@@ -88,6 +89,7 @@ async function buildAndStart(
     plugins: [
       vinext({ appDir: root }),
       nitroModule.nitro({ buildDir: path.join(root, ".nitro"), ...nitroConfig }),
+      ...laterPlugins,
     ],
   });
   await builder.buildApp();
@@ -337,5 +339,41 @@ describe("App Router on Nitro: public files under a Nitro baseURL without basePa
     const response = await fetch(`${baseUrl}/app/file.txt`);
     expect(response.status).toBe(200);
     expect(await response.text()).toBe("nitro base file");
+  });
+});
+
+describe("App Router on Nitro: a publicDir set by a later plugin", () => {
+  let root = "";
+  let server: ChildProcess | undefined;
+  let baseUrl = "";
+
+  beforeAll(async () => {
+    root = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-nitro-public-late-"));
+    await writeFiles(root, {
+      "app/layout.tsx": LAYOUT,
+      "app/page.tsx": `export default function Page() { return <p>home</p>; }\n`,
+      "public/file.txt": "nitro public file",
+    });
+
+    // Nitro sets up during the config hooks, before this plugin runs.
+    const latePublicDir: Plugin = {
+      name: "late-public-dir",
+      config: () => ({ publicDir: "late-public" }),
+    };
+    ({ server, baseUrl } = await buildAndStart(root, {}, [latePublicDir]));
+    await waitForServer(baseUrl);
+  }, 180_000);
+
+  afterAll(async () => {
+    await stopServer(server);
+    if (root) await fs.rm(root, { recursive: true, force: true });
+  });
+
+  // The router serves the resolved publicDir, which Nitro doesn't register,
+  // so Nitro keeps serving public/.
+  it("keeps serving public/ through Nitro", async () => {
+    const response = await fetch(`${baseUrl}/file.txt`);
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe("nitro public file");
   });
 });

@@ -180,6 +180,7 @@ import {
 } from "./cli-dev-config.js";
 import { ensureAssetsIgnore } from "./build/assets-ignore.js";
 import {
+  defineNitroPublicFilesPlugin,
   routeNitroPublicFilesThroughRouter,
   type NitroPublicFilesOptions,
 } from "./build/nitro-public-files.js";
@@ -1769,9 +1770,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let hasNitroPlugin = false;
   let nitroHostRuntime: "node" | "worker" = "node";
   let nitroPublicFilesPrefix: string | null = null;
-  // Vite's public directory, resolved the way Vite does. Nitro creates its
-  // instance during the config hooks, before Vite resolves the config.
-  let vitePublicDir: string | null = null;
+  // Nitro creates its instance during the config hooks, before later plugins
+  // settle Vite's publicDir, so public files are routed in configResolved.
+  let nitroPublicFilesOptions: NitroSetupContext["options"] | null = null;
   let resolvedServerExternalPackages: string[] = [];
   let registerNodeOpenTelemetryLoader = false;
   let pagesTsconfigAliases: Record<string, string> = {};
@@ -2639,10 +2640,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           typeof config.build?.emptyOutDir === "boolean" ? config.build.emptyOutDir : undefined;
         isServeCommand = env.command === "serve";
         root = path.resolve(toSlash(process.cwd()), config.root ?? ".");
-        vitePublicDir =
-          config.publicDir === false || config.publicDir === ""
-            ? null
-            : path.resolve(root, config.publicDir ?? "public");
         if (env.command === "build") assertClientOutDirIsSeparate(root, options);
         const devCliLifecycleEnabled =
           env.command === "serve" &&
@@ -8173,11 +8170,8 @@ export const loadServerActionClient = ${
           if (!nextConfig) return;
           if (!hasAppDir && !hasPagesDir) return;
 
-          nitroPublicFilesPrefix = routeNitroPublicFilesThroughRouter(nitro.options, {
-            basePath: nextConfig.basePath,
-            publicDir: vitePublicDir,
-            secret: randomBytes(16).toString("hex"),
-          });
+          nitroPublicFilesOptions = nitro.options;
+          defineNitroPublicFilesPlugin(nitro.options);
 
           if (resolvedServerExternalPackages.length > 0) {
             nitro.options.traceDeps = [
@@ -8185,6 +8179,14 @@ export const loadServerActionClient = ${
             ];
           }
         },
+      },
+      configResolved(config) {
+        if (!nitroPublicFilesOptions || !nextConfig) return;
+        nitroPublicFilesPrefix = routeNitroPublicFilesThroughRouter(nitroPublicFilesOptions, {
+          basePath: nextConfig.basePath,
+          publicDir: config.publicDir || null,
+          secret: randomBytes(16).toString("hex"),
+        });
       },
     } as Plugin & {
       nitro: { setup: (nitro: NitroSetupContext) => void };
