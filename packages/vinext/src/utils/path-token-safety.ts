@@ -2,7 +2,9 @@ import {
   analyzeRegexAmbiguity,
   analyzeRegexSafety,
   analyzeRegexRepetitionChains,
+  countCapturingGroups,
   mayHaveNamedGroups,
+  type CaptureContext,
   regexAtomsMayOverlap,
 } from "./regex-safety.js";
 import { pathTokensToRegExpSource, type PathKey, type PathToken } from "./path-to-regexp.js";
@@ -129,8 +131,16 @@ export type PathTokenSafetyOptions = {
   ignoreCase: boolean;
 };
 
-function unsafeTokenReason(token: PathKey, namedGroups: boolean): string | null {
-  const regexSafetyIssue = analyzeRegexSafety(token.pattern, { ignoreCase: true, namedGroups });
+function unsafeTokenReason(
+  token: PathKey,
+  namedGroups: boolean,
+  captures: CaptureContext,
+): string | null {
+  const regexSafetyIssue = analyzeRegexSafety(token.pattern, {
+    ignoreCase: true,
+    namedGroups,
+    captures,
+  });
   if (regexSafetyIssue) {
     if (regexSafetyIssue === "analysis budget exceeded") {
       return `parameter "${token.name}" exceeds the regex analysis budget`;
@@ -159,10 +169,22 @@ export function unsafePathTokensReason(
   const namedGroups = tokens.some(
     (token) => typeof token !== "string" && mayHaveNamedGroups(token.pattern),
   );
-  for (const token of tokens) {
-    if (typeof token === "string") continue;
-    const reason = unsafeTokenReason(token, namedGroups);
-    if (reason) return reason;
+  // pathTokensToRegExpSource wraps each param's pattern in a capture, after
+  // the captures of the params before it, and writes a repeated param's
+  // pattern twice.
+  const captureCounts = tokens.map((token) => {
+    if (typeof token === "string" || !token.pattern) return 0;
+    const repeated = token.modifier === "+" || token.modifier === "*";
+    return 1 + countCapturingGroups(token.pattern) * (repeated ? 2 : 1);
+  });
+  const total = captureCounts.reduce((sum, count) => sum + count, 0);
+  let before = 0;
+  for (const [index, token] of tokens.entries()) {
+    if (typeof token !== "string") {
+      const reason = unsafeTokenReason(token, namedGroups, { before: before + 1, total });
+      if (reason) return reason;
+    }
+    before += captureCounts[index]!;
   }
   // Tokens that do not compile yet are checked again by the caller once
   // normalized, or rejected as invalid.

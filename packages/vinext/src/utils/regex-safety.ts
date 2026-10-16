@@ -181,8 +181,15 @@ function hasScopedIgnoreCase(pattern: string): boolean {
   return false;
 }
 
+/**
+ * Where a pattern sits in the RegExp it is compiled into: after `before`
+ * capturing groups, with `total` in the whole RegExp. Numbered
+ * backreferences count them all.
+ */
+export type CaptureContext = { before: number; total: number };
+
 /** Capturing groups in `pattern`, named or not, outside classes and escapes. */
-function countCapturingGroups(pattern: string): number {
+export function countCapturingGroups(pattern: string): number {
   let count = 0;
   let inClass = false;
   for (let index = 0; index < pattern.length; index++) {
@@ -227,10 +234,11 @@ class RegexParser {
     private readonly pattern: string,
     ignoreCase: boolean,
     private readonly namedGroups: boolean,
+    private readonly context: CaptureContext = { before: 0, total: countCapturingGroups(pattern) },
   ) {
     this.ignoreCase = ignoreCase || hasScopedIgnoreCase(pattern);
     this.scopeIgnoreCase = ignoreCase;
-    this.captures = countCapturingGroups(pattern);
+    this.captures = context.total;
   }
 
   parse(): RegexNode {
@@ -505,7 +513,8 @@ class RegexParser {
       const digits = /^\d*/.exec(this.pattern.slice(this.index))![0];
       if (escaped !== "0" && Number(escaped + digits) <= this.captures) {
         this.index += digits.length;
-        return this.backreference(Number(escaped + digits));
+        // A group outside `pattern` is unknown here.
+        return this.backreference(Number(escaped + digits) - this.context.before);
       }
       // Annex B: otherwise `\8` and `\9` are literal digits and `\0`-`\7`
       // start a legacy octal escape of up to three digits, at most `\377`.
@@ -1272,13 +1281,14 @@ export function mayHaveNamedGroups(pattern: string): boolean {
  */
 export function analyzeRegexSafety(
   pattern: string,
-  options: { ignoreCase?: boolean; namedGroups?: boolean } = {},
+  options: { ignoreCase?: boolean; namedGroups?: boolean; captures?: CaptureContext } = {},
 ): RegexSafetyIssue | null {
   if (pattern.length > MAX_PATTERN_LENGTH) return "analysis budget exceeded";
   const parser = new RegexParser(
     pattern,
     options.ignoreCase === true,
     options.namedGroups ?? mayHaveNamedGroups(pattern),
+    options.captures,
   );
   const node = parser.parse();
   if (parser.exceededBudget) return "analysis budget exceeded";

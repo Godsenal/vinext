@@ -9872,6 +9872,9 @@ describe("middleware matcher patterns", () => {
       // Groups in different alternatives may share a name, and the
       // backreference reads whichever took part, here `a`.
       "/:a((?:(?<g>a)|(?<g>b)))/:id(\\k<g>|a)+",
+      // `\2` is `g`, counting the capture the compiled source adds around
+      // the param, so it repeats `a+`.
+      `/:id((?<g>${"a+"})\\2{20})`,
       // `g` captured `a`, so `(?!ab)` does not apply where it is compared.
       `/:x((?<g>${"(?!ab)a"})c)/:id(\\k<g>?a?b)+`,
       "/:id(x(?:(?!ê|x)é|é))+",
