@@ -58,6 +58,7 @@ import { shouldServeStreamingMetadata } from "./streaming-metadata.js";
 import { resolveAppPageBranchParams, resolveAppPageSegmentParams } from "./app-page-params.js";
 import {
   createAppPageRenderDependency,
+  getPendingCssWrappedResult,
   invokeAppComponent,
   isAppClientReference,
   isAppRenderSuspension,
@@ -642,7 +643,13 @@ export async function buildPageElements<
               : (resolvedResult as React.ReactNode),
           );
         }
-        renderDependency?.release();
+        if (renderDependency && getPendingCssWrappedResult(result)) {
+          // An async page inside its CSS wrapper also reaches its first
+          // continuation before this microtask.
+          void Promise.resolve().then(() => renderDependency.release());
+        } else {
+          renderDependency?.release();
+        }
         return renderDependency
           ? renderAfterAppDependencies(
               result as React.ReactNode,

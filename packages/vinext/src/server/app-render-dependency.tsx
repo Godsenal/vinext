@@ -122,14 +122,12 @@ function isElementOfProps(
  * directly renders as an element with its props after all. React's dev build
  * serializes an element's props as debug info and calls `then` on `params`
  * and `searchParams`, which counts as reading them. Invoke the inner
- * component directly instead, as for an export without CSS. That also returns
- * an async component's promise, so a dependency barrier waits for its result
- * rather than for the wrapper's.
+ * component directly instead, as for an export without CSS.
  */
 function invokeCssWrappedComponent(
   result: ReactNode,
   props: Readonly<Record<string, unknown>>,
-): ReactNode | Promise<ReactNode> {
+): ReactNode {
   if (
     !isValidElement<{ children?: unknown }>(result) ||
     result.type !== Fragment ||
@@ -154,11 +152,37 @@ function invokeCssWrappedComponent(
 
   // The element's props, so the component gets its defaultProps as before.
   const componentResult = invokeAppComponent(component, inner.props);
-  return isPromiseLike(componentResult)
-    ? Promise.resolve(componentResult).then((resolved) =>
-        createElement(Fragment, null, css, resolved),
-      )
-    : createElement(Fragment, null, css, componentResult);
+  if (!isPromiseLike(componentResult)) {
+    const element = createElement(Fragment, null, css, componentResult);
+    // A component that is itself CSS-wrapped may still be pending.
+    const nestedPendingResult = getPendingCssWrappedResult(componentResult);
+    if (nestedPendingResult) pendingCssWrappedResults.set(element, nestedPendingResult);
+    return element;
+  }
+
+  // Keep the CSS ahead of an async component's result, as the wrapper does,
+  // so Flight sends the stylesheet while the component is still pending.
+  const pendingResult = Promise.resolve(componentResult);
+  // React reads the rejection when it renders the result below.
+  pendingResult.catch(() => {});
+  function CssWrappedComponentResult() {
+    return pendingResult;
+  }
+  CssWrappedComponentResult.displayName = component.displayName ?? component.name;
+  const element = createElement(Fragment, null, css, createElement(CssWrappedComponentResult));
+  pendingCssWrappedResults.set(element, pendingResult);
+  return element;
+}
+
+const pendingCssWrappedResults = new WeakMap<object, Promise<ReactNode>>();
+
+/**
+ * The pending result of an async component that `invokeAppComponent` returned
+ * inside its CSS wrapper's fragment, which a dependency on the component
+ * waits for.
+ */
+export function getPendingCssWrappedResult(result: unknown): Promise<ReactNode> | null {
+  return isValidElement(result) ? (pendingCssWrappedResults.get(result) ?? null) : null;
 }
 
 const appElementRenderDependencies = new WeakMap<
@@ -271,6 +295,13 @@ export function renderAppComponentWithDependencyBarrier(
             throw error;
           },
         );
+      }
+
+      const pendingResult = getPendingCssWrappedResult(result);
+      if (pendingResult) {
+        const release = () => dependency.release();
+        void pendingResult.then(release, release);
+        return result;
       }
 
       dependency.release();
