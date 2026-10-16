@@ -27,7 +27,7 @@ import {
   buildRequestHeadersFromMiddlewareResponse,
   getUnconsumedMiddlewareRequestHeaders,
 } from "../utils/middleware-request-headers.js";
-import { analyzeRegexSafety } from "../utils/regex-safety.js";
+import { analyzeRegexSafety, canonicalizeIgnoreCase } from "../utils/regex-safety.js";
 import {
   normalizePathTokens,
   parsePathPattern,
@@ -151,6 +151,19 @@ function getCachedRegex<K, V>(cache: Map<K, V | null>, key: K, compile: () => V 
  */
 const _LOCALE_STATIC_RE = /^\/:\w+\(([\w-]*(?:\|[\w-]*)*)\)(\??)\/([a-zA-Z0-9_~.%@!$&',;=/-]+)$/;
 
+/**
+ * Folds case as a RegExp with `i` and without `u` compares characters, as
+ * the compiled source does: `toLowerCase()` would also read the Kelvin sign
+ * as `k`.
+ */
+function foldCase(value: string): string {
+  // Printable ASCII uppercases one character at a time.
+  if (!/[^ -~]/.test(value)) return value.toUpperCase();
+  let folded = "";
+  for (let i = 0; i < value.length; i++) folded += canonicalizeIgnoreCase(value[i]!);
+  return folded;
+}
+
 type LocaleStaticEntry = {
   /** The param name extracted from the source (e.g. "locale"). */
   paramName: string;
@@ -218,7 +231,7 @@ function _getRedirectIndex(redirects: NextRedirect[]): RedirectIndex {
         redirect,
         originalIndex: i,
       };
-      const bucketKey = suffix.toLowerCase();
+      const bucketKey = foldCase(suffix);
       const bucket = localeStatic.get(bucketKey);
       if (bucket) {
         bucket.push(entry);
@@ -781,7 +794,7 @@ export function matchRedirect(
     // (the locale segment was optional). Mandatory-locale entries — emitted
     // by `applyLocaleToRoutes` as `/:nextInternalLocale(en|fr)/foo` — must
     // not match here because they require the locale segment to be present.
-    const noLocaleBucket = index.localeStatic.get(normalizedPathname.toLowerCase());
+    const noLocaleBucket = index.localeStatic.get(foldCase(normalizedPathname));
     if (noLocaleBucket) {
       for (const entry of noLocaleBucket) {
         if (!entry.optional) continue; // mandatory-locale rule — skip
@@ -811,7 +824,7 @@ export function matchRedirect(
     if (slashTwo !== -1) {
       const suffix = normalizedPathname.slice(slashTwo); // e.g. "/security"
       const localePart = normalizedPathname.slice(1, slashTwo); // e.g. "en"
-      const localeBucket = index.localeStatic.get(suffix.toLowerCase());
+      const localeBucket = index.localeStatic.get(foldCase(suffix));
       if (localeBucket) {
         for (const entry of localeBucket) {
           if (entry.originalIndex >= localeMatchIndex) continue;

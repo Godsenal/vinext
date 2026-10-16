@@ -58,7 +58,7 @@ const MAX_PRODUCT_EDGES = 500_000;
 // Follow lists longer than this are indexed by character for the product.
 const MAX_UNINDEXED_FOLLOW = 16;
 
-function canonicalizeIgnoreCase(character: string): string {
+export function canonicalizeIgnoreCase(character: string): string {
   const upper = character.toUpperCase();
   // ECMAScript's non-Unicode Canonicalize operation keeps the original UTF-16
   // code unit when uppercasing expands it or maps a non-ASCII character to

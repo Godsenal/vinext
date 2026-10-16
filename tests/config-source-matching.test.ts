@@ -681,6 +681,8 @@ describe("matchRedirect locale-static index agrees with the compiled source", ()
       "/:nextInternalLocale(en|fr)/about",
       "/:locale(en-US|fr)?/a/b",
       "/:locale(en|fr)?/a.b~c",
+      "/:locale(en|fr)?/kelvin",
+      "/:locale(en|fr)?/café",
     ];
     for (const source of sources) {
       const redirects = [{ source, destination: "/dest", permanent: false }];
@@ -696,6 +698,14 @@ describe("matchRedirect locale-static index agrees with the compiled source", ()
         "/a/b",
         "/fr/a.b~c",
         "/en/en/about",
+        // A RegExp `i` match does not read the Kelvin sign as `k`, but does
+        // fold `é` to `É`.
+        "/kelvin",
+        "/\u212Aelvin",
+        "/en/\u212Aelvin",
+        "/fr/KELVIN",
+        "/CAFÉ",
+        "/en/CAFÉ",
       ]) {
         expect(matchRedirect(pathname, redirects, ctx) !== null, `${source} ← ${pathname}`).toBe(
           matchConfigPattern(pathname, source) !== null,
