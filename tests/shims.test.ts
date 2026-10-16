@@ -9698,6 +9698,8 @@ describe("middleware matcher patterns", () => {
       "/:id(a|aa?)+",
       "/{x:id(a|a)}+",
       "/:id(a?a?b)+",
+      "/:id(|)+/end",
+      "/:id(a?|b?)+/end",
     ]) {
       expect(compileMiddlewareMatcherPattern(matcher), matcher).toMatchObject({
         kind: "unsafe",
@@ -9723,6 +9725,8 @@ describe("middleware matcher patterns", () => {
       "/:a([^/]*)+/end",
       "/:lang(en|en-US)+",
       "/:id([a-z]+\\/[a-z]+)+",
+      "/:id(a?)+/end",
+      "/:id(a|)+/end",
     ]) {
       expect(compileMiddlewareMatcherPattern(matcher).regexp, matcher).toBeInstanceOf(RegExp);
     }

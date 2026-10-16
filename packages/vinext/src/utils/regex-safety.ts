@@ -1007,14 +1007,30 @@ export function regexAtomsMayOverlap(left: string, right: string, ignoreCase = f
   return symbolsMayOverlap(leftSymbol, rightSymbol);
 }
 
-type PositionFragment = { first: number[]; last: number[]; nullable: boolean };
+// Path counts saturate at two: two distinct paths are enough for ambiguity.
+type PathCounts = Map<number, number>;
+type PositionFragment = { first: PathCounts; last: PathCounts; empty: number };
+
+function saturate(count: number): number {
+  return Math.min(count, 2);
+}
+
+function addPaths(target: PathCounts, source: PathCounts, factor = 1): PathCounts {
+  if (factor === 0) return target;
+  for (const [position, count] of source) {
+    target.set(position, saturate((target.get(position) ?? 0) + count * factor));
+  }
+  return target;
+}
 
 /**
  * The position (Glushkov) automaton of a parsed RegExp: one state per
  * consuming atom, entered by reading that atom's symbol, plus start state 0.
  * Repeats are unrolled, `x{1,3}` as `x(?:x(?:x)?)?`, so each state is one
- * place the backtracking engine can be. Edges keep their multiplicity: the
- * same edge built twice, as by `(a*)*`, is two ways for the engine to move.
+ * place the backtracking engine can be. Fragments count their paths, and
+ * edges keep that count: `(a*)*` builds `a -> a` twice and `\/(?:|)` ends
+ * at "/" two ways, and each is two ways for the engine to move. Like the
+ * engine, a repeat past its minimum never takes an empty iteration.
  * Assertions are read as empty, which only adds paths, except that `(?!x)`
  * right before a single-character atom removes `x` from what it reads:
  * path-to-regexp guards a param that follows text with that lookahead.
@@ -1022,31 +1038,46 @@ type PositionFragment = { first: number[]; last: number[]; nullable: boolean };
 class PositionAutomaton {
   readonly symbols: Array<RegexSymbol | null> = [null];
   readonly excluded: Array<RegexSymbol | null> = [null];
-  readonly follow: number[][] = [[]];
+  /** Each edge's target, listed once per path that builds it. */
+  readonly follow: number[][] = [];
   exceeded = false;
-  private edges = 0;
+  private readonly edges: PathCounts[] = [new Map()];
+  private edgeCount = 0;
 
   build(node: RegexNode): void {
     const fragment = this.fragment(node);
-    this.connect([0], fragment.first);
+    this.connect(new Map([[0, 1]]), fragment.first);
+    for (const targets of this.edges) {
+      const follow: number[] = [];
+      for (const [target, count] of targets) {
+        for (let copy = 0; copy < count; copy++) follow.push(target);
+      }
+      this.follow.push(follow);
+    }
   }
 
   private position(symbol: RegexSymbol | null, excluded: RegexSymbol | null = null): number {
     if (this.symbols.length >= MAX_POSITIONS) this.exceeded = true;
     this.symbols.push(symbol);
     this.excluded.push(excluded);
-    this.follow.push([]);
+    this.edges.push(new Map());
     return this.symbols.length - 1;
   }
 
-  private connect(from: readonly number[], to: readonly number[]): void {
-    for (const source of from) {
-      for (const target of to) {
-        if (++this.edges > MAX_AUTOMATON_EDGES) {
+  private single(position: number): PositionFragment {
+    return { first: new Map([[position, 1]]), last: new Map([[position, 1]]), empty: 0 };
+  }
+
+  private connect(from: PathCounts, to: PathCounts): void {
+    for (const [source, sourceCount] of from) {
+      const targets = this.edges[source]!;
+      for (const [target, targetCount] of to) {
+        const existing = targets.get(target);
+        if (existing === undefined && ++this.edgeCount > MAX_AUTOMATON_EDGES) {
           this.exceeded = true;
           return;
         }
-        this.follow[source]!.push(target);
+        targets.set(target, saturate((existing ?? 0) + sourceCount * targetCount));
       }
     }
   }
@@ -1054,30 +1085,30 @@ class PositionAutomaton {
   private concat(left: PositionFragment, right: PositionFragment): PositionFragment {
     this.connect(left.last, right.first);
     return {
-      first: left.nullable ? [...left.first, ...right.first] : left.first,
-      last: right.nullable ? [...left.last, ...right.last] : right.last,
-      nullable: left.nullable && right.nullable,
+      first: addPaths(new Map(left.first), right.first, left.empty),
+      last: addPaths(new Map(right.last), left.last, right.empty),
+      empty: saturate(left.empty * right.empty),
     };
   }
 
-  private loop(fragment: PositionFragment, nullable: boolean): PositionFragment {
+  /** `fragment` repeated without bound; `empty` is the count of empty matches. */
+  private loop(fragment: PositionFragment, empty: number): PositionFragment {
     this.connect(fragment.last, fragment.first);
-    return { ...fragment, nullable: fragment.nullable || nullable };
+    return { ...fragment, empty };
   }
 
   private fragment(node: RegexNode): PositionFragment {
-    if (this.exceeded) return { first: [], last: [], nullable: true };
+    if (this.exceeded) return { first: new Map(), last: new Map(), empty: 1 };
     switch (node.kind) {
       case "atom": {
-        const position = this.position(node.symbol);
-        const fragment = { first: [position], last: [position], nullable: false };
+        const fragment = this.single(this.position(node.symbol));
         // An unmodelled atom, such as a backreference, may match any text.
-        return node.symbol === null ? this.loop(fragment, true) : fragment;
+        return node.symbol === null ? this.loop(fragment, 1) : fragment;
       }
       case "assertion":
-        return { first: [], last: [], nullable: true };
+        return { first: new Map(), last: new Map(), empty: 1 };
       case "sequence": {
-        let fragment: PositionFragment = { first: [], last: [], nullable: true };
+        let fragment: PositionFragment = { first: new Map(), last: new Map(), empty: 1 };
         for (let index = 0; index < node.children.length; index++) {
           const child = node.children[index]!;
           const next = node.children[index + 1];
@@ -1091,12 +1122,10 @@ class PositionAutomaton {
             next.symbol !== null &&
             next.fixedWidth
           ) {
-            const position = this.position(next.symbol, excluded.symbol);
-            fragment = this.concat(fragment, {
-              first: [position],
-              last: [position],
-              nullable: false,
-            });
+            fragment = this.concat(
+              fragment,
+              this.single(this.position(next.symbol, excluded.symbol)),
+            );
             index++;
             continue;
           }
@@ -1105,29 +1134,31 @@ class PositionAutomaton {
         return fragment;
       }
       case "alternation": {
-        const fragment: PositionFragment = { first: [], last: [], nullable: false };
+        const fragment: PositionFragment = { first: new Map(), last: new Map(), empty: 0 };
         for (const branch of node.branches) {
           const child = this.fragment(branch);
-          fragment.first.push(...child.first);
-          fragment.last.push(...child.last);
-          fragment.nullable ||= child.nullable;
+          addPaths(fragment.first, child.first);
+          addPaths(fragment.last, child.last);
+          fragment.empty = saturate(fragment.empty + child.empty);
         }
         return fragment;
       }
       case "repeat": {
-        let fragment: PositionFragment = { first: [], last: [], nullable: true };
+        // Iterations up to the minimum may match empty; later ones may not.
+        let fragment: PositionFragment = { first: new Map(), last: new Map(), empty: 1 };
         const required = Number.isFinite(node.max) ? node.min : Math.max(node.min - 1, 0);
         for (let count = 0; count < required && !this.exceeded; count++) {
           fragment = this.concat(fragment, this.fragment(node.child));
         }
         if (!Number.isFinite(node.max)) {
-          return this.concat(fragment, this.loop(this.fragment(node.child), node.min === 0));
+          const child = this.fragment(node.child);
+          return this.concat(fragment, this.loop(child, node.min === 0 ? 1 : child.empty));
         }
         // Nest the optional copies so a shorter run has a single parse.
-        let optional: PositionFragment = { first: [], last: [], nullable: true };
+        let optional: PositionFragment = { first: new Map(), last: new Map(), empty: 1 };
         for (let count = node.min; count < node.max && !this.exceeded; count++) {
-          optional = this.concat(this.fragment(node.child), optional);
-          optional.nullable = true;
+          optional = this.concat({ ...this.fragment(node.child), empty: 0 }, optional);
+          optional.empty = 1;
         }
         return this.concat(fragment, optional);
       }

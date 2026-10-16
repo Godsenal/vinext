@@ -808,6 +808,10 @@ describe("config sources do not backtrack catastrophically", () => {
     "/:lang(en|en-US)+",
     // A "/" inside the pattern, but never at either end of a match.
     "/:id([a-z]+\\/[a-z]+)+",
+    // One empty match per segment.
+    "/:id(a?)+/end",
+    "/:id(a|)+/end",
+    "/:id((?:)|a)+/end",
   ];
   const ADVERSARIAL_PATHNAMES = [
     "/" + "a/".repeat(8_000) + "!",
@@ -882,6 +886,9 @@ describe("config sources do not backtrack catastrophically", () => {
         "/{x:id(a|a)}+",
         // So do adjacent optionals: each "ab" segment has two parses.
         "/:id(a?a?b)+",
+        // And two empty matches: each "/" segment has two parses.
+        "/:id(|)+/end",
+        "/:id(a?|b?)+/end",
         // Adjacent params form one chain of overlapping repeats.
         "/:a(a+):b(a+):c(a+)",
         "/:a(.*):b(.*):c(.*)",
