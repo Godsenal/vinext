@@ -9882,6 +9882,29 @@ describe("middleware matcher patterns", () => {
     });
   });
 
+  it("reads scoped flag groups and legacy octal escapes like the RegExp engine", async () => {
+    const { compileMiddlewareMatcherPattern } =
+      await import("../packages/vinext/src/server/middleware-matcher-pattern.js");
+
+    // `(?i:...)` bodies and `\141` (an octal "a" with no group 141) were
+    // opaque atoms, hiding the overlapping repeats inside them.
+    for (const matcher of ["/:id(a(?i:a+)(?i:a+)(?i:a+))", "/:id(\\141+\\141+\\141+)"]) {
+      expect(compileMiddlewareMatcherPattern(matcher), matcher).toMatchObject({
+        kind: "unsafe",
+        error: expect.stringContaining("overlapping sequential repetition"),
+      });
+    }
+    for (const matcher of [
+      "/:id((?i:ab)+)",
+      "/:id((?-i:a)b)",
+      "/:id((?s:.)x)",
+      "/:id(\\8+)",
+      "/:id(\\101\\102)",
+    ]) {
+      expect(compileMiddlewareMatcherPattern(matcher).regexp, matcher).toBeInstanceOf(RegExp);
+    }
+  });
+
   // Ported from Next.js path-to-regexp matcher semantics:
   // packages/next/src/lib/try-to-parse-path.ts
   // https://github.com/vercel/next.js/blob/canary/packages/next/src/lib/try-to-parse-path.ts

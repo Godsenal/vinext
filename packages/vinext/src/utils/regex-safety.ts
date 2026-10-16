@@ -158,17 +158,42 @@ function simpleClassSymbol(raw: string, ignoreCase: boolean): RegexSymbol | null
   return createClassSymbol(values, nonAscii);
 }
 
+/** Capturing groups in `pattern`, named or not, outside classes and escapes. */
+function countCapturingGroups(pattern: string): number {
+  let count = 0;
+  let inClass = false;
+  for (let index = 0; index < pattern.length; index++) {
+    const character = pattern[index];
+    if (character === "\\") index++;
+    else if (character === "[") inClass = true;
+    else if (character === "]") inClass = false;
+    else if (!inClass && character === "(") {
+      if (pattern[index + 1] !== "?") count++;
+      else if (pattern[index + 2] === "<" && !"=!".includes(pattern[index + 3] ?? "")) count++;
+    }
+  }
+  return count;
+}
+
 class RegexParser {
   index = 0;
   nodes = 0;
   depth = 0;
   exceededBudget = false;
+  // Flags in effect, which `(?ims-ims:...)` groups change for their body.
+  private ignoreCase: boolean;
+  private dotAll = false;
+  // Annex B reads `\N` as a backreference only up to the capture count.
+  private readonly captures: number;
 
   constructor(
     private readonly pattern: string,
-    private readonly ignoreCase: boolean,
+    ignoreCase: boolean,
     private readonly namedGroups: boolean,
-  ) {}
+  ) {
+    this.ignoreCase = ignoreCase;
+    this.captures = countCapturingGroups(pattern);
+  }
 
   parse(): RegexNode {
     return this.parseAlternation();
@@ -225,9 +250,10 @@ class RegexParser {
       return this.node({ kind: "assertion", child: this.node({ kind: "sequence", children: [] }) });
     }
     if (character === ".") {
+      const pattern = this.dotAll ? "[\\s\\S]" : ".";
       return this.node({
         kind: "atom",
-        symbol: { kind: "opaque", key: "opaque:.", pattern: ".", ignoreCase: this.ignoreCase },
+        symbol: { kind: "opaque", key: `opaque:${pattern}`, pattern, ignoreCase: this.ignoreCase },
         fixedWidth: true,
       });
     }
@@ -248,7 +274,16 @@ class RegexParser {
     }
     let assertion = false;
     let negativeLookahead = false;
-    if (this.pattern[this.index] === "?") {
+    const outerIgnoreCase = this.ignoreCase;
+    const outerDotAll = this.dotAll;
+    const modifiers = /^\?([ims]*)(?:-([ims]+))?:/.exec(this.pattern.slice(this.index));
+    if (modifiers && (modifiers[1] !== "" || modifiers[2] !== undefined)) {
+      this.index += modifiers[0].length;
+      // Reading a removed `i` as still set only lets more characters overlap.
+      if (modifiers[1]!.includes("i")) this.ignoreCase = true;
+      if (modifiers[1]!.includes("s")) this.dotAll = true;
+      if (modifiers[2]?.includes("s")) this.dotAll = false;
+    } else if (this.pattern[this.index] === "?") {
       const marker = this.pattern[this.index + 1];
       if (marker === ":") {
         this.index += 2;
@@ -268,8 +303,7 @@ class RegexParser {
       } else {
         // Unsupported group prefixes will be rejected by RegExp compilation.
         // Keep analysis conservative if this parser is asked to inspect one.
-        while (this.index < this.pattern.length && this.pattern[this.index] !== ")") this.index++;
-        if (this.pattern[this.index] === ")") this.index++;
+        this.skipGroup();
         this.depth--;
         return this.node({ kind: "atom", symbol: null, fixedWidth: false });
       }
@@ -277,6 +311,8 @@ class RegexParser {
 
     const child = this.parseAlternation();
     if (this.pattern[this.index] === ")") this.index++;
+    this.ignoreCase = outerIgnoreCase;
+    this.dotAll = outerDotAll;
     this.depth--;
     return assertion ? this.node({ kind: "assertion", child, negativeLookahead }) : child;
   }
@@ -339,12 +375,27 @@ class RegexParser {
       this.index = nameEnd === -1 ? this.pattern.length : nameEnd + 1;
       return this.node({ kind: "atom", symbol: null, fixedWidth: false });
     }
-    if (/\d/.test(escaped)) {
-      return this.node({ kind: "atom", symbol: null, fixedWidth: false });
-    }
-
     let literal: string | null = null;
-    if (escaped === "x" && /^[\da-fA-F]{2}/.test(this.pattern.slice(this.index, this.index + 2))) {
+    if (/\d/.test(escaped)) {
+      const digits = /^\d*/.exec(this.pattern.slice(this.index))![0];
+      if (escaped !== "0" && Number(escaped + digits) <= this.captures) {
+        this.index += digits.length;
+        return this.node({ kind: "atom", symbol: null, fixedWidth: false });
+      }
+      // Annex B: otherwise `\8` and `\9` are literal digits and `\0`-`\7`
+      // start a legacy octal escape of up to three digits, at most `\377`.
+      if (escaped === "8" || escaped === "9") {
+        literal = escaped;
+      } else {
+        const octal = /^[0-7]{0,2}/.exec(this.pattern.slice(this.index))![0];
+        const length = escaped <= "3" ? octal.length : Math.min(octal.length, 1);
+        literal = String.fromCharCode(Number.parseInt(escaped + octal.slice(0, length), 8));
+        this.index += length;
+      }
+    } else if (
+      escaped === "x" &&
+      /^[\da-fA-F]{2}/.test(this.pattern.slice(this.index, this.index + 2))
+    ) {
       literal = String.fromCharCode(
         Number.parseInt(this.pattern.slice(this.index, this.index + 2), 16),
       );
@@ -368,9 +419,9 @@ class RegexParser {
         literal = "\\";
         this.index--;
       }
-    } else if ("nrtvf0".includes(escaped)) {
-      literal = ({ n: "\n", r: "\r", t: "\t", v: "\v", f: "\f", 0: "\0" } as const)[
-        escaped as "n" | "r" | "t" | "v" | "f" | "0"
+    } else if ("nrtvf".includes(escaped)) {
+      literal = ({ n: "\n", r: "\r", t: "\t", v: "\v", f: "\f" } as const)[
+        escaped as "n" | "r" | "t" | "v" | "f"
       ];
     } else if (!/[A-Za-z]/.test(escaped)) {
       literal = escaped;
