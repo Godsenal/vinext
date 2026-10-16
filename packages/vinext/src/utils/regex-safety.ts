@@ -319,22 +319,16 @@ class RegexParser {
 
   /**
    * A backreference matches the text its group captured, or nothing when the
-   * group did not take part. When the group is closed and reads one fixed
-   * word, that is the word, or the word or nothing when the group may not
-   * have taken part. Otherwise it may match any text.
+   * group did not take part. That text is one the group's body reads, so the
+   * body stands in for it, optional when the group may not have taken part.
+   * The engine reads the text one way, so the stand-in only adds paths. An
+   * open or unknown group may have captured any text.
    */
   private backreference(group: number | undefined): RegexNode {
     const body = group === undefined || this.skippedGroup ? undefined : this.groups[group];
-    const words = body && fixedWords(body, { words: 0, symbols: 0, exceeded: false });
-    if (!words || words.length !== 1) {
-      return this.node({ kind: "atom", symbol: null, fixedWidth: false });
-    }
-    const children = words[0]!.map((symbol) =>
-      this.node({ kind: "atom", symbol, fixedWidth: true }),
-    );
-    const word = this.node({ kind: "sequence", children });
-    if (!this.optionalGroups.has(group!)) return word;
-    return this.node({ kind: "repeat", child: word, min: 0, max: 1 });
+    if (!body) return this.node({ kind: "atom", symbol: null, fixedWidth: false });
+    if (!this.optionalGroups.has(group!)) return body;
+    return this.node({ kind: "repeat", child: body, min: 0, max: 1 });
   }
 
   private parseGroup(): RegexNode {
