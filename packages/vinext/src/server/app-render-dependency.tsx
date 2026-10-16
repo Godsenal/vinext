@@ -122,13 +122,14 @@ function isElementOfProps(
  * directly renders as an element with its props after all. React's dev build
  * serializes an element's props as debug info and calls `then` on `params`
  * and `searchParams`, which counts as reading them. Invoke the inner
- * component from an element without props instead, as for an export without
- * CSS.
+ * component directly instead, as for an export without CSS. That also returns
+ * an async component's promise, so a dependency barrier waits for its result
+ * rather than for the wrapper's.
  */
 function invokeCssWrappedComponent(
   result: ReactNode,
   props: Readonly<Record<string, unknown>>,
-): ReactNode {
+): ReactNode | Promise<ReactNode> {
   if (
     !isValidElement<{ children?: unknown }>(result) ||
     result.type !== Fragment ||
@@ -152,12 +153,12 @@ function invokeCssWrappedComponent(
   if (!isElementOfProps(inner.props, props, component.defaultProps)) return result;
 
   // The element's props, so the component gets its defaultProps as before.
-  const componentProps = inner.props;
-  function CssWrappedComponent() {
-    return invokeAppComponent(component, componentProps);
-  }
-  CssWrappedComponent.displayName = component.displayName ?? component.name;
-  return createElement(Fragment, null, css, createElement(CssWrappedComponent));
+  const componentResult = invokeAppComponent(component, inner.props);
+  return isPromiseLike(componentResult)
+    ? Promise.resolve(componentResult).then((resolved) =>
+        createElement(Fragment, null, css, resolved),
+      )
+    : createElement(Fragment, null, css, componentResult);
 }
 
 const appElementRenderDependencies = new WeakMap<

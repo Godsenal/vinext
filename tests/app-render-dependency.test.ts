@@ -122,6 +122,7 @@ describe("app render dependency helpers", () => {
         }
 
         const forwardRefLayout = createLayout("forwardRef");
+        const cssLayout = createLayout("css");
         const layouts = {
           plain: createLayout("plain"),
           memo: React.memo(createLayout("memo")),
@@ -130,6 +131,15 @@ describe("app render dependency helpers", () => {
             events.push("forwardRef:ref:" + String(ref));
             return forwardRefLayout(props);
           }),
+          // The shape of @vitejs/plugin-rsc's __vite_rsc_wrap_css__ wrapper.
+          css: function CssWrapper(props) {
+            return React.createElement(
+              React.Fragment,
+              null,
+              React.createElement("link", { rel: "stylesheet", href: "/layout.css" }),
+              React.createElement(cssLayout, props),
+            );
+          },
         };
         const model = {};
 
@@ -169,7 +179,7 @@ describe("app render dependency helpers", () => {
     );
 
     const events = JSON.parse(stdout) as string[];
-    for (const name of ["plain", "memo", "lazy", "forwardRef"]) {
+    for (const name of ["plain", "memo", "lazy", "forwardRef", "css"]) {
       expect(events.indexOf(`${name}:layout:start`)).toBeLessThan(
         events.indexOf(`${name}:layout:end`),
       );
@@ -200,16 +210,29 @@ describe("app render dependency helpers", () => {
     if (!isValidElement<{ children: [unknown, ReactElement] }>(result)) {
       throw new Error("expected an element");
     }
-    const inner = result.props.children[1];
-    // React's dev build serializes an element's props as debug info, which
-    // would call `then` on params and searchParams.
-    expect(inner.props).toEqual({});
-    expect(inner.type).toHaveProperty("displayName", "Page");
+    // Page ran directly, so no element got the props. React's dev build
+    // serializes an element's props as debug info, which would call `then` on
+    // params and searchParams.
+    expect(receivedProps).toEqual(props);
+    expect(result.props.children[1].type).toBe("p");
 
     const body = await renderHtml(result);
     expect(body).toContain('href="/page.css"');
     expect(body).toContain("<p>page</p>");
-    expect(receivedProps).toEqual(props);
+  });
+
+  it("returns the promise of an async CSS-wrapped component", async () => {
+    async function Page() {
+      await Promise.resolve();
+      return createElement("p", null, "page");
+    }
+    function CssWrapper(wrapperProps: Record<string, unknown>) {
+      return createElement(Fragment, null, "css", createElement(Page, wrapperProps));
+    }
+
+    const result = invokeAppComponent(CssWrapper, { params: Promise.resolve({}) });
+    expect(result).toBeInstanceOf(Promise);
+    expect(await renderHtml(await result)).toBe("css<p>page</p>");
   });
 
   it("invokes a CSS-wrapped component that has defaultProps with them applied", async () => {
@@ -224,13 +247,7 @@ describe("app render dependency helpers", () => {
       return createElement(Fragment, null, "css", createElement(Page, wrapperProps));
     }
 
-    const result = invokeAppComponent(CssWrapper, props);
-    if (!isValidElement<{ children: [unknown, ReactElement] }>(result)) {
-      throw new Error("expected an element");
-    }
-    const inner = result.props.children[1];
-    expect(inner.props).toEqual({});
-    await renderHtml(result);
+    void invokeAppComponent(CssWrapper, props);
     expect(receivedProps).toEqual({ params: props.params, theme: "dark", size: "small" });
   });
 
@@ -250,12 +267,7 @@ describe("app render dependency helpers", () => {
       return createElement(Fragment, null, "css", createElement(Page, wrapperProps));
     }
 
-    const result = invokeAppComponent(CssWrapper, props);
-    if (!isValidElement<{ children: [unknown, ReactElement] }>(result)) {
-      throw new Error("expected an element");
-    }
-    expect(result.props.children[1].props).toEqual({});
-    await renderHtml(result);
+    void invokeAppComponent(CssWrapper, props);
     expect(receivedTheme).toEqual({ mode: "dark" });
   });
 
