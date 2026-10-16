@@ -124,13 +124,29 @@ export function clientRewriteAppendsParams(
   return keys.some((key) => !queryKeys.has(key));
 }
 
+/** The index just past the balanced `(...)` group at `start`, or -1 if unclosed. */
+function customPatternEnd(source: string, start: number): number {
+  let depth = 0;
+  let inClass = false;
+  for (let index = start; index < source.length; index++) {
+    const character = source[index];
+    if (character === "\\") index++;
+    else if (inClass) inClass = character !== "]";
+    else if (character === "[") inClass = true;
+    else if (character === "(") depth++;
+    else if (character === ")" && --depth === 0) return index + 1;
+  }
+  return -1;
+}
+
 /**
  * Cheap pre-check: false only when `source` can never match `pathname`.
  * Every match starts with the source's literal text up to its first param,
- * group or escape. A `/` or `.` right before a `:name?` or `:name*` param is
- * that param's optional prefix, so it is only required when the param is
- * read; when such a param ends the source, the rest of the pathname is empty
- * or starts with that prefix (or is one trailing slash).
+ * group or escape. A `/` or `.` right before a `:name?` or `:name*` param
+ * (custom pattern or not) is that param's optional prefix, so it is only
+ * required when the param is read; when such a param ends the source, the
+ * rest of the pathname is empty or starts with that prefix (or is one
+ * trailing slash).
  */
 export function clientConfigSourceCouldMatch(pathname: string, source: string): boolean {
   const wildcardIndex = source.search(/[:(\\{*+?]/);
@@ -138,12 +154,14 @@ export function clientConfigSourceCouldMatch(pathname: string, source: string): 
   let optionalPrefix: string | null = null;
   let paramEndsSource = false;
   if (wildcardIndex !== -1 && /[/.]$/.test(literalPrefix)) {
-    const param = /^:\w+([?*+])?/.exec(source.slice(wildcardIndex));
-    const next = param ? source[wildcardIndex + param[0].length] : undefined;
-    const required = param !== null && next !== "(" && (param[1] === undefined || param[1] === "+");
-    if (!required) {
+    const name = /^:\w+/.exec(source.slice(wildcardIndex));
+    let end = name ? wildcardIndex + name[0].length : -1;
+    if (name && source[end] === "(") end = customPatternEnd(source, end);
+    const modifier = end === -1 ? undefined : source[end];
+    const optional = modifier === "?" || modifier === "*";
+    if (end === -1 || optional) {
       optionalPrefix = literalPrefix.slice(-1);
-      paramEndsSource = param !== null && param[1] !== undefined && next === undefined;
+      paramEndsSource = optional && end + 1 === source.length;
       literalPrefix = literalPrefix.slice(0, -1);
     }
   }

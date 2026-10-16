@@ -162,7 +162,8 @@ function simpleClassSymbol(raw: string, ignoreCase: boolean): RegexSymbol | null
  * Whether a `(?i:...)` group turns on case folding for part of `pattern`.
  * Symbols are compared by key, and a folded `a` keys as `A`, so a pattern
  * that mixes both is read case-insensitively throughout; that only lets
- * more characters overlap.
+ * more characters overlap, except in negative lookaheads, which the parser
+ * drops when they hold a case-sensitive symbol.
  */
 function hasScopedIgnoreCase(pattern: string): boolean {
   return /\(\?[ims]*i[ims]*(?:-[ims]+)?:/.test(pattern);
@@ -191,6 +192,11 @@ class RegexParser {
   depth = 0;
   exceededBudget = false;
   private readonly ignoreCase: boolean;
+  // Whether the current `(?i:...)`/`(?-i:...)` scope folds case, and whether a
+  // symbol it reads case-sensitively has been folded anyway: a folded `A`
+  // also matches `a`, so `(?!A)` would exclude more than the RegExp does.
+  private scopeIgnoreCase: boolean;
+  private foldedCaseSensitive = false;
   // Whether `.` matches line terminators, which `(?s:...)` sets for its body.
   private dotAll = false;
   // Annex B reads `\N` as a backreference only up to the capture count.
@@ -202,11 +208,17 @@ class RegexParser {
     private readonly namedGroups: boolean,
   ) {
     this.ignoreCase = ignoreCase || hasScopedIgnoreCase(pattern);
+    this.scopeIgnoreCase = ignoreCase;
     this.captures = countCapturingGroups(pattern);
   }
 
   parse(): RegexNode {
     return this.parseAlternation();
+  }
+
+  private fold(): boolean {
+    if (this.ignoreCase && !this.scopeIgnoreCase) this.foldedCaseSensitive = true;
+    return this.ignoreCase;
   }
 
   private node<T extends RegexNode>(node: T): T {
@@ -269,7 +281,7 @@ class RegexParser {
     }
     return this.node({
       kind: "atom",
-      symbol: literalSymbol(character, this.ignoreCase),
+      symbol: literalSymbol(character, this.fold()),
       fixedWidth: true,
     });
   }
@@ -285,11 +297,15 @@ class RegexParser {
     let assertion = false;
     let negativeLookahead = false;
     const outerDotAll = this.dotAll;
+    const outerIgnoreCase = this.scopeIgnoreCase;
+    const outerFolded = this.foldedCaseSensitive;
     const modifiers = /^\?([ims]*)(?:-([ims]+))?:/.exec(this.pattern.slice(this.index));
     if (modifiers && (modifiers[1] !== "" || modifiers[2] !== undefined)) {
       this.index += modifiers[0].length;
       if (modifiers[1]!.includes("s")) this.dotAll = true;
       if (modifiers[2]?.includes("s")) this.dotAll = false;
+      if (modifiers[1]!.includes("i")) this.scopeIgnoreCase = true;
+      if (modifiers[2]?.includes("i")) this.scopeIgnoreCase = false;
     } else if (this.pattern[this.index] === "?") {
       const marker = this.pattern[this.index + 1];
       if (marker === ":") {
@@ -316,11 +332,21 @@ class RegexParser {
       }
     }
 
+    this.foldedCaseSensitive = false;
     const child = this.parseAlternation();
     if (this.pattern[this.index] === ")") this.index++;
+    const folded = this.foldedCaseSensitive;
+    this.foldedCaseSensitive = outerFolded || folded;
     this.dotAll = outerDotAll;
+    this.scopeIgnoreCase = outerIgnoreCase;
     this.depth--;
-    return assertion ? this.node({ kind: "assertion", child, negativeLookahead }) : child;
+    if (!assertion) return child;
+    // A negative lookahead over a folded case-sensitive symbol would exclude
+    // too much, so read it as matching nothing; that only adds paths.
+    if (negativeLookahead && folded) {
+      return this.node({ kind: "assertion", child: this.node({ kind: "sequence", children: [] }) });
+    }
+    return this.node({ kind: "assertion", child, negativeLookahead });
   }
 
   private skipGroup(): void {
@@ -347,15 +373,16 @@ class RegexParser {
       else if (character === "]") break;
     }
     const raw = this.pattern.slice(start, this.index);
+    const ignoreCase = this.fold();
     return this.node({
       kind: "atom",
       symbol:
-        simpleClassSymbol(raw, this.ignoreCase) ??
+        simpleClassSymbol(raw, ignoreCase) ??
         ({
           kind: "opaque",
           key: `opaque:${raw}`,
           pattern: raw,
-          ignoreCase: this.ignoreCase,
+          ignoreCase,
         } as const),
       fixedWidth: true,
     });
@@ -369,7 +396,7 @@ class RegexParser {
     if (escaped === "b" || escaped === "B") {
       return this.node({ kind: "assertion", child: this.node({ kind: "sequence", children: [] }) });
     }
-    const shorthand = shorthandClassSymbol(escaped, this.ignoreCase);
+    const shorthand = shorthandClassSymbol(escaped, this.fold());
     if (shorthand) {
       return this.node({ kind: "atom", symbol: shorthand, fixedWidth: true });
     }
@@ -436,14 +463,14 @@ class RegexParser {
     if (literal !== null) {
       return this.node({
         kind: "atom",
-        symbol: literalSymbol(literal, this.ignoreCase),
+        symbol: literalSymbol(literal, this.fold()),
         fixedWidth: true,
       });
     }
     const raw = `\\${escaped}`;
     return this.node({
       kind: "atom",
-      symbol: { kind: "opaque", key: `opaque:${raw}`, pattern: raw, ignoreCase: this.ignoreCase },
+      symbol: { kind: "opaque", key: `opaque:${raw}`, pattern: raw, ignoreCase: this.fold() },
       fixedWidth: true,
     });
   }

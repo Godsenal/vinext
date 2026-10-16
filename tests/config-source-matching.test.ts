@@ -305,6 +305,10 @@ describe("Pages client sync matcher agrees with the server matcher", () => {
     "/foo.:ext(x)?",
     "/:id?",
     "/foo/",
+    "/foo/:id(\\d+)",
+    "/foo/:id(\\d+)?",
+    "/foo/:id(x|(y))*",
+    "/foo/:id([)]+)",
   ];
 
   it("returns the server's params whenever it does not defer", () => {
@@ -329,7 +333,17 @@ describe("Pages client sync matcher agrees with the server matcher", () => {
   it("rules out a source whose optional param prefix the pathname lacks", () => {
     // Only the prefix before an optional param ending the source may be
     // absent, so `/foobar` cannot reach `/foo.:ext?` or `/foo/:id?`.
-    for (const source of ["/foo.:ext?", "/foo/:id?", "/foo/:id+", "/foo.:ext", "/foo/"]) {
+    for (const source of [
+      "/foo.:ext?",
+      "/foo/:id?",
+      "/foo/:id+",
+      "/foo.:ext",
+      "/foo/",
+      "/foo/:id(\\d+)",
+      "/foo/:id(\\d+)?",
+      "/foo/:id(x|(y))*",
+      "/foo/:id([)]+)",
+    ]) {
       expect(clientConfigSourceCouldMatch("/foobar", source), source).toBe(false);
     }
     for (const [source, pathname] of [
@@ -337,6 +351,9 @@ describe("Pages client sync matcher agrees with the server matcher", () => {
       ["/foo.:ext?", "/foo/"],
       ["/foo.:ext?", "/FOO.x"],
       ["/foo/:id?bar", "/foobar"],
+      ["/foo/:id(\\d+)?", "/foo"],
+      ["/foo/:id(\\d+)", "/foo/1"],
+      ["/foo/:id(b)?ar", "/foobar"],
     ] as const) {
       expect(clientConfigSourceCouldMatch(pathname, source), source).toBe(true);
     }
@@ -963,6 +980,8 @@ describe("config sources do not backtrack catastrophically", () => {
         "/:id(a(?i:a+)(?i:a+)(?i:a+))",
         "/:id(\\141+\\141+\\141+)",
         "/:a((?i:a+)):b((?-i:a+)):c((?i:a+))",
+        // `(?-i:(?!A))` lets "a" through, so both alternatives read it.
+        "/:id((?:(?-i:(?!A)a+)|a+))+",
         // A guard that leaves both alternatives able to read "a".
         "/{ab:id((?:(?!ab)a|a))}+",
         // Adjacent params form one chain of overlapping repeats.

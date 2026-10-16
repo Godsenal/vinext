@@ -9902,6 +9902,11 @@ describe("middleware matcher patterns", () => {
         error: expect.stringContaining("overlapping sequential repetition"),
       });
     }
+    // A case-sensitive `(?!A)` lets "a" through even though `(?i:...)`
+    // elsewhere folds the pattern's symbols, so both alternatives read "a".
+    expect(compileMiddlewareMatcherPattern("/:id((?:(?!A)a+|(?i:a)+))+")).toMatchObject({
+      kind: "unsafe",
+    });
     for (const matcher of [
       "/:id((?i:ab)+)",
       "/:id((?-i:a)b)",
