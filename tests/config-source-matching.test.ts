@@ -323,6 +323,14 @@ describe("Pages client sync matcher agrees with the server matcher", () => {
       ["/from/:id/:tab", "/target/:id", "/from/1/2", "/target/1", false],
       ["/docs/:path*", "/d/:path*", "/docs/a/b", "/d/a/b", false],
       ["/about", "/target", "/about", "/target", false],
+      // The server never appends the i18n locale param.
+      [
+        "/:nextInternalLocale/blog/:slug",
+        "/:nextInternalLocale/posts",
+        "/en/blog/hello",
+        "/en/posts?slug=hello",
+        true,
+      ],
     ] as const) {
       expect(matchRewrite(pathname, [{ source, destination }], ctx), source).toBe(server);
       const params = matchSimpleClientConfigSource(pathname, source)!;
@@ -572,11 +580,20 @@ describe("next.config.js source validation", () => {
     ["redirects", { redirects: () => [{ source: "/:a:b", destination: "/", permanent: false }] }],
     ["rewrites", { rewrites: () => ({ beforeFiles: [{ source: "/x/(", destination: "/" }] }) }],
     ["headers", { headers: () => [{ source: "/:id(a{2,1})", headers: [] }] }],
-    ["ReDoS-unsafe", { headers: () => [{ source: "/:a((?:a+)+)", headers: [] }] }],
   ])("fails config loading on an invalid %s source like Next.js", async (_label, config) => {
     await expect(resolveNextConfig(config as never)).rejects.toThrow(
       /Invalid next\.config\.js (redirect|rewrite|header) source/,
     );
+  });
+
+  it("leaves ReDoS-unsafe sources to warn and skip when matched", async () => {
+    // Next.js accepts these, and the ReDoS check is conservative: it also
+    // flags linear shapes such as this slug pattern.
+    const source = "/blog/:slug([a-z0-9]+(?:-[a-z0-9]+)*)";
+    const config = await resolveNextConfig({
+      headers: () => [{ source, headers: [{ key: "x", value: "1" }] }],
+    } as never);
+    expect(config.headers).toHaveLength(1);
   });
 
   it("accepts valid sources", async () => {
@@ -666,10 +683,12 @@ describe("config sources do not backtrack catastrophically", () => {
         "/x{-:id([a-z-]+)}+",
         // The RegExp has no `u` flag, so `[😀]` takes either surrogate.
         "/{\u{1F600}:id([\u{1F600}]+)}+X",
+        // `(?!\/)` only rules out "/" as the first character of the group.
+        "/:p((?!\\/)(?i:[a-z/]+))+",
       ]) {
         expect(matchConfigPattern("/" + "a".repeat(64) + "!", source), source).toBeNull();
         expect(warn, source).toHaveBeenLastCalledWith(
-          expect.stringContaining(`Ignoring invalid next.config.js source "${source}": ReDoS risk`),
+          expect.stringContaining(`Ignoring next.config.js source "${source}" (ReDoS risk)`),
         );
       }
     } finally {

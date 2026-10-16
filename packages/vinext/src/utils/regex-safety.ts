@@ -949,8 +949,9 @@ function mayConsumeSymbol(node: RegexNode, target: RegexSymbol): boolean {
       for (let index = 0; index < node.children.length; index++) {
         const child = node.children[index];
         if (child.kind === "assertion") {
-          // `(?!x)` directly before an atom stops that atom consuming `x`;
-          // path-to-regexp emits this shape for params that follow text.
+          // `(?!x)` directly before a single-character atom stops that atom
+          // consuming `x`; path-to-regexp emits this shape for params that
+          // follow text. Opaque atoms may match more than one character.
           const excluded = child.child;
           const next = node.children[index + 1];
           if (
@@ -958,7 +959,9 @@ function mayConsumeSymbol(node: RegexNode, target: RegexSymbol): boolean {
             excluded.kind === "atom" &&
             excluded.symbol?.kind === "literal" &&
             excluded.symbol.key === target.key &&
-            next?.kind === "atom"
+            next?.kind === "atom" &&
+            next.symbol !== null &&
+            next.fixedWidth
           ) {
             index++;
           }

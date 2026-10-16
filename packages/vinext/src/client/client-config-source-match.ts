@@ -89,7 +89,8 @@ export function clientRewriteAppendsParams(
   destination: string,
   params: Record<string, string>,
 ): boolean {
-  const keys = Object.keys(params);
+  // Like the server, the i18n locale param never triggers the append.
+  const keys = Object.keys(params).filter((key) => key !== "nextInternalLocale");
   if (keys.length === 0) return false;
   const hashIndex = destination.indexOf("#");
   const beforeHash = hashIndex === -1 ? destination : destination.slice(0, hashIndex);
