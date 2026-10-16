@@ -10,7 +10,7 @@
  */
 
 // Whole-segment literals path-to-regexp reads as plain text.
-const LITERAL_SEGMENT_RE = /^[A-Za-z0-9_~.%@!$&',;=-]+$/;
+const LITERAL_SEGMENT_RE = /^[A-Za-z0-9_~.%@!$&',;=[\]|-]+$/;
 const PARAM_SEGMENT_RE = /^:(\w+)$/;
 const CATCH_ALL_SEGMENT_RE = /^:(\w+)([*+])$/;
 

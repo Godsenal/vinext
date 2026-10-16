@@ -213,6 +213,12 @@ class RegexParser {
   private dotAll = false;
   // Annex B reads `\N` as a backreference only up to the capture count.
   private readonly captures: number;
+  // Each closed capturing group's body, by number and by name, so a
+  // backreference to it can be read as the text it captures.
+  private captureIndex = 0;
+  private skippedGroup = false;
+  private readonly groups: RegexNode[] = [];
+  private readonly groupNames = new Map<string, number>();
 
   constructor(
     private readonly pattern: string,
@@ -298,6 +304,28 @@ class RegexParser {
     });
   }
 
+  /**
+   * A backreference matches the text its group captured, or nothing when the
+   * group did not take part. When the group is closed and reads one fixed
+   * word, that is the word or nothing. Otherwise it may match any text.
+   */
+  private backreference(group: number | undefined): RegexNode {
+    const body = group === undefined || this.skippedGroup ? undefined : this.groups[group];
+    const words = body && fixedWords(body, { words: 0, symbols: 0, exceeded: false });
+    if (!words || words.length !== 1) {
+      return this.node({ kind: "atom", symbol: null, fixedWidth: false });
+    }
+    const children = words[0]!.map((symbol) =>
+      this.node({ kind: "atom", symbol, fixedWidth: true }),
+    );
+    return this.node({
+      kind: "repeat",
+      child: this.node({ kind: "sequence", children }),
+      min: 0,
+      max: 1,
+    });
+  }
+
   private parseGroup(): RegexNode {
     this.depth++;
     if (this.depth > MAX_NESTING_DEPTH) {
@@ -308,6 +336,7 @@ class RegexParser {
     }
     let assertion = false;
     let negativeLookahead = false;
+    let capture = false;
     const outerDotAll = this.dotAll;
     const outerIgnoreCase = this.scopeIgnoreCase;
     const outerFolded = this.foldedCaseSensitive;
@@ -318,7 +347,9 @@ class RegexParser {
       if (modifiers[2]?.includes("s")) this.dotAll = false;
       if (modifiers[1]!.includes("i")) this.scopeIgnoreCase = true;
       if (modifiers[2]?.includes("i")) this.scopeIgnoreCase = false;
-    } else if (this.pattern[this.index] === "?") {
+    } else if (this.pattern[this.index] !== "?") {
+      capture = true;
+    } else {
       const marker = this.pattern[this.index + 1];
       if (marker === ":") {
         this.index += 2;
@@ -334,7 +365,11 @@ class RegexParser {
         this.index += 3;
       } else if (marker === "<") {
         const nameEnd = this.pattern.indexOf(">", this.index + 2);
+        if (nameEnd !== -1) {
+          this.groupNames.set(this.pattern.slice(this.index + 2, nameEnd), this.captureIndex + 1);
+        }
         this.index = nameEnd === -1 ? this.pattern.length : nameEnd + 1;
+        capture = true;
       } else {
         // Unsupported group prefixes will be rejected by RegExp compilation.
         // Keep analysis conservative if this parser is asked to inspect one.
@@ -345,8 +380,10 @@ class RegexParser {
     }
 
     this.foldedCaseSensitive = false;
+    const captureNumber = capture ? ++this.captureIndex : 0;
     const child = this.parseAlternation();
     if (this.pattern[this.index] === ")") this.index++;
+    if (capture) this.groups[captureNumber] = child;
     const folded = this.foldedCaseSensitive;
     this.foldedCaseSensitive = outerFolded || folded;
     this.dotAll = outerDotAll;
@@ -362,6 +399,8 @@ class RegexParser {
   }
 
   private skipGroup(): void {
+    // Groups inside are not numbered, so later backreferences are unknown.
+    this.skippedGroup = true;
     let depth = 1;
     let inClass = false;
     while (this.index < this.pattern.length && depth > 0) {
@@ -417,15 +456,16 @@ class RegexParser {
     // groups, Annex B reads `\k` as a literal `k`.
     if (escaped === "k" && this.namedGroups && this.pattern[this.index] === "<") {
       const nameEnd = this.pattern.indexOf(">", this.index);
+      const name = nameEnd === -1 ? "" : this.pattern.slice(this.index + 1, nameEnd);
       this.index = nameEnd === -1 ? this.pattern.length : nameEnd + 1;
-      return this.node({ kind: "atom", symbol: null, fixedWidth: false });
+      return this.backreference(this.groupNames.get(name));
     }
     let literal: string | null = null;
     if (/\d/.test(escaped)) {
       const digits = /^\d*/.exec(this.pattern.slice(this.index))![0];
       if (escaped !== "0" && Number(escaped + digits) <= this.captures) {
         this.index += digits.length;
-        return this.node({ kind: "atom", symbol: null, fixedWidth: false });
+        return this.backreference(Number(escaped + digits));
       }
       // Annex B: otherwise `\8` and `\9` are literal digits and `\0`-`\7`
       // start a legacy octal escape of up to three digits, at most `\377`.
@@ -521,6 +561,32 @@ class RegexParser {
     this.index = cursor + 1;
     return { min, max };
   }
+}
+
+/**
+ * The one character class a lookahead body reads, as with `a`, `[ab]` or
+ * `a|[bc]`, or null when it reads more or other characters.
+ */
+function lookaheadCharacters(node: RegexNode): RegexSymbol | null {
+  if (node.kind === "atom") {
+    return node.symbol?.kind === "literal" || node.symbol?.kind === "class" ? node.symbol : null;
+  }
+  if (node.kind !== "alternation") return null;
+  const values = new Set<string>();
+  let nonAscii: NonAsciiDomain = "none";
+  for (const branch of node.branches) {
+    if (branch.kind !== "atom") return null;
+    const symbol = branch.symbol;
+    if (symbol?.kind === "literal" && symbol.value.charCodeAt(0) <= 0x7f) {
+      values.add(symbol.key);
+    } else if (symbol?.kind === "class") {
+      for (const value of symbol.values) values.add(value);
+      nonAscii = unionNonAscii(nonAscii, symbol.nonAscii);
+    } else {
+      return null;
+    }
+  }
+  return createClassSymbol(values, nonAscii);
 }
 
 function exactWidth(node: RegexNode): number | null {
@@ -1306,11 +1372,9 @@ class PositionAutomaton {
             guarded.fixedWidth
           ) {
             let position: number | null = null;
-            if (
-              lookahead.kind === "atom" &&
-              (lookahead.symbol?.kind === "literal" || lookahead.symbol?.kind === "class")
-            ) {
-              position = this.position(guarded.symbol, lookahead.symbol);
+            const characters = lookaheadCharacters(lookahead);
+            if (characters) {
+              position = this.position(guarded.symbol, characters);
             } else if (
               lookahead.kind === "sequence" &&
               lookahead.children.length > 1 &&
