@@ -36,6 +36,9 @@ const { modifyRouteRegex } = require("next/dist/lib/redirect-status") as {
 const { tryToParsePath } = require("next/dist/lib/try-to-parse-path") as {
   tryToParsePath: (route: string) => { error?: unknown; regexStr?: string };
 };
+const loadCustomRoutes = require("next/dist/lib/load-custom-routes").default as (
+  config: object,
+) => Promise<unknown>;
 
 /**
  * Next.js params in vinext's representation: repeated params keep the
@@ -658,6 +661,92 @@ describe("next.config.js source validation", () => {
     ).rejects.toThrow("`source` exceeds max built length of 4096");
   });
 
+  it("checks sources again after adding basePath, like Next.js", async () => {
+    // Next.js exits the build on an invalid route; vinext throws instead.
+    const nextRejects = async (config: object): Promise<boolean> => {
+      const exit = vi.spyOn(process, "exit").mockImplementation(((code: number) => {
+        throw new Error(`process.exit(${code})`);
+      }) as never);
+      vi.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        await loadCustomRoutes({ basePath: "", trailingSlash: false, ...config });
+        return false;
+      } catch (error) {
+        if (String(error).includes("process.exit(1)")) return true;
+        throw error;
+      } finally {
+        exit.mockRestore();
+        vi.restoreAllMocks();
+      }
+    };
+    const vinextRejects = async (config: object): Promise<boolean> =>
+      resolveNextConfig(config as never).then(
+        () => false,
+        (error) => {
+          expect(String(error)).toContain("Invalid next.config.js");
+          return true;
+        },
+      );
+
+    // Fits the limit as written, but not once `/base` is added.
+    const long = "/" + "a".repeat(4_079);
+    const header = (route: object) => ({
+      headers: () => [{ headers: [{ key: "x", value: "1" }], ...route }],
+    });
+    // `en-US` is escaped to `en\-US` in the locale param, one more character.
+    const localeBoundary = (() => {
+      let n = 4_000;
+      while (
+        tryToParsePath(`/:nextInternalLocale(en\\-US|fr)/${"a".repeat(n)}`).regexStr!.length <= 4096
+      )
+        n++;
+      return n;
+    })();
+    const i18n = { locales: ["en-US", "fr"], defaultLocale: "en-US" };
+    const cases: Array<[string, object, boolean]> = [
+      ["no basePath", header({ source: long }), false],
+      ["basePath", { basePath: "/base", ...header({ source: long }) }, true],
+      [
+        "basePath: false",
+        { basePath: "/base", ...header({ source: long, basePath: false }) },
+        false,
+      ],
+      ["root with basePath", { basePath: "/base", ...header({ source: "/" }) }, false],
+      [
+        "redirect with basePath",
+        {
+          basePath: "/base",
+          redirects: () => [{ source: long, destination: "/x", permanent: false }],
+        },
+        true,
+      ],
+      [
+        "escaped locale over",
+        { i18n, ...header({ source: `/${"a".repeat(localeBoundary)}` }) },
+        true,
+      ],
+      [
+        "escaped locale under",
+        { i18n, ...header({ source: `/${"a".repeat(localeBoundary - 1)}` }) },
+        false,
+      ],
+      [
+        "locale and basePath",
+        { i18n, basePath: "/b", ...header({ source: `/${"a".repeat(localeBoundary - 2)}` }) },
+        true,
+      ],
+      [
+        "locale: false",
+        { i18n, ...header({ source: `/${"a".repeat(localeBoundary)}`, locale: false }) },
+        false,
+      ],
+    ];
+    for (const [name, config, rejected] of cases) {
+      expect(await nextRejects(config), `Next.js: ${name}`).toBe(rejected);
+      expect(await vinextRejects(config), `vinext: ${name}`).toBe(rejected);
+    }
+  });
+
   it("leaves ReDoS-unsafe sources to warn and skip when matched", async () => {
     // Next.js accepts these, and the ReDoS check is conservative: it also
     // flags linear shapes such as this slug pattern.
@@ -713,6 +802,12 @@ describe("config sources do not backtrack catastrophically", () => {
     "/:a(\\d+)/:b(\\d+)/:c(\\d+)",
     "/:a?/:b?/:c?/:d?",
     "/:a-:b-:c-:d",
+    // Each repeat starts after a "/" that its pattern cannot consume.
+    "/:a([^/]*)+/end",
+    // The delimiter decides between alternatives that share a prefix.
+    "/:lang(en|en-US)+",
+    // A "/" inside the pattern, but never at either end of a match.
+    "/:id([a-z]+\\/[a-z]+)+",
   ];
   const ADVERSARIAL_PATHNAMES = [
     "/" + "a/".repeat(8_000) + "!",
@@ -732,6 +827,8 @@ describe("config sources do not backtrack catastrophically", () => {
     "/n/" + "1/".repeat(8_000) + "x",
     "/" + "1".repeat(16_000) + "/x/y",
     "//" + "/".repeat(16_000),
+    "/" + "en-US/".repeat(3_000) + "!",
+    "/" + "a/b/".repeat(4_000) + "!",
   ];
 
   it("accepts sources whose compiled regexes are linear", () => {
@@ -769,9 +866,8 @@ describe("config sources do not backtrack catastrophically", () => {
         "/:a((?:a*)*)",
         "/:a(\\d*\\d*)x",
         "/:a(a*a*)b",
-        // A repeated param that can match "" or "/" has many partitions.
+        // A repeated param that can match "/" has many partitions.
         "/:a(.*)*/end",
-        "/:a([^/]*)+/end",
         "/:a(.+)+/end",
         // A repeated param that can match part of its own separator.
         "/{a:id(a+)}*X",
@@ -784,6 +880,8 @@ describe("config sources do not backtrack catastrophically", () => {
         // Alternatives that match the same text multiply per segment.
         "/:id(a|aa?)+",
         "/{x:id(a|a)}+",
+        // So do adjacent optionals: each "ab" segment has two parses.
+        "/:id(a?a?b)+",
         // Adjacent params form one chain of overlapping repeats.
         "/:a(a+):b(a+):c(a+)",
         "/:a(.*):b(.*):c(.*)",

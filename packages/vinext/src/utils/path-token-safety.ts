@@ -1,11 +1,9 @@
 import {
+  analyzeRegexAmbiguity,
   analyzeRegexSafety,
   analyzeRegexRepetitionChains,
-  analyzeRepeatedRegexAlternatives,
   mayHaveNamedGroups,
   regexAtomsMayOverlap,
-  regexExactWidth,
-  regexMayConsumeCharacter,
 } from "./regex-safety.js";
 import { pathTokensToRegExpSource, type PathKey, type PathToken } from "./path-to-regexp.js";
 
@@ -131,11 +129,7 @@ export type PathTokenSafetyOptions = {
   ignoreCase: boolean;
 };
 
-function unsafeTokenReason(
-  token: PathKey,
-  namedGroups: boolean,
-  options: PathTokenSafetyOptions,
-): string | null {
+function unsafeTokenReason(token: PathKey, namedGroups: boolean): string | null {
   const regexSafetyIssue = analyzeRegexSafety(token.pattern, { ignoreCase: true, namedGroups });
   if (regexSafetyIssue) {
     if (regexSafetyIssue === "analysis budget exceeded") {
@@ -146,61 +140,15 @@ function unsafeTokenReason(
   if (hasOverlappingSequentialRepetition(token.pattern)) {
     return `parameter "${token.name}" contains overlapping sequential repetition`;
   }
-
-  if (token.modifier !== "*" && token.modifier !== "+") return null;
-
-  // The pattern repeats once per segment, so its alternatives must not match
-  // the same text: `/:id(a|aa?)+` has two ways to match each "a" segment.
-  const alternativesIssue = analyzeRepeatedRegexAlternatives(token.pattern, {
-    ignoreCase: true,
-    namedGroups,
-  });
-  if (alternativesIssue === "analysis budget exceeded") {
-    return `parameter "${token.name}" exceeds the regex analysis budget`;
-  }
-  if (alternativesIssue) return `repeated parameter "${token.name}" contains ${alternativesIssue}`;
-
-  // A fixed-width P splits its repeats by input length alone, so neither
-  // check below applies to it (width zero is the empty-value case).
-  const width = regexExactWidth(token.pattern, { namedGroups });
-  if (width === 0) {
-    return `repeated parameter "${token.name}" may match an empty value or path delimiter`;
-  }
-  if (width !== null) return null;
-
-  // Repeating parameters are joined by the token prefix/suffix. If their own
-  // constraint can also consume a slash (or the empty string), the same input
-  // has many equivalent partitions. Patterns such as `/:path(.*)*/end` then
-  // backtrack exponentially on a near miss. Ordinary repeats use a constraint
-  // that cannot cross the path delimiter, so each segment has one owner.
-  if (patternMatches(token.pattern, "") || patternMatches(token.pattern, "/")) {
-    return `repeated parameter "${token.name}" may match an empty value or path delimiter`;
-  }
-  // The repeats compile to `P(?:SP)*` with separator S = suffix + prefix.
-  // If P can never consume S's first code unit, every P ends right where the
-  // next S begins, so the split is unique; likewise for S's last code unit
-  // read from the right. Only when P can consume both may it take part of S,
-  // as in `/{a:id(a+)}*X`. Code units, since the RegExp has no `u` flag.
-  const separator = token.suffix + token.prefix;
-  if (separator !== "") {
-    const mayConsume = (character: string) =>
-      regexMayConsumeCharacter(token.pattern, character, {
-        ignoreCase: options.ignoreCase,
-        namedGroups,
-      });
-    if (mayConsume(separator[0]!) && mayConsume(separator[separator.length - 1]!)) {
-      return `repeated parameter "${token.name}" may match part of its own separator`;
-    }
-  }
-
   return null;
 }
 
 /**
  * Reject path-to-regexp tokens whose custom patterns can backtrack
- * catastrophically once compiled. Each param's pattern and how it repeats are
- * checked, then the sequence of params in the compiled RegExp, so adjacent
- * params such as `/:a(a+):b(a+):c(a+)` cannot form an overlapping chain.
+ * catastrophically once compiled. Each param's pattern is checked, then the
+ * compiled RegExp as a whole: a `+`/`*` param repeats its pattern joined by
+ * its prefix and suffix, which can be ambiguous, as in `/:id(a|aa?)+`, and
+ * adjacent params such as `/:a(a+):b(a+):c(a+)` can form an overlapping chain.
  */
 export function unsafePathTokensReason(
   tokens: PathToken[],
@@ -213,22 +161,20 @@ export function unsafePathTokensReason(
   );
   for (const token of tokens) {
     if (typeof token === "string") continue;
-    const reason = unsafeTokenReason(token, namedGroups, options);
+    const reason = unsafeTokenReason(token, namedGroups);
     if (reason) return reason;
   }
-  // Each param was checked above; a chain of overlapping repeats can still
-  // span params. Tokens that do not compile yet are checked again by the
-  // caller once normalized, or rejected as invalid.
+  // Tokens that do not compile yet are checked again by the caller once
+  // normalized, or rejected as invalid.
   let source: string;
   try {
     source = pathTokensToRegExpSource(tokens);
   } catch {
     return null;
   }
-  const sequenceIssue = analyzeRegexRepetitionChains(source, {
-    ignoreCase: options.ignoreCase,
-    namedGroups,
-  });
+  const sequenceIssue =
+    analyzeRegexAmbiguity(source, { ignoreCase: options.ignoreCase, namedGroups }) ??
+    analyzeRegexRepetitionChains(source, { ignoreCase: options.ignoreCase, namedGroups });
   if (sequenceIssue === "analysis budget exceeded")
     return "source exceeds the regex analysis budget";
   if (sequenceIssue) return `source contains ${sequenceIssue}`;

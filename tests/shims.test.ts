@@ -9683,28 +9683,25 @@ describe("middleware matcher patterns", () => {
     expect(compileMiddlewareMatcherPattern("/:path((?:k|K)+)").regexp).toBeInstanceOf(RegExp);
   });
 
-  it("rejects a repeated param whose pattern can consume its separator", async () => {
+  it("rejects a repeated param whose repeats can split the same text many ways", async () => {
     const { compileMiddlewareMatcherPattern } =
       await import("../packages/vinext/src/server/middleware-matcher-pattern.js");
 
-    for (const matcher of ["/:id(a|aa?)+", "/{x:id(a|a)}+"]) {
-      expect(compileMiddlewareMatcherPattern(matcher), matcher).toMatchObject({
-        kind: "unsafe",
-        error: expect.stringContaining("ambiguous alternatives under repetition"),
-      });
-    }
-
     // `/{a:id(a+)}*X` joins repeats with "a", so `a+` can take either side.
-    // Surrogates count separately: the RegExp has no `u` flag.
+    // Surrogates count separately: the RegExp has no `u` flag. The rest have
+    // two ways to match each segment.
     for (const matcher of [
       "/{a:id(a+)}*X",
       "/{a:id(a+)}+X",
       "/x{-:id([a-z-]+)}+",
       "/{\u{1F600}:id([\u{1F600}]+)}+X",
+      "/:id(a|aa?)+",
+      "/{x:id(a|a)}+",
+      "/:id(a?a?b)+",
     ]) {
       expect(compileMiddlewareMatcherPattern(matcher), matcher).toMatchObject({
         kind: "unsafe",
-        error: expect.stringContaining("may match part of its own separator"),
+        error: expect.stringContaining("exponentially ambiguous repetition"),
       });
     }
 
@@ -9722,6 +9719,10 @@ describe("middleware matcher patterns", () => {
       "/{a:id(a)}+",
       "/{a:id(\\/)}+",
       "/docs/:lang(en|fr)*",
+      // The delimiter or the pattern's own ends fix each split.
+      "/:a([^/]*)+/end",
+      "/:lang(en|en-US)+",
+      "/:id([a-z]+\\/[a-z]+)+",
     ]) {
       expect(compileMiddlewareMatcherPattern(matcher).regexp, matcher).toBeInstanceOf(RegExp);
     }
