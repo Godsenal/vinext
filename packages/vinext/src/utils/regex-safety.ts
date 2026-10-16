@@ -1236,6 +1236,14 @@ class PositionAutomaton {
       }
       case "repeat": {
         if (this.unrollsTooFar(node)) return this.loop(this.fragment(node.child), node.min > 0);
+        // A zero-width child can only match empty, which no iteration past
+        // the minimum may do. More required copies only multiply its path
+        // count, which one copy has already saturated or kept at 0 or 1.
+        if (this.size(node.child) === 0) {
+          return node.min === 0
+            ? { first: new Map(), last: new Map(), empty: 1 }
+            : this.fragment(node.child);
+        }
         if (this.size(node) > MAX_UNROLLED_REPEAT) this.unrolledLongRepeat = true;
         // Iterations up to the minimum may match empty; later ones may not.
         let fragment: PositionFragment = { first: new Map(), last: new Map(), empty: 1 };

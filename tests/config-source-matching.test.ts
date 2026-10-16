@@ -341,6 +341,10 @@ describe("Pages client sync matcher agrees with the server matcher", () => {
     for (const [source, destination, pathname, server, defers] of [
       ["/From/:id", "/target", "/from/123", "/target?id=123", true],
       ["/from/:id", "/target?x=1", "/from/123", "/target?x=1&id=123", true],
+      // A param the destination query already names is not appended.
+      ["/from/:id", "/target?id=:id", "/from/123", "/target?id=123", false],
+      ["/from/:id", "/target?id=fixed", "/from/123", "/target?id=fixed", false],
+      ["/from/:id/:tab", "/target?id=:id", "/from/1/2", "/target?id=1&tab=2", true],
       ["/from/:id", "/target/:id", "/from/123", "/target/123", false],
       ["/from/:id/:tab", "/target/:id", "/from/1/2", "/target/1", false],
       ["/docs/:path*", "/d/:path*", "/docs/a/b", "/d/a/b", false],

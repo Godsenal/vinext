@@ -90,7 +90,8 @@ export function matchSimpleClientConfigSource(
 /**
  * Whether a rewrite to `destination` appends the source `params` to its
  * query. Next.js does that when the destination's path, host and hash use
- * none of them; the sync path does not, so it defers these rewrites.
+ * none of them, for each param its query does not already name; the sync
+ * path does not, so it defers these rewrites.
  */
 export function clientRewriteAppendsParams(
   destination: string,
@@ -106,7 +107,11 @@ export function clientRewriteAppendsParams(
     (queryIndex === -1 ? beforeHash : beforeHash.slice(0, queryIndex)) +
     (hashIndex === -1 ? "" : destination.slice(hashIndex));
   // Fast-path param names are `\w+`, so they need no escaping.
-  return !keys.some((key) => new RegExp(`:${key}(?![A-Za-z0-9_])`).test(withoutQuery));
+  if (keys.some((key) => new RegExp(`:${key}(?![A-Za-z0-9_])`).test(withoutQuery))) return false;
+  const queryKeys = new Set(
+    queryIndex === -1 ? [] : new URLSearchParams(beforeHash.slice(queryIndex + 1)).keys(),
+  );
+  return keys.some((key) => !queryKeys.has(key));
 }
 
 /**

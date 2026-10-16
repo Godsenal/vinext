@@ -9753,8 +9753,14 @@ describe("middleware matcher patterns", () => {
     const { compileMiddlewareMatcherPattern } =
       await import("../packages/vinext/src/server/middleware-matcher-pattern.js");
 
-    // Each skippable copy unrolled to a new first set made this take seconds.
-    for (const matcher of ["/:id(a{0,16384})", "/:id([a-z]{1,16384})"]) {
+    // Each skippable copy unrolled to a new first set made the first two take
+    // seconds; a zero-width child costs no positions but was copied anyway.
+    for (const matcher of [
+      "/:id(a{0,16384})",
+      "/:id([a-z]{1,16384})",
+      "/:id(a(?=a){1000000000})",
+      "/:id((?:){1000000000,})",
+    ]) {
       const started = performance.now();
       expect(compileMiddlewareMatcherPattern(matcher).regexp, matcher).toBeInstanceOf(RegExp);
       expect(performance.now() - started, matcher).toBeLessThan(2_000);
