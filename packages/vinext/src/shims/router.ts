@@ -1942,11 +1942,9 @@ function resolveClientConfigRewriteSync(href: string): ClientConfigRewriteResolu
     if (!clientConfigSourceCouldMatch(routeContext.pathname, rewrite.source)) {
       continue;
     }
-    if (rewrite.has || rewrite.requiresServerEvaluation) return undefined;
-
     const params = matchSimpleClientConfigSource(routeContext.pathname, rewrite.source);
-    if (params === undefined) return undefined;
     if (params === null) continue;
+    if (params === undefined || rewrite.has || rewrite.requiresServerEvaluation) return undefined;
     // The exact matcher URL-parses a local destination template before it
     // substitutes params, which may drop dot segments and the params in them.
     if (!isSerializedRewriteDestination(rewrite.destination)) return undefined;

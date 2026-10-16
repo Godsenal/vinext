@@ -26055,6 +26055,50 @@ describe("Pages Router _next/data client navigation", () => {
     }
   });
 
+  it("skips a conditional rewrite whose source cannot match before reusing the mounted page", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+
+    const destinationLoader = vi.fn(async () => makePageModule("destination"));
+    const { win, pushState } = createDataNavWindow({
+      page: "/target",
+      pathname: "/foobar",
+      loaders: { "/": vi.fn(async () => makePageModule("home")), "/target": destinationLoader },
+      ssgPatterns: [],
+      sspPatterns: [],
+    });
+    // `/foo` shares a prefix with `/foobar` but never matches it, so its
+    // condition needs no server evaluation.
+    (win as any).__VINEXT_CLIENT_REWRITES__ = toClientRewrites({
+      beforeFiles: [
+        { source: "/foo", destination: "/private", has: [{ type: "query", key: "secret" }] },
+        { source: "/foobar", destination: "/target" },
+      ],
+      afterFiles: [],
+      fallback: [],
+    });
+    (globalThis as any).window = win;
+    vi.resetModules();
+    globalThis.fetch = vi.fn(async () => new Response("{}")) as typeof fetch;
+
+    try {
+      const Router = (await import("../packages/vinext/src/shims/router.js")).default;
+      const pushPromise = Router.push({ query: { param: 1 } });
+      // The mounted page is reused, so history updates in the same turn.
+      expect(pushState).toHaveBeenLastCalledWith(
+        expect.objectContaining({ as: "/foobar?param=1" }),
+        "",
+        "/foobar?param=1",
+      );
+      await expect(pushPromise).resolves.toBe(true);
+    } finally {
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      globalThis.fetch = originalFetch;
+      vi.resetModules();
+    }
+  });
+
   it("preserves the visible pathname for query-only beforeFiles rewrite navigations", async () => {
     const previousWindow = (globalThis as any).window;
     const originalFetch = globalThis.fetch;
