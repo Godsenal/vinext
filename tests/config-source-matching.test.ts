@@ -957,6 +957,7 @@ describe("config sources do not backtrack catastrophically", () => {
         // Overlapping repeats inside a scoped flag group or an octal escape.
         "/:id(a(?i:a+)(?i:a+)(?i:a+))",
         "/:id(\\141+\\141+\\141+)",
+        "/:a((?i:a+)):b((?-i:a+)):c((?i:a+))",
         // A guard that leaves both alternatives able to read "a".
         "/{ab:id((?:(?!ab)a|a))}+",
         // Adjacent params form one chain of overlapping repeats.

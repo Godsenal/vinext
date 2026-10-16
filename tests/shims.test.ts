@@ -9888,7 +9888,13 @@ describe("middleware matcher patterns", () => {
 
     // `(?i:...)` bodies and `\141` (an octal "a" with no group 141) were
     // opaque atoms, hiding the overlapping repeats inside them.
-    for (const matcher of ["/:id(a(?i:a+)(?i:a+)(?i:a+))", "/:id(\\141+\\141+\\141+)"]) {
+    // A folded `a` keyed as `A` looked disjoint from a case-sensitive `a`.
+    for (const matcher of [
+      "/:id(a(?i:a+)(?i:a+)(?i:a+))",
+      "/:id(\\141+\\141+\\141+)",
+      "/:a((?i:a+)):b((?-i:a+)):c((?i:a+))",
+      "/:a((?i:a+)):b(a+):c(a+)",
+    ]) {
       expect(compileMiddlewareMatcherPattern(matcher), matcher).toMatchObject({
         kind: "unsafe",
         error: expect.stringContaining("overlapping sequential repetition"),

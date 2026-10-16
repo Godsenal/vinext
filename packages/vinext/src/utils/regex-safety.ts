@@ -158,6 +158,16 @@ function simpleClassSymbol(raw: string, ignoreCase: boolean): RegexSymbol | null
   return createClassSymbol(values, nonAscii);
 }
 
+/**
+ * Whether a `(?i:...)` group turns on case folding for part of `pattern`.
+ * Symbols are compared by key, and a folded `a` keys as `A`, so a pattern
+ * that mixes both is read case-insensitively throughout; that only lets
+ * more characters overlap.
+ */
+function hasScopedIgnoreCase(pattern: string): boolean {
+  return /\(\?[ims]*i[ims]*(?:-[ims]+)?:/.test(pattern);
+}
+
 /** Capturing groups in `pattern`, named or not, outside classes and escapes. */
 function countCapturingGroups(pattern: string): number {
   let count = 0;
@@ -180,8 +190,8 @@ class RegexParser {
   nodes = 0;
   depth = 0;
   exceededBudget = false;
-  // Flags in effect, which `(?ims-ims:...)` groups change for their body.
-  private ignoreCase: boolean;
+  private readonly ignoreCase: boolean;
+  // Whether `.` matches line terminators, which `(?s:...)` sets for its body.
   private dotAll = false;
   // Annex B reads `\N` as a backreference only up to the capture count.
   private readonly captures: number;
@@ -191,7 +201,7 @@ class RegexParser {
     ignoreCase: boolean,
     private readonly namedGroups: boolean,
   ) {
-    this.ignoreCase = ignoreCase;
+    this.ignoreCase = ignoreCase || hasScopedIgnoreCase(pattern);
     this.captures = countCapturingGroups(pattern);
   }
 
@@ -274,13 +284,10 @@ class RegexParser {
     }
     let assertion = false;
     let negativeLookahead = false;
-    const outerIgnoreCase = this.ignoreCase;
     const outerDotAll = this.dotAll;
     const modifiers = /^\?([ims]*)(?:-([ims]+))?:/.exec(this.pattern.slice(this.index));
     if (modifiers && (modifiers[1] !== "" || modifiers[2] !== undefined)) {
       this.index += modifiers[0].length;
-      // Reading a removed `i` as still set only lets more characters overlap.
-      if (modifiers[1]!.includes("i")) this.ignoreCase = true;
       if (modifiers[1]!.includes("s")) this.dotAll = true;
       if (modifiers[2]?.includes("s")) this.dotAll = false;
     } else if (this.pattern[this.index] === "?") {
@@ -311,7 +318,6 @@ class RegexParser {
 
     const child = this.parseAlternation();
     if (this.pattern[this.index] === ")") this.index++;
-    this.ignoreCase = outerIgnoreCase;
     this.dotAll = outerDotAll;
     this.depth--;
     return assertion ? this.node({ kind: "assertion", child, negativeLookahead }) : child;
@@ -1055,6 +1061,8 @@ export function analyzeRegexSafety(
 }
 
 export function regexAtomsMayOverlap(left: string, right: string, ignoreCase = false): boolean {
+  // Both sides must key symbols the same way to compare them.
+  ignoreCase ||= hasScopedIgnoreCase(left) || hasScopedIgnoreCase(right);
   const leftParser = new RegexParser(left, ignoreCase, true);
   const rightParser = new RegexParser(right, ignoreCase, true);
   const leftNode = leftParser.parse();
