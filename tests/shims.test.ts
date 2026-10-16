@@ -9927,6 +9927,41 @@ describe("middleware matcher patterns", () => {
     );
   });
 
+  it("analyzes lookaround bodies and three-way character intersections", async () => {
+    const { isSafeRegex } = await import("../packages/vinext/src/config/config-matchers.js");
+
+    // The engine runs a lookaround body wherever it is reached, so a
+    // catastrophic repeat inside one is as dangerous as one outside.
+    expect(isSafeRegex("(?=(?:a+)+X)a*")).toBe(false);
+    expect(isSafeRegex("(?!(?:a|aa)+$)x")).toBe(false);
+    expect(isSafeRegex("(?=.*foo)")).toBe(true);
+
+    // `[ab]`, `[ac]` and `[bc]` overlap pairwise, but no one character is in
+    // all three, so the loops cannot share a word.
+    const pattern = "[ab]*[ac][bc]*[bd][cd]*X";
+    expect(isSafeRegex(pattern)).toBe(true);
+    const start = performance.now();
+    new RegExp(`^(?:${pattern})$`).test(`${"b".repeat(5_000)}a${"c".repeat(5_000)}!`);
+    expect(performance.now() - start).toBeLessThan(500);
+  });
+
+  it("keeps analysis cheap for long alternations", async () => {
+    const { isSafeRegex } = await import("../packages/vinext/src/config/config-matchers.js");
+    const { analyzeRegexSafety } = await import("../packages/vinext/src/utils/regex-safety.js");
+
+    const words = Array.from({ length: 300 }, (_, i) => `item-${String(i).padStart(4, "0")}`);
+    expect(isSafeRegex(`^(?:${words.join("|")})$`)).toBe(true);
+
+    const characters = Array.from({ length: 2_000 }, (_, i) => String.fromCharCode(0x4e00 + i));
+    let start = performance.now();
+    expect(analyzeRegexSafety(`(?:${characters.join("|")}){16000}`)).toBeNull();
+    expect(performance.now() - start).toBeLessThan(1_000);
+
+    start = performance.now();
+    analyzeRegexSafety(Array.from({ length: 3_000 }, () => "c*c*").join("|"));
+    expect(performance.now() - start).toBeLessThan(1_000);
+  });
+
   it("handles fixed-width nested repeats and simple class intersections", async () => {
     const { compileMiddlewareMatcherPattern } =
       await import("../packages/vinext/src/server/middleware-matcher-pattern.js");

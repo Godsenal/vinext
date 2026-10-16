@@ -755,6 +755,22 @@ function exactWidth(node: RegexNode): number | null {
   }
 }
 
+/** Whether `node`, lookaround bodies included, holds a repeat such as `a*` or `a{2,}`. */
+function hasUnboundedRepetition(node: RegexNode): boolean {
+  switch (node.kind) {
+    case "atom":
+      return false;
+    case "assertion":
+      return hasUnboundedRepetition(node.child);
+    case "sequence":
+      return node.children.some(hasUnboundedRepetition);
+    case "alternation":
+      return node.branches.some(hasUnboundedRepetition);
+    case "repeat":
+      return !Number.isFinite(node.max) || hasUnboundedRepetition(node.child);
+  }
+}
+
 /** Whether `node` holds a repeat with a finite range, such as `a?` or `a{1,3}`. */
 function containsBoundedVariableRepetition(node: RegexNode): boolean {
   switch (node.kind) {
@@ -1304,7 +1320,11 @@ export function analyzeRegexSafety(
   );
   const node = parser.parse();
   if (parser.exceededBudget || parser.index !== pattern.length) return "analysis budget exceeded";
-  return findSafetyIssue(node) ?? analyzeNodeAmbiguity(node);
+  // Without an unbounded repeat the automaton has no loop to be ambiguous in,
+  // and long literal lists would only spend its budget.
+  return (
+    findSafetyIssue(node) ?? (hasUnboundedRepetition(node) ? analyzeNodeAmbiguity(node) : null)
+  );
 }
 
 export function regexAtomsMayOverlap(left: string, right: string, ignoreCase = false): boolean {
@@ -1331,7 +1351,20 @@ export function regexAtomsMayOverlap(left: string, right: string, ignoreCase = f
  * become an opaque class, matched case-insensitively, which only adds
  * overlaps.
  */
+const singleCharacterAlternations = new WeakMap<RegexNode, RegexSymbol | null>();
+
 function singleCharacterAlternationSymbol(
+  node: Extract<RegexNode, { kind: "alternation" }>,
+): RegexSymbol | null {
+  let symbol = singleCharacterAlternations.get(node);
+  if (symbol === undefined) {
+    symbol = buildSingleCharacterAlternationSymbol(node);
+    singleCharacterAlternations.set(node, symbol);
+  }
+  return symbol;
+}
+
+function buildSingleCharacterAlternationSymbol(
   node: Extract<RegexNode, { kind: "alternation" }>,
 ): RegexSymbol | null {
   const literals = new Map<string, string>();
@@ -1942,6 +1975,57 @@ function analyzeProduct(
 }
 
 /**
+ * Whether three states of `graph` may read one character in common. Exact
+ * when one reads a single character, or all three read ASCII class
+ * characters; otherwise it falls back to the pairwise test, which only adds
+ * steps.
+ */
+function tripleOverlapChecker(
+  graph: AmbiguityGraph,
+  symbolsOverlap: (left: number, right: number) => boolean,
+): (x: number, y: number, z: number) => boolean {
+  const { excluded, symbols } = graph;
+  // Each class state's ASCII characters, less its exclusions, as a bitset.
+  const asciiSets = new Map<number, Uint32Array>();
+  const asciiSet = (state: number): Uint32Array => {
+    let set = asciiSets.get(state);
+    if (set) return set;
+    set = new Uint32Array(4);
+    const symbol = symbols[state] as Extract<RegexSymbol, { kind: "class" }>;
+    for (const value of symbol.values) {
+      const code = value.charCodeAt(0);
+      if (code <= 0x7f) set[code >> 5]! |= 1 << (code & 31);
+    }
+    for (const exclusion of excluded[state]!) {
+      if (exclusion.kind === "opaque") continue;
+      const values = exclusion.kind === "class" ? exclusion.values : [exclusion.key];
+      for (const value of values) {
+        const code = value.charCodeAt(0);
+        if (code <= 0x7f) set[code >> 5]! &= ~(1 << (code & 31));
+      }
+    }
+    asciiSets.set(state, set);
+    return set;
+  };
+  return (x, y, z) => {
+    if (!symbolsOverlap(x, y) || !symbolsOverlap(y, z) || !symbolsOverlap(x, z)) return false;
+    const triple = [symbols[x], symbols[y], symbols[z]];
+    // Pairwise tests against a single character are exact, and the other
+    // two states then share that character.
+    if (triple.some((symbol) => symbol?.kind === "literal")) return true;
+    if (!triple.every((symbol) => symbol?.kind === "class")) return true;
+    const [left, middle, right] = [asciiSet(x), asciiSet(y), asciiSet(z)];
+    for (let word = 0; word < 4; word++) {
+      if ((left[word]! & middle[word]! & right[word]!) !== 0) return true;
+    }
+    // Non-ASCII characters: exclusions only name ASCII ones here.
+    const domains = triple.map((symbol) => (symbol as { nonAscii: NonAsciiDomain }).nonAscii);
+    if (domains.includes("none")) return false;
+    return !(domains.includes("whitespace") && domains.includes("non-whitespace"));
+  };
+}
+
+/**
  * Tarjan's strongly connected components of the states reachable from state
  * 0, each numbered after every component it reaches; -1 if unreachable.
  */
@@ -1998,8 +2082,8 @@ function reachableComponents(follow: number[][]): { component: number[]; count: 
  * condition of Weber and Seidl, 1991): each repetition of w can be read by
  * either loop. `a*a*` has one pair; `a*a*a*` and `[ab]*a[ab]*a[ab]*` a chain
  * of two. Each candidate is a search of the triple product from (p, p, q) to
- * (p, q, q) that keeps the outer paths in their loops and the middle one on
- * the way from p's loop to q's. Only called without exponential ambiguity,
+ * (p, q, q) that keeps the outer paths in their loops, stepping on characters
+ * all three states may read. Only called without exponential ambiguity,
  * which rules out p and q sharing a loop.
  */
 function polynomialDegree(
@@ -2008,6 +2092,7 @@ function polynomialDegree(
   symbolsOverlap: (left: number, right: number) => boolean,
 ): number | null {
   const { follow } = graph;
+  const statesShareCharacter = tripleOverlapChecker(graph, symbolsOverlap);
   const size = follow.length;
   const { component, count } = reachableComponents(follow);
   const successors = Array.from({ length: count }, () => new Set<number>());
@@ -2018,32 +2103,12 @@ function polynomialDegree(
       if (component[target] !== from) successors[from]!.add(component[target]!);
     }
   }
-  // The components that can reach `to`, which the middle path must stay in.
-  const reaching = new Map<number, boolean[]>();
-  const componentsReaching = (to: number): boolean[] => {
-    let reaches = reaching.get(to);
-    if (reaches) return reaches;
-    reaches = Array.from<boolean>({ length: count }).fill(false);
-    reaches[to] = true;
-    // Components only reach lower-numbered ones.
-    for (let from = to + 1; from < count; from++) {
-      for (const next of successors[from]!) {
-        if (reaches[next]) {
-          reaches[from] = true;
-          break;
-        }
-      }
-    }
-    reaching.set(to, reaches);
-    return reaches;
-  };
   const uniqueFollow = follow.map((targets) => [...new Set(targets)]);
 
   let edges = 0;
   const pairIsAmbiguous = (p: number, q: number): boolean | null => {
     const from = component[p]!;
     const to = component[q]!;
-    const reaches = componentsReaching(to);
     const key = (x: number, y: number, z: number) => (x * size + y) * size + z;
     const goal = key(p, q, q);
     const seen = new Set<number>([key(p, p, q)]);
@@ -2058,8 +2123,7 @@ function polynomialDegree(
           if (component[nextZ] !== to || !symbolsOverlap(nextX, nextZ)) continue;
           for (const nextY of uniqueFollow[y]!) {
             if (++edges > MAX_PRODUCT_EDGES) return null;
-            if (!reaches[component[nextY]!]) continue;
-            if (!symbolsOverlap(nextX, nextY) || !symbolsOverlap(nextY, nextZ)) continue;
+            if (!statesShareCharacter(nextX, nextY, nextZ)) continue;
             const next = key(nextX, nextY, nextZ);
             if (next === goal) return true;
             if (seen.has(next)) continue;
@@ -2118,18 +2182,55 @@ export function analyzeRegexAmbiguity(
   return analyzeNodeAmbiguity(node);
 }
 
-function analyzeNodeAmbiguity(node: RegexNode): RegexSafetyIssue | null {
+/** The lookaround bodies in `node` that read text, outside other lookarounds. */
+function assertionBodies(node: RegexNode, bodies: RegexNode[] = []): RegexNode[] {
+  switch (node.kind) {
+    case "atom":
+      break;
+    case "assertion":
+      if (node.child.kind !== "sequence" || node.child.children.length > 0) bodies.push(node.child);
+      break;
+    case "sequence":
+      for (const child of node.children) assertionBodies(child, bodies);
+      break;
+    case "alternation":
+      for (const branch of node.branches) assertionBodies(branch, bodies);
+      break;
+    case "repeat":
+      assertionBodies(node.child, bodies);
+      break;
+  }
+  return bodies;
+}
+
+/**
+ * The automaton reads a lookaround as empty, but the engine still runs its
+ * body wherever it is reached, possibly once per position of the input. Each
+ * body is analyzed on its own and must be linear.
+ */
+function analyzeNodeAmbiguity(
+  node: RegexNode,
+  maxDegree = MAX_POLYNOMIAL_DEGREE,
+): RegexSafetyIssue | null {
   // Unroll repeats exactly while the automaton fits, and only read long
   // repeats as loops when it does not.
   const exact = new PositionAutomaton(MAX_POSITIONS);
-  const issue = analyzePositionAutomaton(exact, node);
-  if (issue !== "analysis budget exceeded" || !exact.unrolledLongRepeat) return issue;
-  return analyzePositionAutomaton(new PositionAutomaton(MAX_UNROLLED_REPEAT), node);
+  let issue = analyzePositionAutomaton(exact, node, maxDegree);
+  if (issue === "analysis budget exceeded" && exact.unrolledLongRepeat) {
+    issue = analyzePositionAutomaton(new PositionAutomaton(MAX_UNROLLED_REPEAT), node, maxDegree);
+  }
+  if (issue) return issue;
+  for (const body of assertionBodies(node)) {
+    const bodyIssue = analyzeNodeAmbiguity(body, 0);
+    if (bodyIssue) return bodyIssue;
+  }
+  return null;
 }
 
 function analyzePositionAutomaton(
   automaton: PositionAutomaton,
   node: RegexNode,
+  maxDegree: number,
 ): RegexSafetyIssue | null {
   automaton.build(node);
   if (automaton.exceeded) return "analysis budget exceeded";
@@ -2141,5 +2242,5 @@ function analyzePositionAutomaton(
   if (product.exponential) return "exponentially ambiguous repetition";
   const degree = polynomialDegree(graph, product.loopPairs, symbolsOverlap);
   if (degree === null) return "analysis budget exceeded";
-  return degree > MAX_POLYNOMIAL_DEGREE ? "polynomially ambiguous repetition" : null;
+  return degree > maxDegree ? "polynomially ambiguous repetition" : null;
 }
