@@ -9869,6 +9869,9 @@ describe("middleware matcher patterns", () => {
       "/:id((?!(?<g>x))(?:\\k<g>a|a)+)",
       // A capture that may read nothing does too.
       "/:id((?<g>x*)(?:\\k<g>a|a)+)",
+      // Groups in different alternatives may share a name, and the
+      // backreference reads whichever took part, here `a`.
+      "/:a((?:(?<g>a)|(?<g>b)))/:id(\\k<g>|a)+",
       // `g` captured `a`, so `(?!ab)` does not apply where it is compared.
       `/:x((?<g>${"(?!ab)a"})c)/:id(\\k<g>?a?b)+`,
       "/:id(x(?:(?!ê|x)é|é))+",

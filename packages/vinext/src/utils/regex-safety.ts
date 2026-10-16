@@ -220,7 +220,8 @@ class RegexParser {
   private readonly groups: RegexNode[] = [];
   /** Groups that may not have taken part by the time a later term runs. */
   private readonly optionalGroups = new Set<number>();
-  private readonly groupNames = new Map<string, number>();
+  /** Each group name's capture, or undefined when several groups share it. */
+  private readonly groupNames = new Map<string, number | undefined>();
 
   constructor(
     private readonly pattern: string,
@@ -399,7 +400,10 @@ class RegexParser {
       } else if (marker === "<") {
         const nameEnd = this.pattern.indexOf(">", this.index + 2);
         if (nameEnd !== -1) {
-          this.groupNames.set(this.pattern.slice(this.index + 2, nameEnd), this.captureIndex + 1);
+          const name = this.pattern.slice(this.index + 2, nameEnd);
+          // Groups in different alternatives may share a name, and a
+          // backreference reads whichever one took part.
+          this.groupNames.set(name, this.groupNames.has(name) ? undefined : this.captureIndex + 1);
         }
         this.index = nameEnd === -1 ? this.pattern.length : nameEnd + 1;
         capture = true;
