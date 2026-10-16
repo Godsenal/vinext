@@ -7,6 +7,10 @@ import {
   matchRewrite,
   requestContextFromRequest,
 } from "../packages/vinext/src/config/config-matchers.js";
+import {
+  clientConfigSourceCouldMatch,
+  matchSimpleClientConfigSource,
+} from "../packages/vinext/src/client/client-config-source-match.js";
 
 // next.config.js redirects/rewrites/headers sources are compiled the way
 // Next.js 16 does at runtime: path-to-regexp 6 (`strict`, `delimiter: "/"`,
@@ -224,6 +228,78 @@ describe("config sources match like Next.js", () => {
       );
     }
   });
+
+  it("ignores sources whose custom pattern is not a valid RegExp instead of throwing", () => {
+    const ctx = requestContextFromRequest(new Request("http://localhost/"));
+    const sources = ["/:id(a{2,1})", "/:id(*)", "/:id(a**)", "/:a((?<n>x))/:b((?<n>y))"];
+    for (const source of sources) {
+      expect(nextMatch(source, "/x"), source).toBe("throws");
+      expect(matchConfigPattern("/x", source), source).toBeNull();
+      expect(console.warn, source).toHaveBeenLastCalledWith(
+        expect.stringContaining(`Ignoring invalid next.config.js source "${source}"`),
+      );
+    }
+    const headers = sources.map((source) => ({ source, headers: [{ key: "x", value: "1" }] }));
+    expect(
+      matchHeaders("/x", [...headers, { source: "/x", headers: [{ key: "y", value: "1" }] }], ctx),
+    ).toEqual([{ key: "y", value: "1" }]);
+  });
+});
+
+describe("Pages client sync matcher agrees with the server matcher", () => {
+  beforeEach(() => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const CLIENT_PATHNAMES = [...PATHNAMES, "/About/", "/\u212Aey", "/DOCS/A/B", "/x/en/"];
+  const CLIENT_SOURCES = [...SOURCES, "/key", "/docs/:path*/", "/:a/b/:c", "/Docs/:path+"];
+
+  it("returns the server's params whenever it does not defer", () => {
+    for (const source of CLIENT_SOURCES) {
+      for (const pathname of CLIENT_PATHNAMES) {
+        const actual = matchSimpleClientConfigSource(pathname, source);
+        if (actual === undefined) continue;
+        expect(actual, `${source} ← ${pathname}`).toEqual(matchConfigPattern(pathname, source));
+      }
+    }
+  });
+
+  it("only rules out sources the server cannot match", () => {
+    for (const source of CLIENT_SOURCES) {
+      for (const pathname of CLIENT_PATHNAMES) {
+        if (clientConfigSourceCouldMatch(pathname, source)) continue;
+        expect(matchConfigPattern(pathname, source), `${source} ← ${pathname}`).toBeNull();
+      }
+    }
+  });
+
+  it("defers sources it does not model", () => {
+    for (const [source, pathname] of [
+      ["/x/:locale?", "/x/en"],
+      ["/:auth-method", "/google-method"],
+      ["/blog-:slug", "/blog-x"],
+      ["/blog/:slug.md", "/blog/x.md"],
+      ["/foo{-:bar}?", "/foo-x"],
+      ["/docs/:rest(.*)", "/docs/a"],
+      ["/a\\:b", "/a:b"],
+      ["/docs/:path*/", "/docs/a/"],
+      ["/\u20ac/:slug", "/\u20ac/x"],
+      ["/docs/:path*", "/docs//a"],
+    ]) {
+      expect(matchSimpleClientConfigSource(pathname, source), source).toBeUndefined();
+    }
+  });
+
+  it("matches the shapes it models", () => {
+    expect(matchSimpleClientConfigSource("/About/", "/about")).toEqual({});
+    expect(matchSimpleClientConfigSource("/\u212Aey", "/key")).toBeNull();
+    expect(matchSimpleClientConfigSource("/docs/a/b/", "/docs/:path*")).toEqual({ path: "a/b" });
+    expect(matchSimpleClientConfigSource("/docs", "/docs/:path+")).toBeNull();
+    expect(matchSimpleClientConfigSource("/blog/x", "/blog/:slug")).toEqual({ slug: "x" });
+  });
 });
 
 describe("config source matching regressions", () => {
@@ -342,6 +418,19 @@ describe("config source matching regressions", () => {
         ?.destination,
     ).toBe("/y");
   });
+
+  it("appends only the source params that matched to the rewrite query", () => {
+    // Expected values from Next.js prepareDestination with getPathMatch params.
+    const ctx = requestContextFromRequest(new Request("http://localhost/"));
+    const rewrite = (source: string, destination: string, pathname: string) =>
+      matchRewrite(pathname, [{ source, destination }], ctx);
+    expect(rewrite("/foo{-:bar}?", "/f", "/foo")).toBe("/f");
+    expect(rewrite("/foo{-:bar}?", "/f", "/foo-x")).toBe("/f?bar=x");
+    expect(rewrite("/x/:locale?", "/y", "/x")).toBe("/y");
+    expect(rewrite("/x/:locale?", "/y", "/x/en")).toBe("/y?locale=en");
+    // An empty capture is still a param.
+    expect(rewrite("/docs/:rest(.*)", "/d", "/docs/")).toBe("/d?rest=");
+  });
 });
 
 describe("matchRedirect locale-static index agrees with the compiled source", () => {
@@ -434,9 +523,9 @@ describe("matchRedirect locale-static index agrees with the compiled source", ()
 });
 
 describe("config sources do not backtrack catastrophically", () => {
-  // Sources whose compiled regexes are linear. A near-miss pathname of 16 KB
-  // takes well under a millisecond per match; catastrophic backtracking would
-  // take seconds or never finish.
+  // Sources whose compiled regexes are linear: a 16 KB near-miss pathname
+  // takes well under a millisecond per match. The bound catches exponential
+  // and cubic blowups, which take seconds or never finish at this size.
   const LINEAR_SOURCES = [
     "/:path*",
     "/:path+/:tail?",
@@ -471,7 +560,7 @@ describe("config sources do not backtrack catastrophically", () => {
     "//" + "/".repeat(16_000),
   ];
 
-  it("matches near-miss pathnames in linear time", () => {
+  it("matches near-miss pathnames without catastrophic backtracking", () => {
     for (const source of LINEAR_SOURCES) {
       for (const pathname of ADVERSARIAL_PATHNAMES) {
         const start = performance.now();

@@ -103,6 +103,10 @@ import { getDeploymentId, NEXT_DEPLOYMENT_ID_HEADER } from "../utils/deployment-
 import type { RequestContext } from "../config/config-matchers.js";
 import { substituteDestinationParams } from "../config/destination-params.js";
 import type { ClientRewrite } from "../client/client-rewrites.js";
+import {
+  clientConfigSourceCouldMatch,
+  matchSimpleClientConfigSource,
+} from "../client/client-config-source-match.js";
 
 /** basePath from next.config.js, injected by the plugin at build time */
 const __basePath: string = process.env.__NEXT_ROUTER_BASEPATH ?? "";
@@ -1887,54 +1891,6 @@ function shouldEvaluateClientConfigRule(
   return ruleBasePath === false ? !state.hadBasePath : state.hadBasePath;
 }
 
-function matchSimpleClientConfigPattern(
-  pathname: string,
-  source: string,
-): Record<string, string> | null | undefined {
-  if (source.includes("(") || source.includes("\\") || /:[\w-]+[*+][^/]/.test(source)) {
-    return undefined;
-  }
-
-  const sourceParts = removeTrailingSlash(source).split("/");
-  const pathParts = removeTrailingSlash(pathname).split("/");
-  const params: Record<string, string> = {};
-  let pathIndex = 0;
-
-  for (let sourceIndex = 0; sourceIndex < sourceParts.length; sourceIndex++) {
-    const sourcePart = sourceParts[sourceIndex]!;
-    const pathPart = pathParts[pathIndex];
-    if (sourcePart.startsWith(":")) {
-      const catchAll = sourcePart.match(/^:([\w-]+)([*+])$/);
-      if (catchAll) {
-        const rest = pathParts.slice(pathIndex).join("/");
-        if (catchAll[2] === "+" && rest === "") return null;
-        params[catchAll[1]!] = rest;
-        return sourceIndex === sourceParts.length - 1 ? params : undefined;
-      }
-      if (pathPart === undefined) return null;
-      params[sourcePart.slice(1)] = pathPart;
-      pathIndex++;
-      continue;
-    }
-
-    if (pathPart !== sourcePart) return null;
-    pathIndex++;
-  }
-
-  return pathIndex === pathParts.length ? params : null;
-}
-
-function simpleClientConfigSourceCouldMatch(pathname: string, source: string): boolean {
-  const wildcardIndex = source.search(/[:(\\*+?]/);
-  const literalPrefix = wildcardIndex === -1 ? source : source.slice(0, wildcardIndex);
-  const normalizedPrefix = removeTrailingSlash(literalPrefix);
-  if (!normalizedPrefix || normalizedPrefix === "/") return true;
-  const normalizedPathname = removeTrailingSlash(pathname);
-  return (
-    normalizedPathname === normalizedPrefix || normalizedPathname.startsWith(`${normalizedPrefix}/`)
-  );
-}
-
 function isExternalClientConfigUrl(url: string): boolean {
   return /^[a-z][a-z0-9+.-]*:/i.test(url) || url.startsWith("//");
 }
@@ -1950,10 +1906,10 @@ function clientConfigRedirectCouldMatch(href: string): boolean {
     if (!shouldEvaluateClientConfigRule(redirect.basePath, routeContext.basePathState)) {
       continue;
     }
-    if (!simpleClientConfigSourceCouldMatch(routeContext.pathname, redirect.source)) {
+    if (!clientConfigSourceCouldMatch(routeContext.pathname, redirect.source)) {
       continue;
     }
-    const params = matchSimpleClientConfigPattern(routeContext.pathname, redirect.source);
+    const params = matchSimpleClientConfigSource(routeContext.pathname, redirect.source);
     if (params !== null) return true;
   }
 
@@ -1972,12 +1928,12 @@ function resolveClientConfigRewriteSync(href: string): ClientConfigRewriteResolu
     if (!shouldEvaluateClientConfigRule(rewrite.basePath, routeContext.basePathState)) {
       continue;
     }
-    if (!simpleClientConfigSourceCouldMatch(routeContext.pathname, rewrite.source)) {
+    if (!clientConfigSourceCouldMatch(routeContext.pathname, rewrite.source)) {
       continue;
     }
     if (rewrite.has || rewrite.requiresServerEvaluation) return undefined;
 
-    const params = matchSimpleClientConfigPattern(routeContext.pathname, rewrite.source);
+    const params = matchSimpleClientConfigSource(routeContext.pathname, rewrite.source);
     if (params === undefined) return undefined;
     if (params === null) continue;
 

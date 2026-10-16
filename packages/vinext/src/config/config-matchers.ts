@@ -140,11 +140,11 @@ function getCachedRegex<K, V>(cache: Map<K, V | null>, key: K, compile: () => V 
  *
  * The index must match exactly what the compiled source would. So the param
  * name follows path-to-regexp's `\w` name lexer, the alternatives are plain
- * words (a `.*` alternative could span several segments), and the suffix class
- * only admits characters path-to-regexp treats as literals: `:` (param), `*`
- * and `+` (modifiers), `(`, `{`, `?` and `\` are excluded.
+ * words, possibly empty (a `.*` alternative could span several segments), and
+ * the suffix class only admits characters path-to-regexp treats as literals:
+ * `:` (param), `*` and `+` (modifiers), `(`, `{`, `?` and `\` are excluded.
  */
-const _LOCALE_STATIC_RE = /^\/:\w+\(([\w-]+(?:\|[\w-]+)*)\)(\??)\/([a-zA-Z0-9_~.%@!$&',;=/-]+)$/;
+const _LOCALE_STATIC_RE = /^\/:\w+\(([\w-]*(?:\|[\w-]*)*)\)(\??)\/([a-zA-Z0-9_~.%@!$&',;=/-]+)$/;
 
 type LocaleStaticEntry = {
   /** The param name extracted from the source (e.g. "locale"). */
@@ -190,7 +190,8 @@ function _getRedirectIndex(redirects: NextRedirect[]): RedirectIndex {
     const m = _LOCALE_STATIC_RE.exec(redirect.source);
     // Lookups use the slash-stripped pathname, so a slash-ending suffix could
     // never be found; leave those rules to the linear scan.
-    if (m && !m[3].endsWith("/")) {
+    // An empty group is not a valid source at all.
+    if (m && m[1] !== "" && !m[3].endsWith("/")) {
       const paramName = redirect.source.slice(2, redirect.source.indexOf("("));
       const alternation = m[1];
       const optional = m[2] === "?";
@@ -545,10 +546,10 @@ type CompiledConfigSource = {
 function compileConfigSource(source: string): CompiledConfigSource | null {
   return getCachedRegex(_compiledSourceCache, source, () => {
     let tokens: PathToken[];
-    let regexSource: string;
+    let re: RegExp;
     try {
       tokens = parsePath(source, { delimiter: "/" });
-      regexSource = pathTokensToRegExpSource(tokens);
+      re = new RegExp(`${pathTokensToRegExpSource(tokens)}(?:\\/)?$`, "i");
     } catch (error) {
       console.warn(
         `[vinext] Ignoring invalid next.config.js source "${source}": ${
@@ -569,7 +570,7 @@ function compileConfigSource(source: string): CompiledConfigSource | null {
     for (const token of tokens) {
       if (typeof token !== "string" && token.pattern) keys.push(token.name);
     }
-    return { re: new RegExp(`${regexSource}(?:\\/)?$`, "i"), keys };
+    return { re, keys };
   });
 }
 
@@ -585,18 +586,33 @@ export function matchConfigPattern(
   pathname: string,
   pattern: string,
 ): Record<string, string> | null {
-  const compiled = compileConfigSource(pattern);
+  return execConfigSource(pathname, pattern)?.params ?? null;
+}
+
+/**
+ * matchConfigPattern, also reporting the optional params that did not match.
+ * Next.js leaves those out of its params entirely.
+ */
+function execConfigSource(
+  pathname: string,
+  source: string,
+): { params: Record<string, string>; unmatched: string[] } | null {
+  const compiled = compileConfigSource(source);
   if (!compiled) return null;
   const match = compiled.re.exec(pathname);
   if (!match) return null;
   const params: Record<string, string> = Object.create(null);
+  const unmatched: string[] = [];
   for (let i = 0; i < compiled.keys.length; i++) {
     const key = compiled.keys[i];
+    if (typeof key !== "string") continue;
+    const value = match[i + 1];
+    if (value === undefined) unmatched.push(key);
     // NOTE: Do NOT decodeURIComponent here. The pathname is already decoded at
     // the request entry point. Decoding again would produce incorrect param values.
-    if (typeof key === "string") params[key] = match[i + 1] ?? "";
+    params[key] = value ?? "";
   }
-  return params;
+  return { params, unmatched };
 }
 
 /**
@@ -795,16 +811,16 @@ export function matchRewrite(
 ): string | null {
   for (const rewrite of rewrites) {
     if (!shouldEvaluateRule(rewrite.basePath, basePathState)) continue;
-    const matchedParams = matchConfigPattern(pathname, rewrite.source);
-    if (matchedParams) {
+    const matched = execConfigSource(pathname, rewrite.source);
+    if (matched) {
       onRuleSourceMatch?.(rewrite);
       // App request routing matches against a segment-normalized pathname but
       // Next.js prepareDestination substitutes the encoded source captures.
       // Prefer those captures when the caller retained the encoded pathname.
-      const params =
+      const { params, unmatched } =
         paramsPathname === pathname
-          ? matchedParams
-          : (matchConfigPattern(paramsPathname, rewrite.source) ?? matchedParams);
+          ? matched
+          : (execConfigSource(paramsPathname, rewrite.source) ?? matched);
       const conditionParams =
         rewrite.has || rewrite.missing
           ? collectConditionParams(rewrite.has, rewrite.missing, ctx)
@@ -818,6 +834,7 @@ export function matchRewrite(
       return substituteAndSanitizeRewriteDestination(
         serializeRewriteDestinationTemplate(rewrite.destination),
         rewriteParams,
+        unmatched.filter((key) => !(key in conditionParams)),
       );
     }
   }
@@ -886,20 +903,28 @@ function resolveRedirectMatch(
 /**
  * Match Next.js's rewrite-specific prepareDestination behavior: source params
  * that are not consumed by the destination path/host are exposed to the target
- * page through query.
+ * page through query. Optional params that did not match are not params at
+ * all in Next.js, so they are neither appended nor count as consumed.
  *
  * https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/router/utils/prepare-destination.ts
  */
 function substituteAndSanitizeRewriteDestination(
   destination: string,
   params: Record<string, string>,
+  unmatchedParams: string[],
 ): string {
   const rewritten = substituteAndSanitizeDestination(destination, params, "rewrite");
-  if (!shouldAppendRewriteParamsToQuery(destination, params)) return rewritten;
+  const matchedParams =
+    unmatchedParams.length === 0
+      ? params
+      : Object.fromEntries(
+          Object.entries(params).filter(([key]) => !unmatchedParams.includes(key)),
+        );
+  if (!shouldAppendRewriteParamsToQuery(destination, matchedParams)) return rewritten;
 
   const existingQueryKeys = getDestinationQueryKeys(destination);
   const paramsToAppend: [string, string][] = [];
-  for (const [key, value] of Object.entries(params)) {
+  for (const [key, value] of Object.entries(matchedParams)) {
     if (key === "nextInternalLocale" || existingQueryKeys.has(key)) continue;
     paramsToAppend.push([key, value]);
   }

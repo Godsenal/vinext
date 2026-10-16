@@ -13631,9 +13631,8 @@ describe("matchConfigPattern", () => {
 
   // Regression for #1331: a trailing slash on the request pathname must not
   // hide a config rewrite/redirect/header source written without one. This
-  // mirrors Next.js's conditional `source + '(/)?'` suffix under
-  // `trailingSlash: true` — see `stripTrailingSlashForConfigMatch`.
-  it("strips a trailing slash on the incoming pathname before matching", async () => {
+  // mirrors the optional `(?:\/)?$` ending Next.js's modifyRouteRegex appends.
+  it("accepts a trailing slash on the incoming pathname", async () => {
     const { matchConfigPattern } = await import("../packages/vinext/src/config/config-matchers.js");
     // Exact match: trailing slash on the pathname is ignored.
     expect(matchConfigPattern("/about/", "/about")).toEqual({});
@@ -13868,9 +13867,9 @@ describe("matchConfigPattern compiled pattern cache", () => {
   it("caches rejection for unsafe (ReDoS) patterns and returns null on repeat calls", async () => {
     const { matchConfigPattern } = await import("../packages/vinext/src/config/config-matchers.js");
     // lgtm[js/redos] — deliberate pathological regex to test cache-of-null path
-    const unsafe = "/:id((a+)+b)";
+    const unsafe = "/:id((?:a+)+b)";
     expect(matchConfigPattern("/x", unsafe)).toBeNull();
-    // Second call must not re-run isSafeRegex — just return null from cache.
+    // Second call must not re-run the ReDoS checks — just return null from cache.
     expect(matchConfigPattern("/x", unsafe)).toBeNull();
   });
 });
@@ -14597,7 +14596,7 @@ describe("matchHeaders compiled source cache", () => {
       },
     ];
 
-    // First call — populates _compiledHeaderSourceCache.
+    // First call — populates the compiled source cache.
     const first = matchHeaders("/blog/hello-world", rules, makeCtx());
     expect(first).toEqual([{ key: "x-content-type", value: "article" }]);
 
