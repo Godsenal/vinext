@@ -304,6 +304,9 @@ describe("Pages client sync matcher agrees with the server matcher", () => {
       ["/docs/:path*", "/docs//a"],
       // Duplicate names keep the last capture that matched.
       ["/:id/:id*", "/foo"],
+      // An empty `*` is unmatched, which can change the rewrite query.
+      ["/From/:id/:rest*", "/from/foo"],
+      ["/docs/:path*", "/docs"],
       ["/:id/:id", "/a/b"],
     ]) {
       expect(matchSimpleClientConfigSource(pathname, source), source).toBeUndefined();
@@ -345,6 +348,16 @@ describe("Pages client sync matcher agrees with the server matcher", () => {
       const params = matchSimpleClientConfigSource(pathname, source)!;
       expect(clientRewriteAppendsParams(destination, params), source).toBe(defers);
     }
+    // An empty `*` is unmatched, so the server appends `id`; the fast path
+    // defers it rather than substitute `/target/`.
+    expect(
+      matchRewrite(
+        "/from/foo",
+        [{ source: "/From/:id/:rest*", destination: "/target/:rest*" }],
+        ctx,
+      ),
+    ).toBe("/target/?id=foo");
+    expect(matchSimpleClientConfigSource("/from/foo", "/From/:id/:rest*")).toBeUndefined();
   });
 
   it("matches the shapes it models", () => {
@@ -768,6 +781,9 @@ describe("config sources do not backtrack catastrophically", () => {
         "/{\u{1F600}:id([\u{1F600}]+)}+X",
         // `(?!\/)` only rules out "/" as the first character of the group.
         "/:p((?!\\/)(?i:[a-z/]+))+",
+        // Alternatives that match the same text multiply per segment.
+        "/:id(a|aa?)+",
+        "/{x:id(a|a)}+",
         // Adjacent params form one chain of overlapping repeats.
         "/:a(a+):b(a+):c(a+)",
         "/:a(.*):b(.*):c(.*)",

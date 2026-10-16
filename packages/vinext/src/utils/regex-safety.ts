@@ -925,6 +925,32 @@ function findRepetitionChainDeep(node: RegexNode): RegexSafetyIssue | null {
 }
 
 /**
+ * analyzeRegexSafety's check for alternatives under repetition, applied to
+ * the whole pattern as if it were repeated. A repeated path param repeats
+ * its pattern once per segment, so alternatives that can match the same
+ * text, as in `a|aa?`, multiply across segments.
+ */
+export function analyzeRepeatedRegexAlternatives(
+  pattern: string,
+  options: { ignoreCase?: boolean; namedGroups?: boolean } = {},
+): RegexSafetyIssue | null {
+  if (pattern.length > MAX_PATTERN_LENGTH) return "analysis budget exceeded";
+  const parser = new RegexParser(
+    pattern,
+    options.ignoreCase === true,
+    options.namedGroups ?? mayHaveNamedGroups(pattern),
+  );
+  const node = parser.parse();
+  if (parser.exceededBudget || parser.index !== pattern.length) return "analysis budget exceeded";
+  if (!containsConsumingAlternation(node)) return null;
+  const prefixFree = hasPrefixFreeFiniteLanguage(node);
+  if (prefixFree.safe) return null;
+  return prefixFree.budgetExceeded
+    ? "analysis budget exceeded"
+    : "ambiguous alternatives under repetition";
+}
+
+/**
  * Only analyzeRegexSafety's check for chains of overlapping variable repeats
  * in a sequence. For a RegExp compiled from separately checked parts, where
  * each part is known to be safe but a chain across parts is not.

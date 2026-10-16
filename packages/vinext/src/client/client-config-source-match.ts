@@ -57,6 +57,9 @@ export function matchSimpleClientConfigSource(
       if (index !== sourceParts.length - 1) return undefined;
       const rest = pathParts.slice(index).join("/");
       if (catchAll[2] === "+" && rest === "") return null;
+      // An empty `*` is an unmatched param to the exact matcher, which then
+      // may append the other params to the rewrite query.
+      if (rest === "") return undefined;
       // Duplicate names keep the last capture that matched; leave them to
       // the exact matcher.
       if (catchAll[1]! in params) return undefined;

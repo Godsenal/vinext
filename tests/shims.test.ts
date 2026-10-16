@@ -9687,6 +9687,13 @@ describe("middleware matcher patterns", () => {
     const { compileMiddlewareMatcherPattern } =
       await import("../packages/vinext/src/server/middleware-matcher-pattern.js");
 
+    for (const matcher of ["/:id(a|aa?)+", "/{x:id(a|a)}+"]) {
+      expect(compileMiddlewareMatcherPattern(matcher), matcher).toMatchObject({
+        kind: "unsafe",
+        error: expect.stringContaining("ambiguous alternatives under repetition"),
+      });
+    }
+
     // `/{a:id(a+)}*X` joins repeats with "a", so `a+` can take either side.
     // Surrogates count separately: the RegExp has no `u` flag.
     for (const matcher of [
@@ -9714,6 +9721,7 @@ describe("middleware matcher patterns", () => {
       // A fixed-width repeat splits by length alone.
       "/{a:id(a)}+",
       "/{a:id(\\/)}+",
+      "/docs/:lang(en|fr)*",
     ]) {
       expect(compileMiddlewareMatcherPattern(matcher).regexp, matcher).toBeInstanceOf(RegExp);
     }
@@ -25860,6 +25868,41 @@ describe("Pages Router _next/data client navigation", () => {
       expect(await Router.push("/from/123")).toBe(true);
       expect(destinationLoader).toHaveBeenCalledTimes(1);
       expect(win.__NEXT_DATA__).toMatchObject({ page: "/target", query: { id: "123" } });
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("collapses a leading double slash in a rewrite destination like the server", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const destinationLoader = vi.fn(async () => makePageModule("destination"));
+    const { win } = createDataNavWindow({
+      loaders: {
+        "/": vi.fn(async () => makePageModule("home")),
+        "/target/[id]": destinationLoader,
+      },
+      ssgPatterns: [],
+      sspPatterns: [],
+    });
+    // `//target/1` would read as protocol-relative; the server's
+    // sanitizeDestination makes it the local `/target/1`.
+    (win as any).__VINEXT_CLIENT_REWRITES__ = {
+      beforeFiles: [{ source: "/From/:id", destination: "//target/:id" }],
+      afterFiles: [],
+      fallback: [],
+    };
+    (globalThis as any).window = win;
+    globalThis.fetch = vi.fn(async () => new Response("{}")) as typeof fetch;
+    try {
+      vi.resetModules();
+      const Router = (await import("../packages/vinext/src/shims/router.js")).default;
+      expect(await Router.push("/from/1")).toBe(true);
+      expect(destinationLoader).toHaveBeenCalledTimes(1);
+      expect(win.__NEXT_DATA__).toMatchObject({ page: "/target/[id]", query: { id: "1" } });
     } finally {
       vi.resetModules();
       if (previousWindow === undefined) delete (globalThis as any).window;

@@ -1,6 +1,7 @@
 import {
   analyzeRegexSafety,
   analyzeRegexRepetitionChains,
+  analyzeRepeatedRegexAlternatives,
   mayHaveNamedGroups,
   regexAtomsMayOverlap,
   regexExactWidth,
@@ -147,6 +148,17 @@ function unsafeTokenReason(
   }
 
   if (token.modifier !== "*" && token.modifier !== "+") return null;
+
+  // The pattern repeats once per segment, so its alternatives must not match
+  // the same text: `/:id(a|aa?)+` has two ways to match each "a" segment.
+  const alternativesIssue = analyzeRepeatedRegexAlternatives(token.pattern, {
+    ignoreCase: true,
+    namedGroups,
+  });
+  if (alternativesIssue === "analysis budget exceeded") {
+    return `parameter "${token.name}" exceeds the regex analysis budget`;
+  }
+  if (alternativesIssue) return `repeated parameter "${token.name}" contains ${alternativesIssue}`;
 
   // A fixed-width P splits its repeats by input length alone, so neither
   // check below applies to it (width zero is the empty-value case).

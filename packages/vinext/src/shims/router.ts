@@ -1940,6 +1940,9 @@ function resolveClientConfigRewriteSync(href: string): ClientConfigRewriteResolu
     if (clientRewriteAppendsParams(rewrite.destination, params)) return undefined;
 
     const rewritten = substituteDestinationParams(rewrite.destination, params, "rewrite");
+    // The exact matcher collapses a leading run of slashes (sanitizeDestination);
+    // leave anything but a plain local or http(s) destination to it.
+    if (!/^(?:https?:\/\/|\/(?![\\/\t\n\r]))/.test(rewritten)) return undefined;
     if (isExternalClientConfigUrl(rewritten)) return { kind: "document" };
     currentHref = mergeRewriteQuery(currentHref, rewritten);
     matched = true;
