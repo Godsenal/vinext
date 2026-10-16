@@ -92,6 +92,7 @@ import {
   markAppRscResponseConfigHeadersApplied,
 } from "./app-rsc-response-finalizer.js";
 import { normalizeRscRequest } from "./app-rsc-request-normalization.js";
+import { isAppRouteHandlerRoute } from "./app-rsc-route-matching.js";
 import { buildNextDataNotFoundResponse, normalizePagesDataRequest } from "./pages-data-route.js";
 import { normalizeDefaultLocalePathname } from "./pages-i18n.js";
 import {
@@ -639,7 +640,7 @@ export type CreateAppRscHandlerOptions<TRoute extends AppRscHandlerRoute> = {
    * dedup'd. Provided by the generated RSC entry; absent in older entries.
    */
   ensureRouteLoaded?: (route: TRoute) => unknown;
-  ensureInstrumentation?: () => Promise<void>;
+  ensureInstrumentation?: (ctx: ExecutionContextLike | null) => Promise<void>;
   /**
    * Register cache adapters configured via the vinext() `cache` option. Wired
    * from the generated RSC entry (which can import `virtual:vinext-cache-adapters`)
@@ -2184,7 +2185,17 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     filesystemRouteEligible &&
     isPostRequest &&
     contentType.startsWith("multipart/form-data") &&
-    !actionId
+    !actionId &&
+    // Next.js only handles Server Actions while rendering App pages. Route
+    // Handlers receive multipart POSTs untouched, without the action origin
+    // check or body size limit. Only a static match is final here: afterFiles
+    // rewrites can still move a dynamic one to an App page.
+    !(
+      renderedPreActionMatch &&
+      preActionMatch &&
+      !preActionMatch.route.isDynamic &&
+      isAppRouteHandlerRoute(renderedPreActionMatch.route)
+    )
   ) {
     if (options.handleProgressiveActionRequest) {
       progressiveActionResult = await options.handleProgressiveActionRequest({
@@ -3185,7 +3196,7 @@ export function createAppRscRequestHandler<TRoute extends AppRscHandlerRoute>(
     // guarded call is a no-op); on Node/dev this is where they get wired, with no
     // bindings available.
     options.registerCacheAdapters();
-    await options.ensureInstrumentation?.();
+    await options.ensureInstrumentation?.(isExecutionContextLike(ctx) ? ctx : null);
 
     const traceUrl = new URL(rawRequest.url);
     return traceFrameworkRequest({

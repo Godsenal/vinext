@@ -184,7 +184,10 @@ import {
   routeNitroPublicFilesThroughRouter,
   type NitroPublicFilesOptions,
 } from "./build/nitro-public-files.js";
-import { emitNextClientRuntimeManifests } from "./build/next-client-runtime-manifests.js";
+import {
+  emitNextClientRuntimeManifests,
+  getPagesManifestPage,
+} from "./build/next-client-runtime-manifests.js";
 import { collectInlineCssManifest, injectInlineCssManifestGlobal } from "./build/inline-css.js";
 import { validateDevRequest } from "./server/dev-origin-check.js";
 import { readTrustedRevalidationHostname } from "./server/revalidation-host.js";
@@ -8237,18 +8240,30 @@ export const loadServerActionClient = ${
       writeBundle: {
         sequential: true,
         order: "post",
-        handler(outputOptions: { dir?: string }) {
+        async handler(outputOptions: { dir?: string }) {
           const clientDir = outputOptions.dir;
           if (!clientDir) return;
 
           const isClientBuild = this.environment?.name === "client";
           if (!isClientBuild) return;
 
+          const pageRoutes = hasPagesDir
+            ? (
+                await Promise.all([
+                  pagesRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher),
+                  apiRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher),
+                ])
+              ).flat()
+            : [];
+
           emitNextClientRuntimeManifests({
             clientDir,
             assetsSubdir: resolveAssetsDir(nextConfig.assetPrefix),
             buildId: nextConfig.buildId,
             rewrites: nextConfig.rewrites,
+            pages: pageRoutes.map((route) =>
+              getPagesManifestPage(pagesDir, route.filePath, fileMatcher),
+            ),
           });
         },
       },
