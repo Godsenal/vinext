@@ -1717,7 +1717,7 @@ function validateConfigSources(type: string, routes: ReadonlyArray<{ source: unk
   const invalid: string[] = [];
   for (const route of routes) {
     const error = configSourceError(route?.source);
-    if (error) invalid.push(`  ${JSON.stringify(route.source)}: ${error}`);
+    if (error) invalid.push(`  ${JSON.stringify(route?.source)}: ${error}`);
   }
   if (invalid.length > 0) {
     throw new Error(

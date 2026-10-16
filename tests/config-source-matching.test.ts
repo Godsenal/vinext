@@ -746,6 +746,12 @@ describe("next.config.js source validation", () => {
     ).rejects.toThrow("`source` exceeds max built length of 4096");
   });
 
+  it("reports a missing route entry instead of crashing on it", async () => {
+    await expect(resolveNextConfig({ headers: () => [null] } as never)).rejects.toThrow(
+      "Invalid next.config.js header source",
+    );
+  });
+
   it("checks sources again after adding basePath, like Next.js", async () => {
     // Next.js exits the build on an invalid route; vinext throws instead.
     const nextRejects = async (config: object): Promise<boolean> => {
