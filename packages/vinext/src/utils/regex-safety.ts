@@ -59,6 +59,9 @@ const MAX_AUTOMATON_EDGES = 262_144;
 // first and last sets.
 const MAX_AUTOMATON_WORK = 4_000_000;
 const MAX_PRODUCT_EDGES = 500_000;
+// Pending guards read and copied while expanding lookahead guards, each of
+// which costs far more than an automaton edge.
+const MAX_GUARD_WORK = 262_144;
 // One analysis may build several automata: an exact pass, a pass that reads
 // long repeats as loops, and one per lookaround body. These cap their total,
 // at what the two passes over the whole pattern may spend.
@@ -1687,7 +1690,10 @@ type AmbiguityGraph = {
  * split only at the characters a guard checks next, so every input still
  * takes as many paths as it does in the engine.
  */
-function applyLookaheadGuards(automaton: PositionAutomaton): AmbiguityGraph | null {
+function applyLookaheadGuards(
+  automaton: PositionAutomaton,
+  budget: AnalysisBudget,
+): AmbiguityGraph | null {
   const { excluded, follow, guards, symbols } = automaton;
   if (!guards.some((guard) => guard !== null)) {
     return { symbols, excluded, follow };
@@ -1700,6 +1706,7 @@ function applyLookaheadGuards(automaton: PositionAutomaton): AmbiguityGraph | nu
   ];
   const ids = new Map<string, number>();
   const queue = [0];
+  let work = 0;
   const stateFor = (
     position: number,
     symbol: RegexSymbol | null,
@@ -1730,6 +1737,11 @@ function applyLookaheadGuards(automaton: PositionAutomaton): AmbiguityGraph | nu
     const id = queue.pop()!;
     const { position, pending } = states[id]!;
     for (const target of follow[position]!) {
+      // Each target reads and copies the pending guards, so a long guard
+      // that every iteration restarts costs quadratic work.
+      work += pending.length + 1;
+      budget.automatonWork += pending.length + 1;
+      if (work > MAX_GUARD_WORK || budget.automatonWork > MAX_TOTAL_AUTOMATON_WORK) return null;
       const symbol = symbols[target]!;
       const guard = guards[target]!;
       const checked = new Map<string, RegexSymbol>();
@@ -2302,7 +2314,7 @@ function analyzePositionAutomaton(
 ): RegexSafetyIssue | null {
   automaton.build(node);
   if (automaton.exceeded) return "analysis budget exceeded";
-  const graph = applyLookaheadGuards(automaton);
+  const graph = applyLookaheadGuards(automaton, budget);
   if (graph === null) return "analysis budget exceeded";
   const symbolsOverlap = stateOverlapChecker(graph);
   const product = analyzeProduct(graph, symbolsOverlap, budget);

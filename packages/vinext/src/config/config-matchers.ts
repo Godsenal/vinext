@@ -298,9 +298,13 @@ function stripHopByHopRequestHeaders(headers: Headers): void {
  * ambiguously split loops, and bounded repeats, which unroll without forming
  * loops, for alternatives or optional parts that multiply the paths.
  *
- * Returns true if the pattern appears safe, false if it's potentially dangerous.
+ * Returns true if the pattern appears safe, false if it's potentially dangerous
+ * or uses the `u` or `v` flag.
  */
 export function isSafeRegex(pattern: string, flags?: string): boolean {
+  // The analyzer does not model Unicode-mode syntax such as `\p{…}` or `v`
+  // class sets, so it cannot vouch for those patterns.
+  if (flags?.includes("u") || flags?.includes("v")) return false;
   return (
     analyzeRegexSafety(pattern, {
       ignoreCase: flags?.includes("i"),

@@ -10025,6 +10025,11 @@ describe("middleware matcher patterns", () => {
     start = performance.now();
     expect(analyzeRegexSafety(lookahead.repeat(20))).toBe("analysis budget exceeded");
     expect(performance.now() - start).toBeLessThan(2_000);
+
+    // A long guard that every iteration restarts.
+    start = performance.now();
+    expect(analyzeRegexSafety(`(?:(?!${"a".repeat(4_000)}b).)*`)).toBe("analysis budget exceeded");
+    expect(performance.now() - start).toBeLessThan(1_000);
   });
 
   it("reads `.` as matching line terminators under the s flag", async () => {
@@ -10033,6 +10038,15 @@ describe("middleware matcher patterns", () => {
     expect(isSafeRegex("(.*\\n)+X")).toBe(true);
     expect(isSafeRegex("(.*\\n)+X", "s")).toBe(false);
     expect(isSafeRegex("a.*b", "s")).toBe(true);
+  });
+
+  it("does not vouch for Unicode-mode patterns", async () => {
+    const { isSafeRegex } = await import("../packages/vinext/src/config/config-matchers.js");
+
+    // Under `u`, `\p{ASCII}` is one class, which the analyzer does not parse.
+    expect(isSafeRegex("(?:\\p{ASCII}+)+Z", "u")).toBe(false);
+    expect(isSafeRegex("abc", "v")).toBe(false);
+    expect(isSafeRegex("abc", "i")).toBe(true);
   });
 
   it("handles fixed-width nested repeats and simple class intersections", async () => {
