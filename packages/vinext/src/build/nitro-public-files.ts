@@ -28,17 +28,40 @@ const CDN_STATIC_PRESETS = new Set(["aws-amplify"]);
 /**
  * Define the Nitro runtime plugin that lets vinext's router fetch public
  * files in-process. Nitro reads virtual modules when it sets up, before Vite
- * resolves its config, so this runs from Nitro's setup hook; the plugin only
- * loads once `routeNitroPublicFilesThroughRouter` registers it.
+ * resolves its config, so this runs from Nitro's setup hook and reads the
+ * prefix when Nitro renders the module; the plugin only loads once
+ * `routeNitroPublicFilesThroughRouter` registers it.
+ *
+ * Nitro's static handler answers before any request hook can reject a
+ * request, so the plugin wraps the app's `fetch` to keep requests from
+ * outside the server away from the private prefix. vinext's own fetches use
+ * the unwrapped app.
  */
-export function defineNitroPublicFilesPlugin(options: NitroPublicFilesOptions): void {
+export function defineNitroPublicFilesPlugin(
+  options: NitroPublicFilesOptions,
+  getPrefix: () => string | null,
+): void {
   options.virtual ??= {};
-  options.virtual[NITRO_PUBLIC_FILES_PLUGIN] = [
-    "export default function vinextNitroPublicFiles(nitroApp) {",
-    `  globalThis[Symbol.for(${JSON.stringify(NITRO_APP_FETCH_KEY)})] = (request) => nitroApp.fetch(request);`,
-    "}",
-    "",
-  ].join("\n");
+  options.virtual[NITRO_PUBLIC_FILES_PLUGIN] = () => {
+    const prefix = getPrefix();
+    if (!prefix) return "export default function vinextNitroPublicFiles() {}\n";
+    return [
+      `const prefix = ${JSON.stringify(prefix)};`,
+      "export default function vinextNitroPublicFiles(nitroApp) {",
+      "  const appFetch = nitroApp.fetch;",
+      `  globalThis[Symbol.for(${JSON.stringify(NITRO_APP_FETCH_KEY)})] = appFetch;`,
+      "  nitroApp.fetch = (request) => {",
+      "    let pathname = new URL(request.url).pathname;",
+      // Nitro's static handler decodes the path before it looks up assets.
+      "    try { pathname = decodeURIComponent(pathname); } catch {}",
+      '    return pathname === prefix || pathname.startsWith(prefix + "/")',
+      "      ? new Response(null, { status: 404 })",
+      "      : appFetch(request);",
+      "  };",
+      "}",
+      "",
+    ].join("\n");
+  };
 }
 
 /**

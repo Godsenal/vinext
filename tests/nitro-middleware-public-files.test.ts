@@ -236,9 +236,18 @@ export default function middleware(request) {
     expect(fallback.status).toBe(404);
     expect(await fallback.text()).toBe("");
 
-    const post = await fetch(`${baseUrl}${prefix}/pass.txt`, { method: "POST" });
-    expect(post.status).toBe(404);
-    expect(await post.text()).toBe("");
+    // Nitro's static handler would answer these before middleware runs.
+    for (const [method, url] of [
+      ["GET", `${baseUrl}${prefix}/pass.txt`],
+      ["HEAD", `${baseUrl}${prefix}/pass.txt`],
+      ["GET", `${baseUrl}/_vinext/publi%63/${secret}/pass.txt`],
+      ["GET", `${baseUrl}${prefix}/`],
+      ["POST", `${baseUrl}${prefix}/pass.txt`],
+    ]) {
+      const response = await fetch(url, { method });
+      expect(response.status, `${method} ${url}`).toBe(404);
+      expect(await response.text()).toBe("");
+    }
 
     const otherPrefix = await fetch(`${baseUrl}/pass.txt`, {
       headers: { "x-vinext-nitro-asset-fallback": "/_vinext/public/0123" },

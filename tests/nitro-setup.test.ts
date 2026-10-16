@@ -267,9 +267,8 @@ describe("vinext Nitro setup integration", () => {
       expect(publicDir.fallthrough).toBe(false);
       expect(otherDir).toEqual({ dir: path.join(root, "assets"), baseURL: "/", fallthrough: true });
       expect(nitro.options.plugins).toEqual(["#vinext/nitro-public-files"]);
-      expect(nitro.options.virtual?.["#vinext/nitro-public-files"]).toContain(
-        "nitroApp.fetch(request)",
-      );
+      const renderPlugin = nitro.options.virtual?.["#vinext/nitro-public-files"] as () => string;
+      expect(renderPlugin()).toContain(JSON.stringify(publicDir.baseURL));
 
       // A repeated setup keeps the first prefix and plugin registration.
       const prefix = publicDir.baseURL;

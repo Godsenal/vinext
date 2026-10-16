@@ -8171,7 +8171,7 @@ export const loadServerActionClient = ${
           if (!hasAppDir && !hasPagesDir) return;
 
           nitroPublicFilesOptions = nitro.options;
-          defineNitroPublicFilesPlugin(nitro.options);
+          defineNitroPublicFilesPlugin(nitro.options, () => nitroPublicFilesPrefix);
 
           if (resolvedServerExternalPackages.length > 0) {
             nitro.options.traceDeps = [
