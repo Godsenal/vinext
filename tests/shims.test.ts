@@ -9879,6 +9879,9 @@ describe("middleware matcher patterns", () => {
       // `g` captured `a`, so `(?!ab)` does not apply where it is compared.
       `/:x((?<g>${"(?!ab)a"})c)/:id(\\k<g>?a?b)+`,
       "/:id(x(?:(?!ê|x)é|é))+",
+      // A capture in another param is read in the whole source, here `a`.
+      "/:a(a)/:id((?:\\1|a)+)",
+      "/:a(a)/:id(\\1(?:a*)*)",
     ]) {
       expect(compileMiddlewareMatcherPattern(matcher), matcher).toMatchObject({ kind: "unsafe" });
     }

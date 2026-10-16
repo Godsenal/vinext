@@ -245,6 +245,11 @@ class RegexParser {
   private readonly optionalGroups = new Set<number>();
   /** Each group name's capture, or undefined when several groups share it. */
   private readonly groupNames = new Map<string, number | undefined>();
+  /**
+   * Whether a backreference names a group outside `pattern`, from a part of
+   * the compiled RegExp that `pattern` does not hold.
+   */
+  referencesOuterGroup = false;
 
   constructor(
     private readonly pattern: string,
@@ -524,6 +529,7 @@ class RegexParser {
       const nameEnd = this.pattern.indexOf(">", this.index);
       const name = nameEnd === -1 ? "" : this.pattern.slice(this.index + 1, nameEnd);
       this.index = nameEnd === -1 ? this.pattern.length : nameEnd + 1;
+      if (!this.groupNames.has(name)) this.referencesOuterGroup = true;
       return this.backreference(this.groupNames.get(name));
     }
     let literal: string | null = null;
@@ -532,7 +538,11 @@ class RegexParser {
       if (escaped !== "0" && Number(escaped + digits) <= this.captures) {
         this.index += digits.length;
         // A group outside `pattern` is unknown here.
-        return this.backreference(Number(escaped + digits) - this.context.before);
+        const group = Number(escaped + digits) - this.context.before;
+        if (group < 1 || group > countCapturingGroups(this.pattern)) {
+          this.referencesOuterGroup = true;
+        }
+        return this.backreference(group);
       }
       // Annex B: otherwise `\8` and `\9` are literal digits and `\0`-`\7`
       // start a legacy octal escape of up to three digits, at most `\377`.
@@ -1323,7 +1333,9 @@ export function mayHaveNamedGroups(pattern: string): boolean {
 
 /**
  * `namedGroups` must describe the whole compiled RegExp when `pattern` is only
- * a fragment of it. It defaults to scanning `pattern` itself.
+ * a fragment of it. It defaults to scanning `pattern` itself. A fragment that
+ * refers back to a group outside it is not checked for ambiguity, so the
+ * caller must also check the whole RegExp, as unsafePathTokensReason does.
  */
 export function analyzeRegexSafety(
   pattern: string,
@@ -1341,9 +1353,13 @@ export function analyzeRegexSafety(
   if (parser.exceededBudget || parser.index !== pattern.length) return "analysis budget exceeded";
   // Without a variable repeat `node` is a finite list of fixed-length words,
   // which the structural checks cover. Long literal lists would only spend
-  // the automaton's budget.
+  // the automaton's budget. A group outside `pattern` captures text unknown
+  // here, which the caller's check of the whole RegExp models instead.
   return (
-    findSafetyIssue(node) ?? (containsVariableRepetition(node) ? analyzeNodeAmbiguity(node) : null)
+    findSafetyIssue(node) ??
+    (containsVariableRepetition(node) && !parser.referencesOuterGroup
+      ? analyzeNodeAmbiguity(node)
+      : null)
   );
 }
 
