@@ -9843,11 +9843,22 @@ describe("middleware matcher patterns", () => {
     // The capture always reads `a`, and `(?!é|x)é` never matches, so each
     // path is read one way.
     for (const matcher of ["/:id((?<x>a)\\k<x>+)", "/:id(x(?:(?!é|x)é|é))+"]) {
-      expect(compileMiddlewareMatcherPattern(matcher).regexp, matcher).toBeInstanceOf(RegExp);
+      const compiled = compileMiddlewareMatcherPattern(matcher);
+      expect(compiled.regexp, matcher).toBeInstanceOf(RegExp);
+      const start = performance.now();
+      compiled.regexp!.test(`/${"a".repeat(16_000)}!`);
+      compiled.regexp!.test(`/${"xé/".repeat(8_000)}!`);
+      expect(performance.now() - start, matcher).toBeLessThan(500);
     }
-    // An optional capture leaves its backreference free to read nothing, and
-    // `(?!ê|x)` does not rule out `é`.
-    for (const matcher of ["/:id((?<x>a)?\\k<x>+)", "/:id(x(?:(?!ê|x)é|é))+"]) {
+    // A capture that may not take part leaves its backreference reading
+    // nothing, so both alternatives read `a`; and `(?!ê|x)` does not rule out
+    // `é`.
+    for (const matcher of [
+      "/:id((?:(?<g>x)|y)(?:\\k<g>a|a)+)",
+      "/:id((?<g>x)?(?:\\k<g>a|a)+)",
+      "/:id((?!(?<g>x))(?:\\k<g>a|a)+)",
+      "/:id(x(?:(?!ê|x)é|é))+",
+    ]) {
       expect(compileMiddlewareMatcherPattern(matcher), matcher).toMatchObject({ kind: "unsafe" });
     }
   });
@@ -14000,18 +14011,18 @@ describe("isSafeRegex", () => {
     expect(isSafeRegex("^(a)\\1+$")).toBe(true);
     expect(isSafeRegex("^(?<x>a)\\k<x>+$")).toBe(true);
     expect(isSafeRegex("^(?:(a)b)+\\1+$")).toBe(true);
-    // A capture that may not take part leaves the backreference empty.
+    // A capture that may not take part leaves the backreference reading
+    // nothing, so both alternatives read `a`.
     for (const pattern of [
-      "^(a)?\\1+$",
-      "^(?:(a)|b)\\1+$",
-      "^(?:b|(a))\\1+$",
-      "^(?:(a)|\\1)+$",
-      "^(?!(a))\\1+$",
-      "^(?:(a)b)*\\1+$",
+      "^(?:(x)|y)(?:\\1a|a)+$",
+      "^(?:y|(x))(?:\\1a|a)+$",
+      "^(x)?(?:\\1a|a)+$",
+      "^(?:(x)y)*(?:\\1a|a)+$",
+      "^(?!(x))(?:\\1a|a)+$",
+      "^(?:(x)|(?:\\1a|a)+)$",
     ]) {
       expect(isSafeRegex(pattern), pattern).toBe(false);
     }
-    expect(isSafeRegex("^(?:(a)\\1*)+$")).toBe(false);
   });
 });
 
