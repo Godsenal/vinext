@@ -29,6 +29,7 @@ import {
 } from "../utils/middleware-request-headers.js";
 import { analyzeRegexSafety } from "../utils/regex-safety.js";
 import {
+  normalizePathTokens,
   parsePathPattern,
   pathTokensToRegExpSource,
   type PathToken,
@@ -567,14 +568,43 @@ function compileConfigSourceUncached(
 }
 
 /**
- * Why path-to-regexp cannot compile `source`, or null. Next.js fails the
- * build for these sources; config loading calls this to do the same.
- * ReDoS-unsafe sources only warn and are skipped when matched: Next.js
- * accepts them, and the safety check is conservative.
+ * Length of the RegExp Next.js builds when validating a source
+ * (tryToParsePath: path-to-regexp defaults, retried with normalized repeat
+ * tokens), or null when it cannot be built.
  */
-export function configSourceParseError(source: string): string | null {
+function validationRegExpLength(source: string): number | null {
+  try {
+    const tokens = parsePathPattern(source);
+    const build = (value: PathToken[]) =>
+      new RegExp(`${pathTokensToRegExpSource(value)}[\\/#\\?]?$`).source.length;
+    try {
+      return build(tokens);
+    } catch {
+      return build(normalizePathTokens(tokens));
+    }
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Why `source` is not a valid redirects/rewrites/headers source, or null.
+ * Mirrors the source checks in Next.js's checkCustomRoutes, which fail the
+ * build; config loading calls this to do the same. ReDoS-unsafe sources only
+ * warn and are skipped when matched: Next.js accepts them, and the safety
+ * check is conservative.
+ *
+ * https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/lib/load-custom-routes.ts
+ */
+export function configSourceError(source: unknown): string | null {
+  if (!source) return "`source` is missing";
+  if (typeof source !== "string") return "`source` is not a string";
+  if (!source.startsWith("/")) return "`source` does not start with /";
   const compiled = compileConfigSourceUncached(source);
-  return "kind" in compiled && compiled.kind === "invalid" ? compiled.error : null;
+  if ("kind" in compiled && compiled.kind === "invalid") return compiled.error;
+  const length = validationRegExpLength(source);
+  if (length !== null && length > 4096) return "`source` exceeds max built length of 4096";
+  return null;
 }
 
 function compileConfigSource(source: string): CompiledConfigSource | null {

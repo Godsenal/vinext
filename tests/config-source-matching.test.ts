@@ -1,6 +1,7 @@
 import { createRequire } from "node:module";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  configSourceError,
   matchConfigPattern,
   matchHeaders,
   matchRedirect,
@@ -31,6 +32,9 @@ const { getPathMatch } = require("next/dist/shared/lib/router/utils/path-match")
 };
 const { modifyRouteRegex } = require("next/dist/lib/redirect-status") as {
   modifyRouteRegex: (regex: string) => string;
+};
+const { tryToParsePath } = require("next/dist/lib/try-to-parse-path") as {
+  tryToParsePath: (route: string) => { error?: unknown; regexStr?: string };
 };
 
 /**
@@ -589,6 +593,42 @@ describe("next.config.js source validation", () => {
     await expect(resolveNextConfig(config as never)).rejects.toThrow(
       /Invalid next\.config\.js (redirect|rewrite|header) source/,
     );
+  });
+
+  it.each([
+    ["a missing", undefined, "`source` is missing"],
+    ["an empty", "", "`source` is missing"],
+    ["a non-string", 42, "`source` is not a string"],
+    ["a relative", "about", "`source` does not start with /"],
+    ["an overlong", "/" + "a".repeat(5_000), "`source` exceeds max built length of 4096"],
+  ])("fails config loading on %s source like Next.js", async (_label, source, reason) => {
+    await expect(
+      resolveNextConfig({ headers: () => [{ source, headers: [] }] } as never),
+    ).rejects.toThrow(reason);
+  });
+
+  it("applies Next.js's built-length limit at the same boundary", () => {
+    for (const shape of [
+      (n: number) => "/" + "a".repeat(n),
+      (n: number) => "/:a/" + "b".repeat(n),
+      (n: number) => "/x" + "/:p".repeat(n),
+      (n: number) => "/" + "a.".repeat(n),
+    ]) {
+      const nextTooLong = (n: number) => tryToParsePath(shape(n)).regexStr!.length > 4096;
+      // Smallest n whose source Next.js rejects.
+      let low = 1;
+      let high = 8_192;
+      while (low < high) {
+        const mid = Math.floor((low + high) / 2);
+        if (nextTooLong(mid)) high = mid;
+        else low = mid + 1;
+      }
+      for (const n of [low - 1, low]) {
+        const source = shape(n);
+        const tooLong = configSourceError(source)?.includes("max built length") === true;
+        expect(tooLong, `${source.slice(0, 12)}… (${source.length})`).toBe(nextTooLong(n));
+      }
+    }
   });
 
   it("leaves ReDoS-unsafe sources to warn and skip when matched", async () => {
