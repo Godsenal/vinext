@@ -181,6 +181,7 @@ import {
 import { ensureAssetsIgnore } from "./build/assets-ignore.js";
 import {
   defineNitroPublicFilesPlugin,
+  isNitroPublicFilesPreviewPath,
   routeNitroPublicFilesThroughRouter,
   type NitroPublicFilesOptions,
 } from "./build/nitro-public-files.js";
@@ -8190,6 +8191,19 @@ export const loadServerActionClient = ${
           publicDir: config.publicDir || null,
           secret: randomBytes(16).toString("hex"),
         });
+      },
+      // Nitro's preview serves its public output before the server entry, so
+      // keep requests away from the private public files prefix there too.
+      configurePreviewServer: {
+        order: "pre",
+        handler(server) {
+          if (!hasNitroPlugin) return;
+          server.middlewares.use((req, res, next) => {
+            if (!req.url || !isNitroPublicFilesPreviewPath(req.url)) return next();
+            res.statusCode = 404;
+            res.end();
+          });
+        },
       },
     } as Plugin & {
       nitro: { setup: (nitro: NitroSetupContext) => void };

@@ -136,6 +136,13 @@ export function proxy(request) {
       ),
       fs.writeFile(path.join(root, "public/asset.txt"), "nitro public asset"),
       fs.writeFile(path.join(root, "public/pixel.png"), PIXEL_PNG),
+      fs.writeFile(path.join(root, "static-pixel.png"), PIXEL_PNG),
+      fs.writeFile(
+        path.join(root, "pages/static-image.tsx"),
+        `import pixel from "../static-pixel.png";
+export default function StaticImage() { return <main data-src={pixel.src}>image</main>; }
+`,
+      ),
     ]);
 
     const nitroModule = (await import(
@@ -267,6 +274,19 @@ export default function handler() {
   // The image endpoint reads public/ files through the same asset fetcher.
   it("serves local images from the image endpoint", async () => {
     const response = await fetch(`${baseUrl}/_next/image?url=%2Fpixel.png&w=64&q=75`);
+    expect(response.status).toBe(200);
+    expect(Buffer.from(await response.arrayBuffer())).toEqual(PIXEL_PNG);
+  });
+
+  // A build output image is not under the private public files prefix, so
+  // the asset fetcher falls back to Nitro's root.
+  it("serves imported images from the image endpoint", async () => {
+    const html = await (await fetch(`${baseUrl}/static-image`)).text();
+    const src = html.match(/data-src="([^"]+)"/)?.[1];
+    expect(src).toMatch(/^\/_next\/static\//);
+    const response = await fetch(
+      `${baseUrl}/_next/image?url=${encodeURIComponent(src!)}&w=64&q=75`,
+    );
     expect(response.status).toBe(200);
     expect(Buffer.from(await response.arrayBuffer())).toEqual(PIXEL_PNG);
   });

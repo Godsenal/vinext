@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import path from "pathslash";
+import path, { toSlash } from "pathslash";
 import { NITRO_APP_FETCH_KEY } from "../server/nitro-public-files.js";
 
 type NitroPublicAssetDir = {
@@ -22,8 +22,12 @@ export type NitroPublicFilesOptions = {
 const NITRO_PUBLIC_FILES_BASE = "/_vinext/public/";
 const NITRO_PUBLIC_FILES_PLUGIN = "#vinext/nitro-public-files";
 // Presets that turn on `serveStatic` although their platform serves the
-// static output from a CDN that the server bundle does not ship with.
-const CDN_STATIC_PRESETS = new Set(["aws-amplify"]);
+// static output before the server runs: Amplify's CDN, and IIS, which
+// iisnode's generated `web.config` lets answer files on disk first.
+const CDN_STATIC_PRESETS = new Set(["aws-amplify", "iis-node"]);
+// The private prefix's shape, below any Nitro `baseURL`; the secret is
+// 16 random bytes in hex.
+const NITRO_PUBLIC_FILES_PATH_RE = /(?:^|\/)_vinext\/public\/[0-9a-f]{32}(?:\/|$)/;
 
 /**
  * Define the Nitro runtime plugin that lets vinext's router fetch public
@@ -120,4 +124,18 @@ function realPath(dir: string): string {
   } catch {
     return path.resolve(dir);
   }
+}
+
+/**
+ * Whether a `vite preview` request names a path under the private public
+ * files prefix. Nitro's preview serves its public output before the server
+ * entry, so the runtime plugin's guard never sees these requests. The prefix
+ * is random per build, so this matches its shape.
+ */
+export function isNitroPublicFilesPreviewPath(url: string): boolean {
+  let pathname = new URL(url, "http://localhost").pathname;
+  try {
+    pathname = decodeURIComponent(pathname);
+  } catch {}
+  return NITRO_PUBLIC_FILES_PATH_RE.test(toSlash(pathname));
 }

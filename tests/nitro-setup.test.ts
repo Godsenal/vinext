@@ -280,6 +280,7 @@ describe("vinext Nitro setup integration", () => {
     it.each([
       ["presets whose platform serves static files", "public", { serveStatic: false }],
       ["AWS Amplify, whose CDN serves static files", "public", { preset: "aws_amplify" }],
+      ["iisnode, where IIS serves static files", "public", { preset: "iis_node" }],
       ["dev", "public", { dev: true }],
       ["a disabled Vite publicDir", "", {}],
       // A plugin after Nitro can still change publicDir during config.

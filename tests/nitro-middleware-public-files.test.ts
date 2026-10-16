@@ -17,7 +17,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { createBuilder, type Plugin } from "vite";
+import { createBuilder, preview, type Plugin } from "vite";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
 
@@ -73,24 +73,27 @@ async function writeFiles(root: string, files: Record<string, string>): Promise<
   );
 }
 
+async function loadNitroPlugin(
+  root: string,
+  nitroConfig: Record<string, unknown>,
+): Promise<Plugin[]> {
+  const nitroModule = (await import(
+    pathToFileURL(path.join(NITRO_NODE_MODULES, "nitro/dist/vite.mjs")).href
+  )) as NitroModule;
+  return nitroModule.nitro({ buildDir: path.join(root, ".nitro"), ...nitroConfig });
+}
+
 /** Build the app with Nitro's node-server preset and start its server. */
 async function buildAndStart(
   root: string,
   nitroConfig: Record<string, unknown>,
   laterPlugins: Plugin[] = [],
 ): Promise<{ server: ChildProcess; baseUrl: string }> {
-  const nitroModule = (await import(
-    pathToFileURL(path.join(NITRO_NODE_MODULES, "nitro/dist/vite.mjs")).href
-  )) as NitroModule;
   const builder = await createBuilder({
     root,
     configFile: false,
     logLevel: "silent",
-    plugins: [
-      vinext({ appDir: root }),
-      nitroModule.nitro({ buildDir: path.join(root, ".nitro"), ...nitroConfig }),
-      ...laterPlugins,
-    ],
+    plugins: [vinext({ appDir: root }), await loadNitroPlugin(root, nitroConfig), ...laterPlugins],
   });
   await builder.buildApp();
 
@@ -254,6 +257,34 @@ export default function middleware(request) {
     });
     expect(otherPrefix.headers.get("x-middleware")).toBe("ran");
     expect(await otherPrefix.text()).toBe("passed through");
+  });
+
+  // Nitro's preview serves its public output before the server entry.
+  it("does not serve the private prefix under vite preview", async () => {
+    const [secret] = await fs.readdir(path.join(root, ".output/public/_vinext/public"));
+    const server = await preview({
+      root,
+      configFile: false,
+      logLevel: "silent",
+      plugins: [vinext({ appDir: root }), await loadNitroPlugin(root, {})],
+      preview: { host: "127.0.0.1", port: await getAvailablePort() },
+    });
+    try {
+      const previewUrl = server.resolvedUrls!.local[0].replace(/\/$/, "");
+      for (const url of [
+        `${previewUrl}/_vinext/public/${secret}/pass.txt`,
+        `${previewUrl}/_vinext/publi%63/${secret}/pass.txt`,
+      ]) {
+        const response = await fetch(url);
+        expect(response.status, url).toBe(404);
+        expect(await response.text()).toBe("");
+      }
+      const response = await fetch(`${previewUrl}/pass.txt`);
+      expect(response.headers.get("x-middleware")).toBe("ran");
+      expect(await response.text()).toBe("passed through");
+    } finally {
+      await server.close();
+    }
   });
 
   // Next.js serves public/ files by exact path only.
