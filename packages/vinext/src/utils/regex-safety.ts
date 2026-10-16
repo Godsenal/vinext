@@ -1254,13 +1254,24 @@ class PositionAutomaton {
           const next = node.children[index + 1];
           const lookahead =
             child.kind === "assertion" && child.negativeLookahead ? child.child : null;
-          if (lookahead && next?.kind === "atom" && next.symbol !== null && next.fixedWidth) {
+          // The lookahead constrains the next character: that of the next
+          // atom, or of the first required copy of a repeated atom.
+          const guarded =
+            next?.kind === "repeat" && next.min > 0 && next.child.kind === "atom"
+              ? next.child
+              : next;
+          if (
+            lookahead &&
+            guarded?.kind === "atom" &&
+            guarded.symbol !== null &&
+            guarded.fixedWidth
+          ) {
             let position: number | null = null;
             if (
               lookahead.kind === "atom" &&
               (lookahead.symbol?.kind === "literal" || lookahead.symbol?.kind === "class")
             ) {
-              position = this.position(next.symbol, lookahead.symbol);
+              position = this.position(guarded.symbol, lookahead.symbol);
             } else if (
               lookahead.kind === "sequence" &&
               lookahead.children.length > 1 &&
@@ -1271,10 +1282,14 @@ class PositionAutomaton {
               const word = lookahead.children.map(
                 (part) => (part as Extract<RegexNode, { kind: "atom" }>).symbol!,
               );
-              position = this.position(next.symbol, null, word);
+              position = this.position(guarded.symbol, null, word);
             }
             if (position !== null) {
               fragment = this.concat(fragment, this.single(position));
+              if (next!.kind === "repeat") {
+                const rest = { ...next!, min: next!.min - 1, max: next!.max - 1 };
+                fragment = this.concat(fragment, this.fragment(rest));
+              }
               index++;
               continue;
             }

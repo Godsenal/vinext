@@ -147,8 +147,8 @@ export function clientConfigSourceCouldMatch(pathname: string, source: string): 
       literalPrefix = literalPrefix.slice(0, -1);
     }
   }
-  // A literal source matches with one trailing slash too.
-  if (wildcardIndex === -1) literalPrefix = stripOneTrailingSlash(literalPrefix);
+  // The whole literal text, a trailing slash included, must be there; the
+  // pathname's own extra trailing slash is just more text after it.
   if (literalPrefix === "/" && optionalPrefix === null) return true;
   if (!isAscii(literalPrefix)) return true;
   const path = asciiLowerCase(pathname);

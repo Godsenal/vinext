@@ -9743,6 +9743,8 @@ describe("middleware matcher patterns", () => {
       "/:id(a{20000,})",
       // An empty lookahead never matches.
       "/:id((?!(?:))a)",
+      // `(?!a)` rules out the first copy of `a+`, so only `b+` can match.
+      "/{a:id((?:(?!a)a+|b+))}+",
       "/" + "a/".repeat(2_044) + ":path*",
     ]) {
       expect(compileMiddlewareMatcherPattern(matcher).regexp, matcher).toBeInstanceOf(RegExp);

@@ -288,6 +288,8 @@ describe("Pages client sync matcher agrees with the server matcher", () => {
     "/foo.x.y",
     "/foo/x/",
     "/FOO.x",
+    "/foo",
+    "/foo//",
   ];
   const CLIENT_SOURCES = [
     ...SOURCES,
@@ -302,6 +304,7 @@ describe("Pages client sync matcher agrees with the server matcher", () => {
     "/foo/:id?bar",
     "/foo.:ext(x)?",
     "/:id?",
+    "/foo/",
   ];
 
   it("returns the server's params whenever it does not defer", () => {
@@ -326,7 +329,7 @@ describe("Pages client sync matcher agrees with the server matcher", () => {
   it("rules out a source whose optional param prefix the pathname lacks", () => {
     // Only the prefix before an optional param ending the source may be
     // absent, so `/foobar` cannot reach `/foo.:ext?` or `/foo/:id?`.
-    for (const source of ["/foo.:ext?", "/foo/:id?", "/foo/:id+", "/foo.:ext"]) {
+    for (const source of ["/foo.:ext?", "/foo/:id?", "/foo/:id+", "/foo.:ext", "/foo/"]) {
       expect(clientConfigSourceCouldMatch("/foobar", source), source).toBe(false);
     }
     for (const [source, pathname] of [
@@ -875,6 +878,8 @@ describe("config sources do not backtrack catastrophically", () => {
     "/{x:id(a{3000})}+",
     // An empty lookahead never matches.
     "/:id((?!(?:))a)",
+    // `(?!a)` rules out the first copy of `a+`, so only `b+` can match.
+    "/{a:id((?:(?!a)a+|b+))}+",
   ];
   const ADVERSARIAL_PATHNAMES = [
     "/" + "a/".repeat(8_000) + "!",
