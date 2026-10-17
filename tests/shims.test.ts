@@ -9898,6 +9898,8 @@ describe("middleware matcher patterns", () => {
       "/:id([ab]*a[ab]*a[ab]*)X",
       "/:a([^/]*)-:b([^/]*)-:c([^/]*)x",
       "/:id(a+.a+.a+)",
+      // `\2` reads another param's capture, any run of `a`, 20 times.
+      "/:a((?<x>a+)):b(\\2{20})X",
     ]) {
       expect(compileMiddlewareMatcherPattern(matcher), matcher).toMatchObject({
         kind: "unsafe",
