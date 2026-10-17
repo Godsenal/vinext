@@ -250,7 +250,6 @@ class RegexParser {
    * the compiled RegExp that `pattern` does not hold.
    */
   referencesOuterGroup = false;
-  private declaredNames: Set<string> | undefined;
 
   constructor(
     private readonly pattern: string,
@@ -530,9 +529,11 @@ class RegexParser {
       const nameEnd = this.pattern.indexOf(">", this.index);
       const name = nameEnd === -1 ? "" : this.pattern.slice(this.index + 1, nameEnd);
       this.index = nameEnd === -1 ? this.pattern.length : nameEnd + 1;
-      // A group later in `pattern` is local, and not yet taking part.
-      this.declaredNames ??= declaredGroupNames(this.pattern);
-      if (!this.declaredNames.has(name)) this.referencesOuterGroup = true;
+      // Only a fragment, placed by its context, can name a group outside it.
+      // A whole pattern's unknown name is a group later in it.
+      if (!this.groupNames.has(name) && this.context.before > 0) {
+        this.referencesOuterGroup = true;
+      }
       return this.backreference(this.groupNames.get(name));
     }
     let literal: string | null = null;
@@ -1313,12 +1314,6 @@ export function analyzeRegexRepetitionChains(
  * a backreference. Escaped characters and character classes cannot open one.
  */
 export function mayHaveNamedGroups(pattern: string): boolean {
-  return declaredGroupNames(pattern).size > 0;
-}
-
-/** The names of the groups a RegExp source declares. */
-function declaredGroupNames(pattern: string): Set<string> {
-  const names = new Set<string>();
   let inClass = false;
   for (let index = 0; index < pattern.length; index++) {
     const character = pattern[index];
@@ -1334,11 +1329,10 @@ function declaredGroupNames(pattern: string): Set<string> {
       pattern[index + 3] !== "=" &&
       pattern[index + 3] !== "!"
     ) {
-      const end = pattern.indexOf(">", index + 3);
-      if (end !== -1) names.add(pattern.slice(index + 3, end));
+      return true;
     }
   }
-  return names;
+  return false;
 }
 
 /**
@@ -2300,95 +2294,122 @@ export function analyzeRegexAmbiguity(
 type AssertionBody = { body: RegexNode; repeated: boolean };
 
 /**
- * The lengths of text `node` can read, or null past
- * MAX_FIXED_ASSERTION_POSITIONS of them. `(?:a|b{100})` reads 1 or 100.
+ * At most how many ways `node` can read the start of one text, or Infinity
+ * past MAX_FIXED_ASSERTION_POSITIONS. Each is a path the engine backtracks
+ * through, running any lookaround after it again. `(?:a|aa)` has two on
+ * `aa`, `(?:a|bb)` one on any text.
  */
-function reachableWidths(
-  node: RegexNode,
-  cache: WeakMap<RegexNode, Set<number> | null>,
-): Set<number> | null {
-  if (cache.has(node)) return cache.get(node)!;
-  let widths: Set<number> | null;
+type PathCache = {
+  paths: WeakMap<RegexNode, number>;
+  widths: WeakMap<RegexNode, [number, number]>;
+};
+
+function pathCount(node: RegexNode, cache: PathCache): number {
+  let count = cache.paths.get(node);
+  if (count !== undefined) return count;
   switch (node.kind) {
     case "atom":
-      widths = node.fixedWidth ? new Set([1]) : null;
+      count = node.fixedWidth ? 1 : Infinity;
       break;
     case "assertion":
-      widths = new Set([0]);
+      count = 1;
       break;
     case "sequence":
-      widths = new Set([0]);
-      for (const child of node.children) {
-        const childWidths = reachableWidths(child, cache);
-        widths = childWidths && addWidths(widths, childWidths);
-        if (!widths) break;
-      }
+      count = 1;
+      for (const child of node.children) count *= pathCount(child, cache);
       break;
     case "alternation":
-      widths = new Set();
-      for (const branch of node.branches) {
-        const branchWidths = reachableWidths(branch, cache);
-        if (!branchWidths) {
-          widths = null;
-          break;
-        }
-        for (const width of branchWidths) widths.add(width);
-      }
-      if (widths && widths.size > MAX_FIXED_ASSERTION_POSITIONS) widths = null;
-      if (node.branches.length === 0) widths = new Set([0]);
+      count = alternationPathCount(node, cache);
       break;
     case "repeat": {
-      const child = reachableWidths(node.child, cache);
-      widths = child && repeatWidths(child, node.min, node.max);
+      // The engine ends a repeat at an empty iteration.
+      if (widthRange(node.child, cache.widths)[1] === 0) {
+        count = 1;
+        break;
+      }
+      count = repeatPathCount(pathCount(node.child, cache), node.min, node.max);
       break;
     }
   }
-  cache.set(node, widths);
-  return widths;
+  if (count > MAX_FIXED_ASSERTION_POSITIONS) count = Infinity;
+  cache.paths.set(node, count);
+  return count;
 }
 
-function addWidths(left: Set<number>, right: Set<number>): Set<number> | null {
-  const widths = new Set<number>();
-  for (const a of left) {
-    for (const b of right) {
-      widths.add(a + b);
-      if (widths.size > MAX_FIXED_ASSERTION_POSITIONS) return null;
+/** The paths through `min` to `max` copies of a child with `paths` each. */
+function repeatPathCount(paths: number, min: number, max: number): number {
+  if (!Number.isFinite(max) || max - min + 1 > MAX_FIXED_ASSERTION_POSITIONS) return Infinity;
+  let total = 0;
+  for (let copies = min; copies <= max; copies++) {
+    total += paths ** copies;
+    if (total > MAX_FIXED_ASSERTION_POSITIONS) return Infinity;
+  }
+  return total;
+}
+
+const MAX_PATH_COUNT_WORDS = 256;
+const MAX_PATH_COUNT_BRANCHES = 64;
+
+function alternationPathCount(
+  node: Extract<RegexNode, { kind: "alternation" }>,
+  cache: PathCache,
+): number {
+  // Words that all read one text are prefixes of the longest, so on each
+  // text at most as many words match as the most that can prefix one word.
+  const words = fixedWords(node, { words: 0, symbols: 0, exceeded: false });
+  if (words && words.length <= MAX_PATH_COUNT_WORDS) {
+    let most = 0;
+    for (const word of words) {
+      let prefixes = 0;
+      for (const other of words) {
+        if (
+          other.length <= word.length &&
+          other.every((symbol, index) => symbolsMayOverlap(symbol, word[index]!))
+        ) {
+          prefixes++;
+        }
+      }
+      most = Math.max(most, prefixes);
     }
+    return most;
   }
-  return widths;
-}
-
-function repeatWidths(child: Set<number>, min: number, max: number): Set<number> | null {
-  const largest = Math.max(...child);
-  if (largest === 0) return new Set([0]);
-  // Each copy count reads a different length through `largest` alone.
-  if (max - min + 1 > MAX_FIXED_ASSERTION_POSITIONS) return null;
-  if (child.size === 1) {
-    return new Set(Array.from({ length: max - min + 1 }, (_, index) => (min + index) * largest));
+  // Branches that cannot start with the same character never both match.
+  const branchSymbols = node.branches.map((branch) =>
+    isNullable(branch) ? null : firstSymbols(branch),
+  );
+  const disjoint =
+    node.branches.length <= MAX_PATH_COUNT_BRANCHES &&
+    branchSymbols.every(
+      (symbols, index) =>
+        symbols !== null &&
+        branchSymbols
+          .slice(index + 1)
+          .every(
+            (others) =>
+              others !== null &&
+              symbols.every((symbol) => others.every((other) => !symbolsMayOverlap(symbol, other))),
+          ),
+    );
+  let count = 0;
+  for (const branch of node.branches) {
+    const branchCount = pathCount(branch, cache);
+    count = disjoint ? Math.max(count, branchCount) : count + branchCount;
   }
-  // `k` copies of two or more lengths read at least `k + 1` lengths.
-  if (max >= MAX_FIXED_ASSERTION_POSITIONS) return null;
-  const widths = new Set<number>();
-  let copies: Set<number> | null = new Set([0]);
-  for (let count = 0; count <= max && copies; count++) {
-    if (count >= min) for (const width of copies) widths.add(width);
-    if (count < max) copies = addWidths(copies, child);
-  }
-  return copies && widths.size <= MAX_FIXED_ASSERTION_POSITIONS ? widths : null;
+  return count;
 }
 
 /**
  * The lookaround bodies in `node` that read text, outside other lookarounds,
- * and whether the engine may run each one at more than a few positions per
- * match attempt: after text whose length varies more than that, which it
+ * and whether the engine may run each one more than a few times per match
+ * attempt: after text it can read in more ways than that, each of which it
  * backtracks through, or under a repeat that may run that many times.
- * `positions` counts the positions an enclosing context allows.
+ * `positions` counts the paths an enclosing context allows.
  */
 function assertionBodies(
   node: RegexNode,
   positions = 1,
   bodies: AssertionBody[] = [],
-  widths = new WeakMap<RegexNode, Set<number> | null>(),
+  paths: PathCache = { paths: new WeakMap(), widths: new WeakMap() },
 ): AssertionBody[] {
   switch (node.kind) {
     case "atom":
@@ -2399,27 +2420,25 @@ function assertionBodies(
       }
       break;
     case "sequence": {
-      // The lengths the children so far can read together, whose sums may
-      // coincide.
-      let prefix: Set<number> | null = new Set([0]);
+      let reached = positions;
       for (const child of node.children) {
-        assertionBodies(child, positions * (prefix?.size ?? Infinity), bodies, widths);
-        const childWidths: Set<number> | null = prefix && reachableWidths(child, widths);
-        prefix = childWidths && addWidths(prefix!, childWidths);
+        assertionBodies(child, reached, bodies, paths);
+        reached *= pathCount(child, paths);
       }
       break;
     }
     case "alternation":
-      for (const branch of node.branches) assertionBodies(branch, positions, bodies, widths);
+      for (const branch of node.branches) assertionBodies(branch, positions, bodies, paths);
       break;
     case "repeat": {
-      const childWidths = reachableWidths(node.child, widths);
-      // Each copy past the first starts wherever the copies before it end.
-      // The engine stops a repeat at an empty iteration, so a zero-width
-      // child is only reached once.
-      const empty = childWidths?.size === 1 && childWidths.has(0);
-      const copies = node.max > 1 && !empty ? node.max * (childWidths?.size ?? Infinity) : 1;
-      assertionBodies(node.child, positions * copies, bodies, widths);
+      // Each copy starts after every path through the copies before it. The
+      // engine ends a repeat at an empty iteration, so a zero-width child is
+      // only reached once.
+      const copies =
+        widthRange(node.child, paths.widths)[1] === 0
+          ? 1
+          : repeatPathCount(pathCount(node.child, paths), 0, node.max - 1);
+      assertionBodies(node.child, positions * copies, bodies, paths);
       break;
     }
   }
