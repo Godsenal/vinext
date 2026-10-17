@@ -9970,6 +9970,12 @@ describe("middleware matcher patterns", () => {
     // A few positions only multiply the body's cost by a constant.
     expect(analyzeRegexSafety(`(?:(?=${quadratic})a){2}`)).toBeNull();
     expect(analyzeRegexSafety(`^a{0,3}(?=${quadratic})`)).toBeNull();
+    // A lookbehind reads right to left, so there a lookahead before a repeat
+    // runs after each way through it, and one after the repeat runs once.
+    expect(analyzeRegexSafety(`(?<=(?=a[ab]*[ab]*X)(?:ab*)*)$`)).toBe(
+      "polynomially ambiguous repetition",
+    );
+    expect(analyzeRegexSafety(`(?<=(?:ab*)*(?=a[ab]*[ab]*X))$`)).toBeNull();
     // An empty iteration ends a repeat, so a zero-width one runs once.
     expect(analyzeRegexSafety(`^(?:(?=${quadratic}))+$`)).toBeNull();
     // Only the lengths the text before it can have count, here 1 and 100.
@@ -10081,6 +10087,17 @@ describe("middleware matcher patterns", () => {
     // Copies of one guard share its characters.
     start = performance.now();
     expect(analyzeRegexSafety(`(?:(?!${"a|".repeat(8_000)}a).){0,2000}`)).toBeNull();
+    expect(performance.now() - start).toBeLessThan(1_000);
+
+    // Each step compares the characters a guard checks with the exclusions.
+    const word = Array.from({ length: 5_000 }, (_, index) => String.fromCharCode(0x4e00 + index));
+    const exclusions = Array.from({ length: 5_000 }, (_, index) =>
+      String.fromCharCode(0x100 + index),
+    );
+    start = performance.now();
+    expect(analyzeRegexSafety(`(?:(?!${word.join("")}).(?!${exclusions.join("|")}).)*`)).toBe(
+      "analysis budget exceeded",
+    );
     expect(performance.now() - start).toBeLessThan(1_000);
 
     // Each reference is checked against the pattern's own captures once.

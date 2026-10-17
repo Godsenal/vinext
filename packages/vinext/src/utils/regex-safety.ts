@@ -9,7 +9,7 @@
  */
 type RegexNode =
   | { kind: "atom"; symbol: RegexSymbol | null; fixedWidth: boolean }
-  | { kind: "assertion"; child: RegexNode; negativeLookahead?: boolean }
+  | { kind: "assertion"; child: RegexNode; negativeLookahead?: boolean; lookbehind?: boolean }
   | { kind: "sequence"; children: RegexNode[] }
   | { kind: "alternation"; branches: RegexNode[] }
   | { kind: "repeat"; child: RegexNode; min: number; max: number };
@@ -479,7 +479,7 @@ class RegexParser {
     if (negativeLookahead && folded) {
       return this.node({ kind: "assertion", child: this.node({ kind: "sequence", children: [] }) });
     }
-    return this.node({ kind: "assertion", child, negativeLookahead });
+    return this.node({ kind: "assertion", child, negativeLookahead, lookbehind });
   }
 
   private skipGroup(): void {
@@ -1807,6 +1807,13 @@ function applyLookaheadGuards(
         checked.set(character.key, character);
       }
       if (guard) checked.set(guard[0]!.key, guard[0]!);
+      // Each checked character is compared with the target's exclusions,
+      // which are then copied with them.
+      const exclusions = excluded[target]!;
+      const scan = (checked.size + 1) * (exclusions.length + 1);
+      work += scan;
+      budget.automatonWork += scan;
+      if (work > MAX_GUARD_WORK || budget.automatonWork > MAX_TOTAL_AUTOMATON_WORK) return null;
 
       // Each checked character the symbol may read, then everything else.
       const parts: Array<{
@@ -1814,7 +1821,6 @@ function applyLookaheadGuards(
         character: string | null;
         without: RegexSymbol[];
       }> = [];
-      const exclusions = excluded[target]!;
       for (const character of checked.values()) {
         if (symbol !== null && !symbolsMayOverlap(symbol, character)) continue;
         if (exclusions.some((exclusion) => symbolsMayOverlap(exclusion, character))) continue;
@@ -2304,7 +2310,8 @@ export function analyzeRegexAmbiguity(
   return analyzeNodeAmbiguity(node);
 }
 
-type AssertionBody = { body: RegexNode; repeated: boolean };
+/** `reverse` when the body is a lookbehind's, which runs right to left. */
+type AssertionBody = { body: RegexNode; repeated: boolean; reverse: boolean };
 
 /**
  * At most how many ways `node` can read the start of one text, or Infinity
@@ -2465,31 +2472,39 @@ function assertionBodies(
     widths: new WeakMap(),
     words: { words: 0, symbols: 0, exceeded: false },
   },
+  reverse = false,
 ): AssertionBody[] {
   switch (node.kind) {
     case "atom":
       break;
     case "assertion":
       if (node.child.kind !== "sequence" || node.child.children.length > 0) {
-        bodies.push({ body: node.child, repeated: positions > MAX_FIXED_ASSERTION_POSITIONS });
+        bodies.push({
+          body: node.child,
+          repeated: positions > MAX_FIXED_ASSERTION_POSITIONS,
+          reverse: node.lookbehind === true,
+        });
       }
       break;
     case "sequence": {
+      // A lookbehind reads its children from the last one back.
+      const children = reverse ? [...node.children].reverse() : node.children;
       let prefix = 1;
-      for (const [index, child] of node.children.entries()) {
-        assertionBodies(child, positions * prefix, bodies, paths);
+      for (const [index, child] of children.entries()) {
+        assertionBodies(child, positions * prefix, bodies, paths, reverse);
         const wasCounted = prefix <= MAX_FIXED_ASSERTION_POSITIONS;
         prefix *= pathCount(child, paths);
-        if (wasCounted && prefix > MAX_FIXED_ASSERTION_POSITIONS) {
+        if (!reverse && wasCounted && prefix > MAX_FIXED_ASSERTION_POSITIONS) {
           // The children so far may read fewer ways together.
-          const children = node.children.slice(0, index + 1);
-          prefix = pathCount({ kind: "sequence", children }, paths);
+          prefix = pathCount({ kind: "sequence", children: children.slice(0, index + 1) }, paths);
         }
       }
       break;
     }
     case "alternation":
-      for (const branch of node.branches) assertionBodies(branch, positions, bodies, paths);
+      for (const branch of node.branches) {
+        assertionBodies(branch, positions, bodies, paths, reverse);
+      }
       break;
     case "repeat": {
       // Each copy starts after every path through the copies before it. The
@@ -2499,7 +2514,7 @@ function assertionBodies(
         widthRange(node.child, paths.widths)[1] === 0
           ? 1
           : repeatPathCount(pathCount(node.child, paths), 0, node.max - 1);
-      assertionBodies(node.child, positions * copies, bodies, paths);
+      assertionBodies(node.child, positions * copies, bodies, paths, reverse);
       break;
     }
   }
@@ -2516,9 +2531,12 @@ function analyzeNodeAmbiguity(
   node: RegexNode,
   maxDegree = MAX_POLYNOMIAL_DEGREE,
   budget: AnalysisBudget = { automatonWork: 0, productEdges: 0 },
+  reverse = false,
 ): RegexSafetyIssue | null {
   // A body without a variable repeat reads fixed-length words, as above.
-  const bodies = assertionBodies(node).filter(({ body }) => containsVariableRepetition(body));
+  const bodies = assertionBodies(node, 1, [], undefined, reverse).filter(({ body }) =>
+    containsVariableRepetition(body),
+  );
   const degree = bodies.some(({ repeated }) => repeated) ? maxDegree - 1 : maxDegree;
   // Unroll repeats exactly while the automaton fits, and only read long
   // repeats as loops when it does not.
@@ -2529,8 +2547,9 @@ function analyzeNodeAmbiguity(
     issue = analyzePositionAutomaton(loops, node, degree, budget);
   }
   if (issue) return issue;
-  for (const { body, repeated } of bodies) {
-    const bodyIssue = analyzeNodeAmbiguity(body, repeated ? maxDegree - 1 : maxDegree, budget);
+  for (const { body, repeated, reverse: bodyReverse } of bodies) {
+    const bodyDegree = repeated ? maxDegree - 1 : maxDegree;
+    const bodyIssue = analyzeNodeAmbiguity(body, bodyDegree, budget, bodyReverse);
     if (bodyIssue) return bodyIssue;
   }
   return null;
