@@ -250,6 +250,8 @@ class RegexParser {
    * the compiled RegExp that `pattern` does not hold.
    */
   referencesOuterGroup = false;
+  /** How many lookbehinds enclose the current term. */
+  private lookbehinds = 0;
   private readonly localCaptures: number;
 
   constructor(
@@ -362,7 +364,12 @@ class RegexParser {
    * are not replayed. An open or unknown group may have captured any text.
    */
   private backreference(group: number | undefined): RegexNode {
-    const body = group === undefined || this.skippedGroup ? undefined : this.groups[group];
+    // A lookbehind matches right to left, so which groups have taken part
+    // there does not follow source order.
+    const body =
+      group === undefined || this.skippedGroup || this.lookbehinds > 0
+        ? undefined
+        : this.groups[group];
     const characters = body && capturedCharacters(body);
     if (!body || characters === null) {
       return this.node({ kind: "atom", symbol: null, fixedWidth: false });
@@ -402,6 +409,7 @@ class RegexParser {
     let negativeLookahead = false;
     let negativeAssertion = false;
     let capture = false;
+    let lookbehind = false;
     const outerDotAll = this.dotAll;
     const outerIgnoreCase = this.scopeIgnoreCase;
     const outerFolded = this.foldedCaseSensitive;
@@ -428,6 +436,7 @@ class RegexParser {
         (this.pattern[this.index + 2] === "=" || this.pattern[this.index + 2] === "!")
       ) {
         assertion = true;
+        lookbehind = true;
         negativeAssertion = this.pattern[this.index + 2] === "!";
         this.index += 3;
       } else if (marker === "<") {
@@ -452,7 +461,9 @@ class RegexParser {
     this.foldedCaseSensitive = false;
     const before = this.captureIndex;
     const captureNumber = capture ? ++this.captureIndex : 0;
+    if (lookbehind) this.lookbehinds++;
     const child = this.parseAlternation();
+    if (lookbehind) this.lookbehinds--;
     // Groups in a negative assertion never keep a capture.
     if (negativeAssertion) this.markGroupsOptional(before);
     if (this.pattern[this.index] === ")") this.index++;
@@ -2304,6 +2315,8 @@ type AssertionBody = { body: RegexNode; repeated: boolean };
 type PathCache = {
   paths: WeakMap<RegexNode, number>;
   widths: WeakMap<RegexNode, [number, number]>;
+  /** Shared by every sequence's literal words, which can multiply. */
+  words: WordBudget;
 };
 
 function pathCount(node: RegexNode, cache: PathCache): number {
@@ -2319,6 +2332,14 @@ function pathCount(node: RegexNode, cache: PathCache): number {
     case "sequence":
       count = 1;
       for (const child of node.children) count *= pathCount(child, cache);
+      // Choices that multiply may still not all read one text, which a
+      // literal language shows exactly.
+      if (count > MAX_FIXED_ASSERTION_POSITIONS) {
+        const words = fixedWords(node, cache.words);
+        if (words?.every((word) => word.every((symbol) => symbol.kind === "literal"))) {
+          count = literalPrefixCount(words);
+        }
+      }
       break;
     case "alternation":
       count = alternationPathCount(node, cache);
@@ -2439,7 +2460,11 @@ function assertionBodies(
   node: RegexNode,
   positions = 1,
   bodies: AssertionBody[] = [],
-  paths: PathCache = { paths: new WeakMap(), widths: new WeakMap() },
+  paths: PathCache = {
+    paths: new WeakMap(),
+    widths: new WeakMap(),
+    words: { words: 0, symbols: 0, exceeded: false },
+  },
 ): AssertionBody[] {
   switch (node.kind) {
     case "atom":
@@ -2450,10 +2475,16 @@ function assertionBodies(
       }
       break;
     case "sequence": {
-      let reached = positions;
-      for (const child of node.children) {
-        assertionBodies(child, reached, bodies, paths);
-        reached *= pathCount(child, paths);
+      let prefix = 1;
+      for (const [index, child] of node.children.entries()) {
+        assertionBodies(child, positions * prefix, bodies, paths);
+        const wasCounted = prefix <= MAX_FIXED_ASSERTION_POSITIONS;
+        prefix *= pathCount(child, paths);
+        if (wasCounted && prefix > MAX_FIXED_ASSERTION_POSITIONS) {
+          // The children so far may read fewer ways together.
+          const children = node.children.slice(0, index + 1);
+          prefix = pathCount({ kind: "sequence", children }, paths);
+        }
       }
       break;
     }

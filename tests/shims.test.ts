@@ -9987,6 +9987,10 @@ describe("middleware matcher patterns", () => {
       String.fromCharCode(0x100 + index),
     );
     expect(analyzeRegexSafety(`^(?:${characters.join("|")})(?=${quadratic})a*$`)).toBeNull();
+    // 32 combinations, but at most three can start one text.
+    expect(
+      analyzeRegexSafety(`^(?:a|ab)(?:b|bc)(?:c|cd)(?:d|de)(?:e|ef)(?=${quadratic})a*$`),
+    ).toBeNull();
     // These read a run of `a` 256 and 32 ways, each running the body again,
     // although they end at only nine positions and one.
     expect(analyzeRegexSafety(`^${"(?:a|aa)".repeat(8)}(?=${quadratic})a*$`)).toBe(
@@ -14267,6 +14271,9 @@ describe("isSafeRegex", () => {
     // analyzed, however the name is spelled.
     expect(isSafeRegex("^\\k<x>(?<x>[ab]*a[ab]*a[ab]*)X$")).toBe(false);
     expect(isSafeRegex("^\\k<a>(?<\\u0061>[ab]*a[ab]*a[ab]*)X$")).toBe(false);
+    // A lookbehind matches right to left, so there `\k<x>` runs before `x`
+    // takes part and reads nothing, leaving `(?:a*)+`.
+    expect(isSafeRegex("(?<=(?<x>b)(?:a*\\k<x>)+)$")).toBe(false);
     // A capture that may not take part leaves the backreference reading
     // nothing, so both alternatives read `a`.
     for (const pattern of [
