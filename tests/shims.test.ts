@@ -9976,6 +9976,9 @@ describe("middleware matcher patterns", () => {
       "polynomially ambiguous repetition",
     );
     expect(analyzeRegexSafety(`(?<=(?:ab*)*(?=a[ab]*[ab]*X))$`)).toBeNull();
+    // `(?!a)` guards the `a+` after it only when read left to right.
+    expect(analyzeRegexSafety("(?:(?!a)a+a+|a)+$")).toBeNull();
+    expect(analyzeRegexSafety("$(?<=(?:(?!a)a+a+|a)+)")).toBe("exponentially ambiguous repetition");
     // An empty iteration ends a repeat, so a zero-width one runs once.
     expect(analyzeRegexSafety(`^(?:(?=${quadratic}))+$`)).toBeNull();
     // Only the lengths the text before it can have count, here 1 and 100.

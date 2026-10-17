@@ -62,7 +62,9 @@ const MAX_AUTOMATON_EDGES = 262_144;
 // whose copies may be skipped, such as `a{0,16384}`, copies ever larger
 // first and last sets.
 const MAX_AUTOMATON_WORK = 4_000_000;
-const MAX_PRODUCT_EDGES = 500_000;
+// Each product state the search reaches keeps about 200 bytes of
+// bookkeeping, so this holds one search to roughly 25 MB.
+const MAX_PRODUCT_EDGES = 131_072;
 // Pending guards read and copied while expanding lookahead guards, each of
 // which costs far more than an automaton edge.
 const MAX_GUARD_WORK = 262_144;
@@ -2472,7 +2474,6 @@ function assertionBodies(
     widths: new WeakMap(),
     words: { words: 0, symbols: 0, exceeded: false },
   },
-  reverse = false,
 ): AssertionBody[] {
   switch (node.kind) {
     case "atom":
@@ -2487,24 +2488,21 @@ function assertionBodies(
       }
       break;
     case "sequence": {
-      // A lookbehind reads its children from the last one back.
-      const children = reverse ? [...node.children].reverse() : node.children;
       let prefix = 1;
-      for (const [index, child] of children.entries()) {
-        assertionBodies(child, positions * prefix, bodies, paths, reverse);
+      for (const [index, child] of node.children.entries()) {
+        assertionBodies(child, positions * prefix, bodies, paths);
         const wasCounted = prefix <= MAX_FIXED_ASSERTION_POSITIONS;
         prefix *= pathCount(child, paths);
-        if (!reverse && wasCounted && prefix > MAX_FIXED_ASSERTION_POSITIONS) {
+        if (wasCounted && prefix > MAX_FIXED_ASSERTION_POSITIONS) {
           // The children so far may read fewer ways together.
-          prefix = pathCount({ kind: "sequence", children: children.slice(0, index + 1) }, paths);
+          const children = node.children.slice(0, index + 1);
+          prefix = pathCount({ kind: "sequence", children }, paths);
         }
       }
       break;
     }
     case "alternation":
-      for (const branch of node.branches) {
-        assertionBodies(branch, positions, bodies, paths, reverse);
-      }
+      for (const branch of node.branches) assertionBodies(branch, positions, bodies, paths);
       break;
     case "repeat": {
       // Each copy starts after every path through the copies before it. The
@@ -2514,11 +2512,32 @@ function assertionBodies(
         widthRange(node.child, paths.widths)[1] === 0
           ? 1
           : repeatPathCount(pathCount(node.child, paths), 0, node.max - 1);
-      assertionBodies(node.child, positions * copies, bodies, paths, reverse);
+      assertionBodies(node.child, positions * copies, bodies, paths);
       break;
     }
   }
   return bodies;
+}
+
+/**
+ * `node` read right to left, as the engine runs a lookbehind body, so it can
+ * be analyzed like a pattern read left to right. A negative lookahead there
+ * no longer guards the atom after it, so it is read as empty, which only
+ * adds paths. Lookaround bodies keep their own direction.
+ */
+function reversedNode(node: RegexNode): RegexNode {
+  switch (node.kind) {
+    case "atom":
+      return node;
+    case "assertion":
+      return { kind: "assertion", child: node.child, lookbehind: node.lookbehind };
+    case "sequence":
+      return { kind: "sequence", children: node.children.map(reversedNode).reverse() };
+    case "alternation":
+      return { kind: "alternation", branches: node.branches.map(reversedNode) };
+    case "repeat":
+      return { ...node, child: reversedNode(node.child) };
+  }
 }
 
 /**
@@ -2533,10 +2552,9 @@ function analyzeNodeAmbiguity(
   budget: AnalysisBudget = { automatonWork: 0, productEdges: 0 },
   reverse = false,
 ): RegexSafetyIssue | null {
+  if (reverse) node = reversedNode(node);
   // A body without a variable repeat reads fixed-length words, as above.
-  const bodies = assertionBodies(node, 1, [], undefined, reverse).filter(({ body }) =>
-    containsVariableRepetition(body),
-  );
+  const bodies = assertionBodies(node).filter(({ body }) => containsVariableRepetition(body));
   const degree = bodies.some(({ repeated }) => repeated) ? maxDegree - 1 : maxDegree;
   // Unroll repeats exactly while the automaton fits, and only read long
   // repeats as loops when it does not.
