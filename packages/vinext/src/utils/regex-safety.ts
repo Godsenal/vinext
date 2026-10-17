@@ -250,6 +250,7 @@ class RegexParser {
    * the compiled RegExp that `pattern` does not hold.
    */
   referencesOuterGroup = false;
+  private readonly localCaptures: number;
 
   constructor(
     private readonly pattern: string,
@@ -262,6 +263,7 @@ class RegexParser {
     this.ignoreCase = ignoreCase || hasScopedIgnoreCase(pattern);
     this.scopeIgnoreCase = ignoreCase;
     this.captures = context.total;
+    this.localCaptures = context.before === 0 ? context.total : countCapturingGroups(pattern);
   }
 
   parse(): RegexNode {
@@ -543,7 +545,7 @@ class RegexParser {
         this.index += digits.length;
         // A group outside `pattern` is unknown here.
         const group = Number(escaped + digits) - this.context.before;
-        if (group < 1 || group > countCapturingGroups(this.pattern)) {
+        if (group < 1 || group > this.localCaptures) {
           this.referencesOuterGroup = true;
         }
         return this.backreference(group);
@@ -2348,6 +2350,31 @@ function repeatPathCount(paths: number, min: number, max: number): number {
 }
 
 const MAX_PATH_COUNT_WORDS = 256;
+
+type LiteralTrie = { next: Map<string, LiteralTrie>; ends: number };
+
+/** The most of `words` that one of them starts with, itself included. */
+function literalPrefixCount(words: RegexSymbol[][]): number {
+  const root: LiteralTrie = { next: new Map(), ends: 0 };
+  for (const word of words) {
+    let node = root;
+    for (const symbol of word) {
+      let child = node.next.get(symbol.key);
+      if (!child) node.next.set(symbol.key, (child = { next: new Map(), ends: 0 }));
+      node = child;
+    }
+    node.ends++;
+  }
+  let most = 0;
+  const stack: Array<[LiteralTrie, number]> = [[root, 0]];
+  while (stack.length > 0) {
+    const [node, above] = stack.pop()!;
+    const count = above + node.ends;
+    most = Math.max(most, count);
+    for (const child of node.next.values()) stack.push([child, count]);
+  }
+  return most;
+}
 const MAX_PATH_COUNT_BRANCHES = 64;
 
 function alternationPathCount(
@@ -2357,6 +2384,9 @@ function alternationPathCount(
   // Words that all read one text are prefixes of the longest, so on each
   // text at most as many words match as the most that can prefix one word.
   const words = fixedWords(node, { words: 0, symbols: 0, exceeded: false });
+  if (words?.every((word) => word.every((symbol) => symbol.kind === "literal"))) {
+    return literalPrefixCount(words);
+  }
   if (words && words.length <= MAX_PATH_COUNT_WORDS) {
     let most = 0;
     for (const word of words) {

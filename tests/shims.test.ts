@@ -9982,6 +9982,11 @@ describe("middleware matcher patterns", () => {
     expect(
       analyzeRegexSafety(`^(?:a|bb)(?:c|dd)(?:e|ff)(?:g|hh)(?:i|jj)(?=${quadratic})a*$`),
     ).toBeNull();
+    // However many there are.
+    const characters = Array.from({ length: 257 }, (_, index) =>
+      String.fromCharCode(0x100 + index),
+    );
+    expect(analyzeRegexSafety(`^(?:${characters.join("|")})(?=${quadratic})a*$`)).toBeNull();
     // These read a run of `a` 256 and 32 ways, each running the body again,
     // although they end at only nine positions and one.
     expect(analyzeRegexSafety(`^${"(?:a|aa)".repeat(8)}(?=${quadratic})a*$`)).toBe(
@@ -10072,6 +10077,11 @@ describe("middleware matcher patterns", () => {
     // Copies of one guard share its characters.
     start = performance.now();
     expect(analyzeRegexSafety(`(?:(?!${"a|".repeat(8_000)}a).){0,2000}`)).toBeNull();
+    expect(performance.now() - start).toBeLessThan(1_000);
+
+    // Each reference is checked against the pattern's own captures once.
+    start = performance.now();
+    expect(analyzeRegexSafety(`(a)${"\\1".repeat(32_700)}?`)).not.toBeNull();
     expect(performance.now() - start).toBeLessThan(1_000);
 
     // Copies of empty lookarounds add no positions but still take time.
