@@ -1621,6 +1621,8 @@ class PositionAutomaton {
   }
 
   private fragment(node: RegexNode): PositionFragment {
+    // Copies of zero-width nodes add no positions, but still take time.
+    this.spend(1);
     if (this.exceeded) return { first: new Map(), last: new Map(), empty: 1 };
     switch (node.kind) {
       case "atom": {
@@ -2288,6 +2290,84 @@ export function analyzeRegexAmbiguity(
 type AssertionBody = { body: RegexNode; repeated: boolean };
 
 /**
+ * The lengths of text `node` can read, or null past
+ * MAX_FIXED_ASSERTION_POSITIONS of them. `(?:a|b{100})` reads 1 or 100.
+ */
+function reachableWidths(
+  node: RegexNode,
+  cache: WeakMap<RegexNode, Set<number> | null>,
+): Set<number> | null {
+  if (cache.has(node)) return cache.get(node)!;
+  let widths: Set<number> | null;
+  switch (node.kind) {
+    case "atom":
+      widths = node.fixedWidth ? new Set([1]) : null;
+      break;
+    case "assertion":
+      widths = new Set([0]);
+      break;
+    case "sequence":
+      widths = new Set([0]);
+      for (const child of node.children) {
+        const childWidths = reachableWidths(child, cache);
+        widths = childWidths && addWidths(widths, childWidths);
+        if (!widths) break;
+      }
+      break;
+    case "alternation":
+      widths = new Set();
+      for (const branch of node.branches) {
+        const branchWidths = reachableWidths(branch, cache);
+        if (!branchWidths) {
+          widths = null;
+          break;
+        }
+        for (const width of branchWidths) widths.add(width);
+      }
+      if (widths && widths.size > MAX_FIXED_ASSERTION_POSITIONS) widths = null;
+      if (node.branches.length === 0) widths = new Set([0]);
+      break;
+    case "repeat": {
+      const child = reachableWidths(node.child, cache);
+      widths = child && repeatWidths(child, node.min, node.max);
+      break;
+    }
+  }
+  cache.set(node, widths);
+  return widths;
+}
+
+function addWidths(left: Set<number>, right: Set<number>): Set<number> | null {
+  const widths = new Set<number>();
+  for (const a of left) {
+    for (const b of right) {
+      widths.add(a + b);
+      if (widths.size > MAX_FIXED_ASSERTION_POSITIONS) return null;
+    }
+  }
+  return widths;
+}
+
+function repeatWidths(child: Set<number>, min: number, max: number): Set<number> | null {
+  const largest = Math.max(...child);
+  if (largest === 0) return new Set([0]);
+  // Each copy count reads a different length through `largest` alone.
+  if (max - min + 1 > MAX_FIXED_ASSERTION_POSITIONS) return null;
+  if (child.size === 1) {
+    return new Set(Array.from({ length: max - min + 1 }, (_, index) => (min + index) * largest));
+  }
+  // `k` copies of two or more lengths read at least `k + 1` lengths.
+  if (max >= MAX_FIXED_ASSERTION_POSITIONS) return null;
+  const widths = new Set<number>();
+  let copies: Set<number> | null = new Set([0]);
+  for (let count = 0; count <= max && copies; count++) {
+    if (count >= min) for (const width of copies) widths.add(width);
+    if (count < max) copies = addWidths(copies, child);
+  }
+  return copies && widths.size <= MAX_FIXED_ASSERTION_POSITIONS ? widths : null;
+}
+
+/**
  * The lookaround bodies in `node` that read text, outside other lookarounds,
  * and whether the engine may run each one at more than a few positions per
  * match attempt: after text whose length varies more than that, which it
@@ -2298,7 +2378,7 @@ function assertionBodies(
   node: RegexNode,
   positions = 1,
   bodies: AssertionBody[] = [],
-  widths = new WeakMap<RegexNode, [number, number]>(),
+  widths = new WeakMap<RegexNode, Set<number> | null>(),
 ): AssertionBody[] {
   switch (node.kind) {
     case "atom":
@@ -2312,8 +2392,7 @@ function assertionBodies(
       let reached = positions;
       for (const child of node.children) {
         assertionBodies(child, reached, bodies, widths);
-        const [min, max] = widthRange(child, widths);
-        reached *= max - min + 1;
+        reached *= reachableWidths(child, widths)?.size ?? Infinity;
       }
       break;
     }
@@ -2321,9 +2400,12 @@ function assertionBodies(
       for (const branch of node.branches) assertionBodies(branch, positions, bodies, widths);
       break;
     case "repeat": {
-      const [min, max] = widthRange(node.child, widths);
+      const childWidths = reachableWidths(node.child, widths);
       // Each copy past the first starts wherever the copies before it end.
-      const copies = node.max > 1 ? node.max * (max - min + 1) : 1;
+      // The engine stops a repeat at an empty iteration, so a zero-width
+      // child is only reached once.
+      const empty = childWidths?.size === 1 && childWidths.has(0);
+      const copies = node.max > 1 && !empty ? node.max * (childWidths?.size ?? Infinity) : 1;
       assertionBodies(node.child, positions * copies, bodies, widths);
       break;
     }

@@ -9968,6 +9968,13 @@ describe("middleware matcher patterns", () => {
     // A few positions only multiply the body's cost by a constant.
     expect(analyzeRegexSafety(`(?:(?=${quadratic})a){2}`)).toBeNull();
     expect(analyzeRegexSafety(`^a{0,3}(?=${quadratic})`)).toBeNull();
+    // An empty iteration ends a repeat, so a zero-width one runs once.
+    expect(analyzeRegexSafety(`^(?:(?=${quadratic}))+$`)).toBeNull();
+    // Only the lengths the text before it can have count, here 1 and 100.
+    expect(analyzeRegexSafety(`^(?:a|b{100})(?=${quadratic})a*$`)).toBeNull();
+    expect(analyzeRegexSafety(`^(?:a|b{2,40})(?=${quadratic})a*$`)).toBe(
+      "polynomially ambiguous repetition",
+    );
     expect(analyzeRegexSafety("^(?:/(en|de))?/((?!api|_next|.*\\..*).*)$")).toBeNull();
 
     // `[ab]`, `[ac]` and `[bc]` overlap pairwise, but no one character is in
@@ -10051,6 +10058,11 @@ describe("middleware matcher patterns", () => {
     start = performance.now();
     expect(analyzeRegexSafety(`(?:(?!${"a|".repeat(8_000)}a).){0,2000}`)).toBeNull();
     expect(performance.now() - start).toBeLessThan(1_000);
+
+    // Copies of empty lookarounds add no positions but still take time.
+    start = performance.now();
+    expect(analyzeRegexSafety(`(?:(?:${"(?=)".repeat(4_000)}a){16000})*X`)).not.toBeNull();
+    expect(performance.now() - start).toBeLessThan(2_000);
 
     // A large loop of product states is read without spreading it into one
     // call.
