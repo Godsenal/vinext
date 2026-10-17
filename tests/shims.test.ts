@@ -9977,6 +9977,10 @@ describe("middleware matcher patterns", () => {
     expect(analyzeRegexSafety(`^(?:a|b{2,40})(?=${quadratic})a*$`)).toBe(
       "polynomially ambiguous repetition",
     );
+    // 32 combinations, but only the six lengths 5 to 10.
+    expect(
+      analyzeRegexSafety(`^(?:a|bb)(?:c|dd)(?:e|ff)(?:g|hh)(?:i|jj)(?=${quadratic})a*$`),
+    ).toBeNull();
     expect(analyzeRegexSafety("^(?:/(en|de))?/((?!api|_next|.*\\..*).*)$")).toBeNull();
 
     // `[ab]`, `[ac]` and `[bc]` overlap pairwise, but no one character is in
@@ -14240,6 +14244,9 @@ describe("isSafeRegex", () => {
     expect(isSafeRegex("^(a)\\1+$")).toBe(true);
     expect(isSafeRegex("^(?<x>a)\\k<x>+$")).toBe(true);
     expect(isSafeRegex("^(?:(a)b)+\\1+$")).toBe(true);
+    // A reference before its group reads nothing, and the rest is still
+    // analyzed.
+    expect(isSafeRegex("^\\k<x>(?<x>[ab]*a[ab]*a[ab]*)X$")).toBe(false);
     // A capture that may not take part leaves the backreference reading
     // nothing, so both alternatives read `a`.
     for (const pattern of [

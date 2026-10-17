@@ -250,6 +250,7 @@ class RegexParser {
    * the compiled RegExp that `pattern` does not hold.
    */
   referencesOuterGroup = false;
+  private declaredNames: Set<string> | undefined;
 
   constructor(
     private readonly pattern: string,
@@ -529,7 +530,9 @@ class RegexParser {
       const nameEnd = this.pattern.indexOf(">", this.index);
       const name = nameEnd === -1 ? "" : this.pattern.slice(this.index + 1, nameEnd);
       this.index = nameEnd === -1 ? this.pattern.length : nameEnd + 1;
-      if (!this.groupNames.has(name)) this.referencesOuterGroup = true;
+      // A group later in `pattern` is local, and not yet taking part.
+      this.declaredNames ??= declaredGroupNames(this.pattern);
+      if (!this.declaredNames.has(name)) this.referencesOuterGroup = true;
       return this.backreference(this.groupNames.get(name));
     }
     let literal: string | null = null;
@@ -1310,6 +1313,12 @@ export function analyzeRegexRepetitionChains(
  * a backreference. Escaped characters and character classes cannot open one.
  */
 export function mayHaveNamedGroups(pattern: string): boolean {
+  return declaredGroupNames(pattern).size > 0;
+}
+
+/** The names of the groups a RegExp source declares. */
+function declaredGroupNames(pattern: string): Set<string> {
+  const names = new Set<string>();
   let inClass = false;
   for (let index = 0; index < pattern.length; index++) {
     const character = pattern[index];
@@ -1325,10 +1334,11 @@ export function mayHaveNamedGroups(pattern: string): boolean {
       pattern[index + 3] !== "=" &&
       pattern[index + 3] !== "!"
     ) {
-      return true;
+      const end = pattern.indexOf(">", index + 3);
+      if (end !== -1) names.add(pattern.slice(index + 3, end));
     }
   }
-  return false;
+  return names;
 }
 
 /**
@@ -2389,10 +2399,13 @@ function assertionBodies(
       }
       break;
     case "sequence": {
-      let reached = positions;
+      // The lengths the children so far can read together, whose sums may
+      // coincide.
+      let prefix: Set<number> | null = new Set([0]);
       for (const child of node.children) {
-        assertionBodies(child, reached, bodies, widths);
-        reached *= reachableWidths(child, widths)?.size ?? Infinity;
+        assertionBodies(child, positions * (prefix?.size ?? Infinity), bodies, widths);
+        const childWidths: Set<number> | null = prefix && reachableWidths(child, widths);
+        prefix = childWidths && addWidths(prefix!, childWidths);
       }
       break;
     }
