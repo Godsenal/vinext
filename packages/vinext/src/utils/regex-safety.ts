@@ -1398,6 +1398,8 @@ export function regexAtomsMayOverlap(left: string, right: string, ignoreCase = f
   return symbolsMayOverlap(leftSymbol, rightSymbol);
 }
 
+const singleCharacterAlternations = new WeakMap<RegexNode, RegexSymbol | null>();
+
 /**
  * One symbol for an alternation of distinct single characters, `(?:a|b|c)`,
  * whose branches never read the same character, so it has a single path for
@@ -1406,8 +1408,6 @@ export function regexAtomsMayOverlap(left: string, right: string, ignoreCase = f
  * become an opaque class, matched case-insensitively, which only adds
  * overlaps.
  */
-const singleCharacterAlternations = new WeakMap<RegexNode, RegexSymbol | null>();
-
 function singleCharacterAlternationSymbol(
   node: Extract<RegexNode, { kind: "alternation" }>,
 ): RegexSymbol | null {
@@ -1439,10 +1439,10 @@ function buildSingleCharacterAlternationSymbol(
   return { kind: "opaque", key: `opaque:i:${pattern}`, pattern, ignoreCase: true };
 }
 
-// Path counts saturate at two: two distinct paths are enough for ambiguity.
 /** Work spent so far across every automaton one analysis builds. */
 type AnalysisBudget = { automatonWork: number; productEdges: number };
 
+// Path counts saturate at two: two distinct paths are enough for ambiguity.
 type PathCounts = Map<number, number>;
 type PositionFragment = { first: PathCounts; last: PathCounts; empty: number };
 
@@ -2315,12 +2315,6 @@ export function analyzeRegexAmbiguity(
 /** `reverse` when the body is a lookbehind's, which runs right to left. */
 type AssertionBody = { body: RegexNode; repeated: boolean; reverse: boolean };
 
-/**
- * At most how many ways `node` can read the start of one text, or Infinity
- * past MAX_FIXED_ASSERTION_POSITIONS. Each is a path the engine backtracks
- * through, running any lookaround after it again. `(?:a|aa)` has two on
- * `aa`, `(?:a|bb)` one on any text.
- */
 type PathCache = {
   paths: WeakMap<RegexNode, number>;
   widths: WeakMap<RegexNode, [number, number]>;
@@ -2328,6 +2322,12 @@ type PathCache = {
   words: WordBudget;
 };
 
+/**
+ * At most how many ways `node` can read the start of one text, or Infinity
+ * past MAX_FIXED_ASSERTION_POSITIONS. Each is a path the engine backtracks
+ * through, running any lookaround after it again. `(?:a|aa)` has two on
+ * `aa`, `(?:a|bb)` one on any text.
+ */
 function pathCount(node: RegexNode, cache: PathCache): number {
   let count = cache.paths.get(node);
   if (count !== undefined) return count;
@@ -2405,6 +2405,7 @@ function literalPrefixCount(words: RegexSymbol[][]): number {
   }
   return most;
 }
+
 const MAX_PATH_COUNT_BRANCHES = 64;
 
 function alternationPathCount(
