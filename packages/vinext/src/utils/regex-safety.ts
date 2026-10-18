@@ -2308,6 +2308,9 @@ function polynomialDegree(
   const uniqueFollow = follow.map((targets) => [...new Set(targets)]);
 
   let edges = 0;
+  // Charges each candidate the search below checks, filtered or not.
+  const spend = (): boolean =>
+    ++edges > MAX_PRODUCT_EDGES || ++budget.productEdges > MAX_TOTAL_PRODUCT_EDGES;
   const pairIsAmbiguous = (p: number, q: number): boolean | null => {
     const from = component[p]!;
     const to = component[q]!;
@@ -2320,13 +2323,13 @@ function polynomialDegree(
       const y = queue.pop()!;
       const x = queue.pop()!;
       for (const nextX of uniqueFollow[x]!) {
+        if (spend()) return null;
         if (component[nextX] !== from) continue;
         for (const nextZ of uniqueFollow[z]!) {
+          if (spend()) return null;
           if (component[nextZ] !== to || !symbolsOverlap(nextX, nextZ)) continue;
           for (const nextY of uniqueFollow[y]!) {
-            if (++edges > MAX_PRODUCT_EDGES || ++budget.productEdges > MAX_TOTAL_PRODUCT_EDGES) {
-              return null;
-            }
+            if (spend()) return null;
             if (!statesShareCharacter(nextX, nextY, nextZ)) continue;
             const next = key(nextX, nextY, nextZ);
             if (next === goal) return true;
