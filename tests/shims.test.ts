@@ -14957,9 +14957,7 @@ describe("matchHeaders source matching parity with Next.js", () => {
     try {
       const rules = [{ source, headers: [{ key: "x-rule", value: "1" }] }];
       expect(matchHeaders(`/unsafe/x.${"a.".repeat(30)}a/nope`, rules, ctx)).toEqual([]);
-      expect(warn).toHaveBeenCalledWith(
-        expect.stringContaining("(ReDoS risk)"),
-      );
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("(ReDoS risk)"));
     } finally {
       warn.mockRestore();
     }
