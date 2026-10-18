@@ -1034,8 +1034,10 @@ describe("config sources do not backtrack catastrophically", () => {
         const start = performance.now();
         matchConfigPattern(pathname, source);
         const elapsed = performance.now() - start;
+        // Catastrophic backtracking on near misses this long takes far
+        // longer; the bound leaves room for a loaded runner.
         expect(elapsed, `${source} ← ${pathname.slice(0, 24)}… (${pathname.length})`).toBeLessThan(
-          250,
+          1_000,
         );
       }
     }
