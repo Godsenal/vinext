@@ -10240,6 +10240,13 @@ describe("middleware matcher patterns", () => {
     expect(compileMiddlewareMatcherPattern("/:id((?:(?!A)a+|(?i:a)+))+")).toMatchObject({
       kind: "unsafe",
     });
+    const { isSafeRegex } = await import("../packages/vinext/src/config/config-matchers.js");
+    expect(isSafeRegex("^((?-i:[^a])|(?i:[^a]))(?:\\1*A)+X$")).toBe(false);
+    // A backreference reads either branch's class, case-sensitive or not,
+    // so the first can capture "a" and each later `a` has two parses.
+    expect(
+      compileMiddlewareMatcherPattern(String.raw`/:g((?<x>(?-i:[^A])|(?i:[^A])))/:id(\k<x>|a)+`),
+    ).toMatchObject({ kind: "unsafe" });
     // Likewise a case-sensitive `[^A]` reads "a", so it overlaps the `a`
     // that `(?i:x)` folds.
     expect(compileMiddlewareMatcherPattern("/:id((?i:x)(?:[^A]|a)+b)")).toMatchObject({
