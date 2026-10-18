@@ -69,7 +69,10 @@ import {
 import { isPossibleAppRouteActionRequest } from "./app-action-request.js";
 import type { AppMiddlewareContext, ApplyAppMiddlewareResult } from "./app-middleware.js";
 import { mergeMiddlewareResponseHeaders } from "./app-page-response.js";
-import { mergeMiddlewareResponseHeadersBeforeResponseCookies } from "./middleware-response-headers.js";
+import {
+  mergeMiddlewareResponseHeadersOntoResponse,
+  withExternalRewriteResponseHeaders,
+} from "./middleware-response-headers.js";
 import { normalizeInterceptionContextHeader } from "./app-interception-context-header.js";
 import type {
   AppPrerenderRootParamNamesMap,
@@ -406,7 +409,7 @@ function applyMiddlewareContextToResponse(
 
   const headers = new Headers(response.headers);
   const responseLink = appendToPostConfigLink ? headers.get("link") : null;
-  mergeMiddlewareResponseHeadersBeforeResponseCookies(headers, middlewareContext.headers);
+  mergeMiddlewareResponseHeadersOntoResponse(headers, middlewareContext.headers);
   const middlewareLink = middlewareContext.headers?.get("link");
   if (responseLink && middlewareLink) {
     headers.set("link", `${middlewareLink}, ${responseLink}`);
@@ -789,7 +792,16 @@ async function applyRewrite(
       options.middlewareContext,
     );
     options.clearRequestContext();
-    return configMatchers.proxyExternalRequest(proxyRequest, rewritten);
+    // Next.js proxies a next.config external rewrite without the config and
+    // middleware headers it staged, though its Set-Cookie patch still puts
+    // middleware's cookies ahead of the upstream's.
+    return markAppRscResponseConfigHeadersApplied(
+      withExternalRewriteResponseHeaders(
+        await configMatchers.proxyExternalRequest(proxyRequest, rewritten),
+        new Headers(),
+        options.middlewareContext.headers?.getSetCookie() ?? [],
+      ),
+    );
   }
 
   return rewritten;
@@ -854,6 +866,7 @@ async function applyConfigHeadersToMiddlewareRedirect(
     pathname: options.pathname,
     requestContext: options.requestContext,
     basePathState: options.basePathState,
+    middlewareHeaders: response.headers,
     recordCacheability: options.recordCacheability,
   });
 
@@ -1253,6 +1266,25 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       if (request.body && !request.body.locked) {
         void request.body.cancel().catch(() => {});
       }
+      if (middlewareResult.externalRewrite) {
+        // Next.js stages next.config headers beneath middleware's and the
+        // upstream's, so they only fill headers neither one set.
+        const headers = new Headers();
+        await applyAppRscConfigHeaders(headers, request, {
+          basePath: options.basePath,
+          configHeaders: options.configHeaders,
+          i18nConfig: options.i18nConfig,
+          middlewareHeaders: middlewareContext.headers,
+          recordCacheability: dispatchResponseStage === undefined,
+          requestContext: preMiddlewareRequestContext,
+        });
+        return markAppRscResponseConfigHeadersApplied(
+          withExternalRewriteResponseHeaders(middlewareResult.response, headers, []),
+        );
+      }
+      // Finalization applies config headers to a response middleware returned
+      // directly. As in Next.js, they yield to that response's own headers.
+      middlewareContext.headers ??= new Headers(middlewareResult.response.headers);
       return applyConfigHeadersToMiddlewareRedirect(middlewareResult.response, {
         basePathState,
         configHeaders: options.configHeaders,
@@ -1534,6 +1566,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         basePath: options.basePath,
         configHeaders: options.configHeaders,
         i18nConfig: options.i18nConfig,
+        middlewareHeaders: middlewareContext.headers,
         overwriteExisting: isCdnResponsePolicyHeader,
         recordCacheability: false,
         requestContext: preMiddlewareRequestContext,
@@ -2161,6 +2194,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         basePath: options.basePath,
         configHeaders: options.configHeaders,
         i18nConfig: options.i18nConfig,
+        middlewareHeaders: middlewareContext.headers,
         recordCacheability: dispatchResponseStage === undefined,
         requestContext: preMiddlewareRequestContext,
       },

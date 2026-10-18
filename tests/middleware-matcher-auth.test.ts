@@ -543,6 +543,11 @@ describe("unsafe middleware matcher rejection", () => {
   it.each([
     ["/:path(.*)*/end", /contains exponentially ambiguous repetition/],
     ["/:path(.*)+/end", /contains exponentially ambiguous repetition/],
+    ["/x.:ext([^/]+)+/end", /contains exponentially ambiguous repetition/],
+    ["/x{-:part([^/]+)}+", /contains exponentially ambiguous repetition/],
+    ["/:x(a(?:/a)?)+/end", /contains exponentially ambiguous repetition/],
+    ["/x.:id((?:(?!(?=a)\\.)[^/])+?)+/end", /contains exponentially ambiguous repetition/],
+    ["/:x(ab?|a)+/end", /contains exponentially ambiguous repetition/],
     ["/:path((?:a+)+)", /contains exponentially ambiguous repetition/],
     ["/:path((?:a|aa)+)", /contains exponentially ambiguous repetition/],
     ["/:path((?:a|A)+)", /contains exponentially ambiguous repetition/],
