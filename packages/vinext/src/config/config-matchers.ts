@@ -310,7 +310,8 @@ export function isSafeRegex(pattern: string, flags?: string): boolean {
       ignoreCase: flags?.includes("i"),
       dotAll: flags?.includes("s"),
       multiline: flags?.includes("m"),
-      search: true,
+      // A sticky RegExp makes one attempt, at its lastIndex.
+      search: !flags?.includes("y"),
     }) === null
   );
 }

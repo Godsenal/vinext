@@ -14278,6 +14278,11 @@ describe("isSafeRegex", () => {
     expect(isSafeRegex("(?m:^(a+){2}X)")).toBe(false);
     expect(isSafeRegex("^x|(?m:^(a+){2}X)$")).toBe(false);
     expect(isSafeRegex("(?m:(?-m:^)(a+){2}X)")).toBe(true);
+    expect(isSafeRegex("(?-m:^(a+){2}X)", "m")).toBe(true);
+    expect(isSafeRegex("^(?m:^)(a+){2}X", "m")).toBe(false);
+    // A sticky RegExp makes one attempt, at its lastIndex.
+    expect(isSafeRegex("(a+){2}X", "y")).toBe(true);
+    expect(isSafeRegex("(a+){3}X", "y")).toBe(false);
     // Linear attempts stay accepted without an anchor.
     expect(isSafeRegex("a+X")).toBe(true);
   });

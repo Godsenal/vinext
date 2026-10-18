@@ -253,9 +253,9 @@ class RegexParser {
   private foldedCaseSensitive = false;
   // Whether `.` matches line terminators, which `(?s:...)` sets for its body.
   private dotAll = false;
-  // Whether `^` also matches after line terminators, which `(?m:...)` sets
-  // for its body. The `m` flag itself is the caller's to report.
-  private multiline = false;
+  // Whether `^` also matches after line terminators: the `m` flag, which
+  // `(?m:...)` and `(?-m:...)` set and clear for their bodies.
+  private multiline: boolean;
   // Annex B reads `\N` as a backreference only up to the capture count.
   private readonly captures: number;
   // Each closed capturing group's body, by number and by name, so a
@@ -281,9 +281,11 @@ class RegexParser {
     ignoreCase: boolean,
     private readonly namedGroups: boolean,
     dotAll = false,
+    multiline = false,
     private readonly context: CaptureContext = { before: 0, total: countCapturingGroups(pattern) },
   ) {
     this.dotAll = dotAll;
+    this.multiline = multiline;
     this.ignoreCase = ignoreCase || hasScopedIgnoreCase(pattern);
     this.scopeIgnoreCase = ignoreCase;
     this.captures = context.total;
@@ -1415,6 +1417,7 @@ export function analyzeRegexSafety(
     options.ignoreCase === true,
     options.namedGroups ?? mayHaveNamedGroups(pattern),
     options.dotAll === true,
+    options.multiline === true,
     options.captures,
   );
   const node = parser.parse();
@@ -1433,7 +1436,7 @@ export function analyzeRegexSafety(
 
 /** The degree one attempt may reach, a degree lower when every start runs one. */
 function searchDegree(node: RegexNode, options: RegexSearchOptions): number {
-  const retried = options.search === true && (options.multiline === true || !startAnchored(node));
+  const retried = options.search === true && !startAnchored(node);
   return retried ? MAX_POLYNOMIAL_DEGREE - 1 : MAX_POLYNOMIAL_DEGREE;
 }
 
@@ -2385,6 +2388,7 @@ export function analyzeRegexAmbiguity(
     options.ignoreCase === true,
     options.namedGroups ?? mayHaveNamedGroups(pattern),
     options.dotAll === true,
+    options.multiline === true,
   );
   const node = parser.parse();
   if (parser.exceededBudget || parser.index !== pattern.length) return "analysis budget exceeded";
