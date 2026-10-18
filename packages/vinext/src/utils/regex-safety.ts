@@ -65,6 +65,9 @@ const MAX_AUTOMATON_EDGES = 262_144;
 // first and last sets.
 const MAX_AUTOMATON_WORK = 4_000_000;
 const MAX_PRODUCT_EDGES = 500_000;
+// Pending guards read and copied while expanding lookahead guards, each of
+// which costs far more than an automaton edge.
+const MAX_GUARD_WORK = 262_144;
 // Follow lists longer than this are indexed by character for the product.
 const MAX_UNINDEXED_FOLLOW = 16;
 
@@ -1624,6 +1627,7 @@ function applyLookaheadGuards(automaton: PositionAutomaton): AmbiguityGraph | nu
   ];
   const ids = new Map<string, number>();
   const queue = [0];
+  let work = 0;
   const stateFor = (
     position: number,
     symbol: RegexSymbol | null,
@@ -1654,6 +1658,10 @@ function applyLookaheadGuards(automaton: PositionAutomaton): AmbiguityGraph | nu
     const id = queue.pop()!;
     const { position, pending } = states[id]!;
     for (const target of follow[position]!) {
+      // Each target reads and copies the pending guards, so a long guard
+      // that every iteration restarts costs quadratic work.
+      work += pending.length + 1;
+      if (work > MAX_GUARD_WORK) return null;
       const symbol = symbols[target]!;
       const guard = guards[target]!;
       const checked = new Map<string, RegexSymbol>();
@@ -1662,6 +1670,10 @@ function applyLookaheadGuards(automaton: PositionAutomaton): AmbiguityGraph | nu
         checked.set(character.key, character);
       }
       if (guard) checked.set(guard[0]!.key, guard[0]!);
+      // Each checked character is compared with the target's exclusions,
+      // which are then copied with them.
+      work += (checked.size + 1) * (excluded[target]!.length + 1);
+      if (work > MAX_GUARD_WORK) return null;
 
       // Each checked character the symbol may read, then everything else.
       const parts: Array<{
