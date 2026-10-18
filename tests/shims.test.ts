@@ -10215,6 +10215,21 @@ describe("middleware matcher patterns", () => {
     });
   });
 
+  it("bounds the work of expanding a long lookahead guard", async () => {
+    const { compileMiddlewareMatcherPattern } =
+      await import("../packages/vinext/src/server/middleware-matcher-pattern.js");
+
+    for (const length of [2_000, 4_000]) {
+      const matcher = `/:id((?:(?!${"a".repeat(length)}b)a)*)`;
+      const started = performance.now();
+      expect(compileMiddlewareMatcherPattern(matcher), `${length} characters`).toEqual({
+        kind: "unsafe",
+        error: 'parameter "id" exceeds the regex analysis budget',
+      });
+      expect(performance.now() - started).toBeLessThan(1_000);
+    }
+  });
+
   it("reads scoped flag groups and legacy octal escapes like the RegExp engine", async () => {
     const { compileMiddlewareMatcherPattern } =
       await import("../packages/vinext/src/server/middleware-matcher-pattern.js");
