@@ -30,7 +30,17 @@ type RegexSymbol =
       values: ReadonlySet<string>;
       nonAscii: NonAsciiDomain;
     }
-  | { kind: "opaque"; key: string; pattern: string; ignoreCase: boolean };
+  | {
+      kind: "opaque";
+      key: string;
+      pattern: string;
+      ignoreCase: boolean;
+      /**
+       * Set in a case-sensitive scope of a pattern whose literals are folded,
+       * where a literal stands for every case of its character.
+       */
+      caseVariants?: boolean;
+    };
 
 type NonAsciiDomain = "none" | "whitespace" | "non-whitespace" | "all";
 
@@ -187,7 +197,8 @@ function simpleClassSymbol(raw: string, ignoreCase: boolean): RegexSymbol | null
  * Symbols are compared by key, and a folded `a` keys as `A`, so a pattern
  * that mixes both is read case-insensitively throughout; that only lets
  * more characters overlap, except in negative lookaheads, which the parser
- * drops when they hold a case-sensitive symbol.
+ * drops when they hold a case-sensitive symbol, and in negated classes,
+ * which keep their own scope's case sensitivity.
  */
 function hasScopedIgnoreCase(pattern: string): boolean {
   const scoped = /\?[ims]*i[ims]*(?:-[ims]+)?:/y;
@@ -283,6 +294,21 @@ class RegexParser {
   private fold(): boolean {
     if (this.ignoreCase && !this.scopeIgnoreCase) this.foldedCaseSensitive = true;
     return this.ignoreCase;
+  }
+
+  /**
+   * An opaque symbol keeps its own scope's case sensitivity: folding `[^A]`
+   * would drop the `a` it reads in a case-sensitive scope.
+   */
+  private opaqueSymbol(pattern: string): RegexSymbol {
+    const folded = this.fold() && !this.scopeIgnoreCase;
+    return {
+      kind: "opaque",
+      key: `opaque:${pattern}`,
+      pattern,
+      ignoreCase: this.scopeIgnoreCase,
+      ...(folded && { caseVariants: true }),
+    };
   }
 
   private node<T extends RegexNode>(node: T): T {
@@ -520,17 +546,9 @@ class RegexParser {
       else if (character === "]") break;
     }
     const raw = this.pattern.slice(start, this.index);
-    const ignoreCase = this.fold();
     return this.node({
       kind: "atom",
-      symbol:
-        simpleClassSymbol(raw, ignoreCase) ??
-        ({
-          kind: "opaque",
-          key: `opaque:${raw}`,
-          pattern: raw,
-          ignoreCase,
-        } as const),
+      symbol: simpleClassSymbol(raw, this.fold()) ?? this.opaqueSymbol(raw),
       fixedWidth: true,
     });
   }
@@ -625,10 +643,9 @@ class RegexParser {
         fixedWidth: true,
       });
     }
-    const raw = `\\${escaped}`;
     return this.node({
       kind: "atom",
-      symbol: { kind: "opaque", key: `opaque:${raw}`, pattern: raw, ignoreCase: this.fold() },
+      symbol: this.opaqueSymbol(`\\${escaped}`),
       fixedWidth: true,
     });
   }
@@ -953,7 +970,12 @@ function createTrieNode(): TrieNode {
 function opaqueMatchesLiteral(opaque: RegexSymbol, literal: RegexSymbol): boolean {
   if (opaque.kind !== "opaque" || literal.kind !== "literal") return false;
   try {
-    return new RegExp(`^(?:${opaque.pattern})$`, opaque.ignoreCase ? "i" : "").test(literal.value);
+    const regexp = new RegExp(`^(?:${opaque.pattern})$`, opaque.ignoreCase ? "i" : "");
+    if (!opaque.caseVariants) return regexp.test(literal.value);
+    // Without the `u` flag an ASCII letter folds only with its other case.
+    // Other characters may fold with several, so assume one overlaps.
+    if (literal.value.charCodeAt(0) > 0x7f) return true;
+    return regexp.test(literal.value.toLowerCase()) || regexp.test(literal.value.toUpperCase());
   } catch {
     return true;
   }
