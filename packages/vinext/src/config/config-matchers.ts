@@ -322,6 +322,21 @@ export function isSafeRegex(pattern: string, flags?: string): boolean {
  * Logs a warning when a pattern is rejected so developers can fix their config.
  */
 export function safeRegExp(pattern: string, flags?: string): RegExp | null {
+  // Compiling does not run the pattern, so an invalid one is ruled out first
+  // instead of being reported as a ReDoS risk.
+  let regex: RegExp;
+  try {
+    regex = new RegExp(pattern, flags);
+  } catch {
+    return null;
+  }
+  if (flags?.includes("u") || flags?.includes("v")) {
+    console.warn(
+      `[vinext] Rejecting regex pattern with the unsupported "u" or "v" flag: ${pattern}\n` +
+        `  Its ReDoS safety cannot be checked.`,
+    );
+    return null;
+  }
   if (!isSafeRegex(pattern, flags)) {
     console.warn(
       `[vinext] Rejecting potentially unsafe regex pattern (ReDoS risk): ${pattern}\n` +
@@ -330,11 +345,7 @@ export function safeRegExp(pattern: string, flags?: string): RegExp | null {
     );
     return null;
   }
-  try {
-    return new RegExp(pattern, flags);
-  } catch {
-    return null;
-  }
+  return regex;
 }
 
 /**

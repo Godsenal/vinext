@@ -14361,8 +14361,29 @@ describe("safeRegExp", () => {
 
   it("returns null for invalid regex syntax", async () => {
     const { safeRegExp } = await import("../packages/vinext/src/config/config-matchers.js");
-    const re = safeRegExp("(?P<name>");
-    expect(re).toBeNull();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect(safeRegExp("(?P<name>")).toBeNull();
+      expect(safeRegExp("a)b")).toBeNull();
+      // Not a ReDoS risk, so no warning that says it is one.
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("names the unsupported flag when it refuses a u or v pattern", async () => {
+    const { safeRegExp } = await import("../packages/vinext/src/config/config-matchers.js");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect(safeRegExp("^a$", "u")).toBeNull();
+      expect(safeRegExp("^a$", "v")).toBeNull();
+      expect(warn).toHaveBeenCalledTimes(2);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('unsupported "u" or "v" flag'));
+      expect(warn).not.toHaveBeenCalledWith(expect.stringContaining("ReDoS risk"));
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 
