@@ -3934,6 +3934,115 @@ describe("createAppRscHandler", () => {
     expect(sourceConfigHeader).toBe("applied");
   });
 
+  // Next.js stages next.config headers before middleware, whose own Set-Cookie
+  // replaces a config one.
+  it.each([
+    { middlewareCookie: false, cookies: ["config-cookie=1; Path=/"] },
+    { middlewareCookie: true, cookies: [] },
+  ])(
+    "drops a config Set-Cookie from Server Action source headers when middleware sets cookies: $middlewareCookie",
+    async ({ middlewareCookie, cookies }) => {
+      let sourceConfigCookies: string[] | undefined;
+      const handler = createHandler({
+        configHeaders: [
+          { source: "/about", headers: [{ key: "Set-Cookie", value: "config-cookie=1; Path=/" }] },
+        ],
+        handleServerActionRequest: async (options) => {
+          sourceConfigCookies = options.sourceConfigHeaders?.getSetCookie();
+          return new Response("action");
+        },
+        middlewareModule: {
+          async default() {
+            const headers = new Headers({ "x-middleware-next": "1" });
+            if (middlewareCookie) headers.append("Set-Cookie", "middleware-cookie=1; Path=/");
+            return new Response(null, { headers });
+          },
+        },
+      });
+
+      await handler(
+        new Request("https://example.test/docs/about", {
+          method: "POST",
+          headers: { "next-action": "action-id", "content-type": "text/plain" },
+        }),
+        null,
+      );
+
+      expect(sourceConfigCookies).toEqual(cookies);
+    },
+  );
+
+  // Next.js proxies a next.config external rewrite without the headers it
+  // staged, and sets the upstream's headers over a middleware rewrite's,
+  // keeping middleware's cookies ahead of the upstream's.
+  it.each([
+    { rewrite: "beforeFiles", configHeader: null, middlewareHeader: null },
+    { rewrite: "afterFiles", configHeader: null, middlewareHeader: null },
+    { rewrite: "fallback", configHeader: null, middlewareHeader: null },
+    { rewrite: "middleware", configHeader: "1", middlewareHeader: "1" },
+  ])(
+    "applies staged headers to a $rewrite external rewrite like Next.js",
+    async ({ rewrite, ...expected }) => {
+      const upstream = createServer((_req, res) => {
+        res.setHeader("Set-Cookie", ["upstream-cookie=1"]);
+        res.setHeader("Cache-Control", "public, max-age=60");
+        res.end("upstream");
+      });
+      await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+      const destination = `http://127.0.0.1:${(upstream.address() as AddressInfo).port}/proxy`;
+      const configRewrite = [{ source: "/outside", destination }];
+
+      try {
+        const handler = createHandler({
+          configHeaders: [
+            {
+              source: "/outside",
+              headers: [
+                { key: "Set-Cookie", value: "config-cookie=1" },
+                { key: "x-config-header", value: "1" },
+              ],
+            },
+          ],
+          configRewrites: {
+            beforeFiles: rewrite === "beforeFiles" ? configRewrite : [],
+            afterFiles: rewrite === "afterFiles" ? configRewrite : [],
+            fallback: rewrite === "fallback" ? configRewrite : [],
+          },
+          middlewareModule: {
+            default() {
+              const headers = new Headers({
+                "cache-control": "private, max-age=7",
+                "x-mw-response-header": "1",
+              });
+              headers.append("set-cookie", "middleware-cookie=1");
+              if (rewrite === "middleware") headers.set("x-middleware-rewrite", destination);
+              else headers.set("x-middleware-next", "1");
+              return new Response(null, { headers });
+            },
+          },
+          matchRoute: () => null,
+        });
+
+        const response = await handler(new Request("https://example.test/docs/outside"), null);
+
+        expect(await response.text()).toBe("upstream");
+        expect({
+          cacheControl: response.headers.get("cache-control"),
+          cookies: response.headers.getSetCookie(),
+          configHeader: response.headers.get("x-config-header"),
+          middlewareHeader: response.headers.get("x-mw-response-header"),
+        }).toEqual({
+          cacheControl: "public, max-age=60",
+          cookies: ["middleware-cookie=1", "upstream-cookie=1"],
+          ...expected,
+        });
+      } finally {
+        upstream.closeAllConnections();
+        await new Promise<void>((resolve) => upstream.close(() => resolve()));
+      }
+    },
+  );
+
   it.each(["afterFiles", "fallback"] as const)(
     "does not let out-of-basePath POST requests through %s rewrites reach App route handlers",
     async (phase) => {

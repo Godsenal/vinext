@@ -14802,7 +14802,7 @@ describe("matchHeaders", () => {
 
   // Regression for #1331: under `trailingSlash: true` the incoming pathname
   // arrives as `/about/`, but header source patterns are written without a
-  // trailing slash. `matchHeaders` must strip the slash before matching.
+  // trailing slash. Next.js appends an optional trailing slash to every source.
   it("matches when the request pathname has a trailing slash", async () => {
     const { matchHeaders } = await import("../packages/vinext/src/config/config-matchers.js");
     const rules: any[] = [
@@ -14828,6 +14828,141 @@ describe("matchHeaders", () => {
     const docsMatched = matchHeaders("/docs/", rules, makeCtx());
     expect(docsMatched).toEqual([{ key: "x-docs-header", value: "1" }]);
     expect(matchHeaders("/docs", rules, makeCtx())).toEqual([]);
+  });
+});
+
+// Next.js compiles header sources with path-to-regexp (delimiter "/", strict,
+// case-insensitive) plus modifyRouteRegex's optional trailing slash. Compare
+// against the real implementation so optional/repeated params and nested
+// regex groups match exactly the same pathnames.
+describe("matchHeaders source matching parity with Next.js", () => {
+  const ctx = {
+    headers: new Headers(),
+    cookies: {},
+    query: new URLSearchParams(),
+    host: "localhost",
+  };
+  const sources = [
+    "/:path*",
+    "/dashboard/:path*",
+    "/admin/:path+",
+    "/admin/:id?",
+    "/((?!api|_next/static).*)",
+    "/:path((?!api).*)",
+    "/a/:b/:c*",
+    "/(.*)",
+    "/api/(.*)",
+    "/blog/:slug",
+    "/about",
+    "/docs/",
+    "/user/:id(\\d+)",
+    "/:locale(en|fr)/blog",
+    "/file.txt",
+    "/:slug.md",
+    "/blog-:slug",
+    "/:auth-method",
+    "/x{-:y}?",
+    // Fixed-width repeat chunks are unambiguous; Next.js accepts these.
+    "/x{--:id(-)}+/end",
+    "/file.:ext+",
+  ];
+  const pathnames = [
+    "/",
+    "/dashboard",
+    "/dashboard/",
+    "/dashboard/settings",
+    "/dashboard/a/b",
+    "/admin",
+    "/admin/",
+    "/admin/x",
+    "/admin/x/y",
+    "/api",
+    "/api/x",
+    "/_next/static/x",
+    "/about",
+    "/about/",
+    "/ABOUT",
+    "/docs",
+    "/docs/",
+    "/blog/a",
+    "/blog/a/b",
+    "/user/12",
+    "/user/ab",
+    "/en/blog",
+    "/de/blog",
+    "/file.txt",
+    "/fileXtxt",
+    "/foo.md",
+    "/blog-x",
+    "/x-method",
+    "/a/b",
+    "/a/b/c/d",
+    "/x",
+    "/x-z",
+    "/x---/end",
+    "/x------/end",
+    "/x--/end",
+    "/file.js",
+    "/file.tar.gz",
+    "//",
+  ];
+
+  it.each(sources)("matches the same pathnames as Next.js for %s", async (source) => {
+    const { matchHeaders } = await import("../packages/vinext/src/config/config-matchers.js");
+    const { getPathMatch } = await import("next/dist/shared/lib/router/utils/path-match.js");
+    const { modifyRouteRegex } = await import("next/dist/lib/redirect-status.js");
+    // Same options as buildCustomRoute("header") in Next.js's filesystem.ts.
+    const nextMatch = getPathMatch(source, {
+      strict: true,
+      removeUnnamedParams: true,
+      regexModifier: (regex: string) => modifyRouteRegex(regex),
+    });
+    const rules = [{ source, headers: [{ key: "x-rule", value: "1" }] }];
+    for (const pathname of pathnames) {
+      expect
+        .soft(matchHeaders(pathname, rules, ctx).length > 0, pathname)
+        .toBe(nextMatch(pathname) !== false);
+    }
+  });
+
+  it("covers the base path of :param* and every path of a negative lookahead", async () => {
+    const { matchHeaders } = await import("../packages/vinext/src/config/config-matchers.js");
+    const rule = (source: string) => [{ source, headers: [{ key: "x-rule", value: "1" }] }];
+    expect(matchHeaders("/", rule("/:path*"), ctx)).toHaveLength(1);
+    expect(matchHeaders("/dashboard", rule("/dashboard/:path*"), ctx)).toHaveLength(1);
+    expect(matchHeaders("/admin/x/y", rule("/admin/:path+"), ctx)).toHaveLength(1);
+    expect(matchHeaders("/admin", rule("/admin/:path+"), ctx)).toHaveLength(0);
+    expect(matchHeaders("/admin", rule("/admin/:id?"), ctx)).toHaveLength(1);
+    expect(matchHeaders("/", rule("/((?!api|_next/static).*)"), ctx)).toHaveLength(1);
+    expect(matchHeaders("/api/x", rule("/((?!api|_next/static).*)"), ctx)).toHaveLength(0);
+  });
+
+  it.each([
+    // Nested repetition inside one parameter.
+    "/unsafe/:path((?:a+)+)",
+    // Repeats joined by `.` that the constraint can also match.
+    "/unsafe/x.:ext([^/]+)+/end",
+    // Neighbouring parameters with overlapping constraints.
+    "/unsafe/:a(a+):b(a+):c(a+):d(a+)",
+    // A constraint that can consume the `/` separator plus adjacent text.
+    "/unsafe/:x(a(?:/a)?)+/end",
+    // A negative lookahead that can never match does not shield the separator.
+    "/unsafe/x.:id((?:(?!(?=a)\\.)[^/])+?)+/end",
+    // Repeated constraints that can match one segment in more than one way.
+    "/unsafe/:x(a|A)+/end",
+    "/unsafe/:x(ab?|a)+/end",
+  ])("ignores the unsafe source %s", async (source) => {
+    const { matchHeaders } = await import("../packages/vinext/src/config/config-matchers.js");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const rules = [{ source, headers: [{ key: "x-rule", value: "1" }] }];
+      expect(matchHeaders(`/unsafe/x.${"a.".repeat(30)}a/nope`, rules, ctx)).toEqual([]);
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining("(ReDoS risk)"),
+      );
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 
@@ -31614,6 +31749,64 @@ describe("shim alias map .js variants", () => {
     expect(hook.handler.call({ environment: { name: "rsc" } }, "next/error.js")).toBe(
       reactServerShim,
     );
+  });
+
+  it("resolves the next/image alias target to the RSC entry only in the RSC environment", () => {
+    const plugins = vinext() as Plugin[];
+    const configPlugin = plugins.find((plugin) => plugin.name === "vinext:config");
+    if (!configPlugin?.resolveId || typeof configPlugin.resolveId === "function") {
+      throw new Error("vinext:config resolveId hook not found");
+    }
+
+    const hook = configPlugin.resolveId as {
+      filter: { id: RegExp };
+      handler: (this: { environment?: { name?: string } }, id: string) => string | undefined;
+    };
+    // The extensionless resolve.alias target for next/image.
+    const aliasTarget = toSlash(
+      path.resolve(import.meta.dirname, "../packages/vinext/src/shims/image"),
+    );
+
+    expect(hook.filter.id.test(aliasTarget)).toBe(true);
+    expect(hook.filter.id.test(aliasTarget.replaceAll("/", "\\"))).toBe(true);
+    expect(hook.handler.call({ environment: { name: "rsc" } }, aliasTarget)).toBe(
+      "\0virtual:vinext-next-image-rsc",
+    );
+    expect(hook.handler.call({ environment: { name: "ssr" } }, aliasTarget)).toBeUndefined();
+  });
+
+  it("resolves vinext/shims/image as next/image outside the RSC environment", async () => {
+    const plugins = vinext() as Plugin[];
+    const configPlugin = plugins.find((plugin) => plugin.name === "vinext:config");
+    if (!configPlugin?.resolveId || typeof configPlugin.resolveId === "function") {
+      throw new Error("vinext:config resolveId hook not found");
+    }
+
+    const hook = configPlugin.resolveId as {
+      handler: (
+        this: { environment?: { name?: string }; resolve?: (...args: unknown[]) => unknown },
+        id: string,
+        importer?: string,
+      ) => unknown;
+    };
+    const resolve = vi.fn(async () => ({ id: "/node_modules/.vite/deps/next_image.js" }));
+
+    // The RSC next/image entry's client reference shares next/image's module
+    // in the browser and SSR, including its dep optimizer pre-bundle.
+    await expect(
+      hook.handler.call(
+        { environment: { name: "client" }, resolve },
+        "vinext/shims/image",
+        "/x.js",
+      ),
+    ).resolves.toEqual({ id: "/node_modules/.vite/deps/next_image.js" });
+    expect(resolve).toHaveBeenCalledWith("next/image", "/x.js", { skipSelf: true });
+
+    resolve.mockClear();
+    expect(
+      hook.handler.call({ environment: { name: "rsc" }, resolve }, "vinext/shims/image", "/x.js"),
+    ).toBe(toSlash(path.resolve(import.meta.dirname, "../packages/vinext/src/shims/image.tsx")));
+    expect(resolve).not.toHaveBeenCalled();
   });
 
   it("keeps the App Router request handler source-resolved in source checkouts", () => {

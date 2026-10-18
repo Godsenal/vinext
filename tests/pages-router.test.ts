@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from "vite-plus/test";
 import { createBuilder, createServer, build, type ViteDevServer } from "vite-plus";
-import { request as httpRequest, type IncomingHttpHeaders } from "node:http";
+import { get as httpGet, request as httpRequest, type IncomingHttpHeaders } from "node:http";
 import path from "node:path";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
@@ -18,7 +18,9 @@ import {
 import {
   PAGES_FIXTURE_DIR,
   buildPagesFixture,
+  EXTERNAL_REWRITE_HEADER_CASES,
   expectRepeatedSlashRedirects,
+  requestExternalRewriteHeaders,
   startFixtureServer,
 } from "./helpers.js";
 import { registerFrameworkTracingIntegration } from "../packages/vinext/src/server/tracer.js";
@@ -1842,6 +1844,70 @@ export default class CustomDocument extends Document {
       _api_session: "trusted",
       theme: "dark",
     });
+  });
+
+  // Next.js API routes get a real Node ServerResponse, so res.appendHeader()
+  // (Node 18.3+) works and its cookies follow middleware's.
+  it("supports res.appendHeader in API routes after middleware cookies", async () => {
+    const res = await fetch(`${baseUrl}/api/append-header`);
+    expect(res.status).toBe(200);
+    expect(res.headers.getSetCookie()).toEqual(["mw=1; Path=/", "h=1; Path=/"]);
+    expect(res.headers.get("x-multi")).toBe("a, b");
+    await expect(res.json()).resolves.toEqual({
+      ok: true,
+      multi: ["a", "b"],
+      headersMulti: ["a", "b"],
+    });
+  });
+
+  it("rejects res.appendHeader after the API route wrote its headers", async () => {
+    const res = await fetch(`${baseUrl}/api/append-header-after-write`);
+    expect(res.status).toBe(200);
+    expect(res.headers.has("x-late")).toBe(false);
+    expect(await res.text()).toBe("start:ERR_HTTP_HEADERS_SENT");
+  });
+
+  // Next.js proxies a next.config external rewrite without the headers it
+  // staged, and sets the upstream's headers over a middleware rewrite's.
+  it.each(EXTERNAL_REWRITE_HEADER_CASES)(
+    "applies config and middleware headers to external rewrites like Next.js for $path",
+    async ({ path: requestPath, ...expected }) => {
+      expect(await requestExternalRewriteHeaders(baseUrl, requestPath)).toEqual({
+        status: 200,
+        cacheControl: "public, max-age=60",
+        upstreamHeader: "1",
+        ...expected,
+      });
+    },
+  );
+
+  // Next.js stages next.config headers before middleware, and middleware's
+  // own Set-Cookie replaces a config one.
+  it.each([
+    { path: "/config-cookie-page", cookies: ["config-cookie=1; Path=/"] },
+    { path: "/config-cookie-page?middleware-cookie", cookies: ["middleware-cookie=1; Path=/"] },
+    { path: "/config-cookie-page?empty-middleware-cookie", cookies: ["config-cookie=1; Path=/"] },
+    { path: "/config-cookie-redirect", cookies: ["config-cookie=1; Path=/"] },
+    { path: "/config-cookie-redirect?middleware-cookie", cookies: ["middleware-cookie=1; Path=/"] },
+    {
+      path: "/config-cookie-redirect?empty-middleware-cookie",
+      cookies: ["config-cookie=1; Path=/"],
+    },
+    {
+      path: "/config-cookie-response?empty-middleware-cookie",
+      cookies: ["config-cookie=1; Path=/"],
+    },
+    { path: "/config-cookie-response", cookies: ["config-cookie=1; Path=/"] },
+    { path: "/config-cookie-response?middleware-cookie", cookies: ["middleware-cookie=1; Path=/"] },
+  ])("orders next.config Set-Cookie like Next.js for $path", async ({ path, cookies }) => {
+    // Read raw headers: fetch() hides an empty Set-Cookie line.
+    const rawCookies = await new Promise<string[]>((resolve, reject) => {
+      httpGet(`${baseUrl}${path}`, (res) => {
+        res.resume();
+        resolve(res.headers["set-cookie"] ?? []);
+      }).on("error", reject);
+    });
+    expect(rawCookies).toEqual(cookies);
   });
 
   it("handles dynamic API routes with query params", async () => {
@@ -7481,6 +7547,71 @@ describe("Production server middleware (Pages Router)", () => {
     // it is never relativized to a protocol-relative `//`.
     expect(res.headers.get("location")).toBe("/");
   });
+
+  it("supports res.appendHeader in API routes after middleware cookies in production", async () => {
+    const res = await fetch(`${prodUrl}/api/append-header`);
+    expect(res.status).toBe(200);
+    expect(res.headers.getSetCookie()).toEqual(["mw=1; Path=/", "h=1; Path=/"]);
+    expect(res.headers.get("x-multi")).toBe("a, b");
+    await expect(res.json()).resolves.toEqual({
+      ok: true,
+      multi: ["a", "b"],
+      headersMulti: ["a", "b"],
+    });
+  });
+
+  it("rejects res.appendHeader after the API route wrote its headers in production", async () => {
+    const res = await fetch(`${prodUrl}/api/append-header-after-write`);
+    expect(res.status).toBe(200);
+    expect(res.headers.has("x-late")).toBe(false);
+    expect(await res.text()).toBe("start:ERR_HTTP_HEADERS_SENT");
+  });
+
+  // Next.js proxies a next.config external rewrite without the headers it
+  // staged, and sets the upstream's headers over a middleware rewrite's.
+  it.each(EXTERNAL_REWRITE_HEADER_CASES)(
+    "applies config and middleware headers to external rewrites like Next.js for $path in production",
+    async ({ path: requestPath, ...expected }) => {
+      expect(await requestExternalRewriteHeaders(prodUrl, requestPath)).toEqual({
+        status: 200,
+        cacheControl: "public, max-age=60",
+        upstreamHeader: "1",
+        ...expected,
+      });
+    },
+  );
+
+  // Next.js stages next.config headers before middleware, and middleware's
+  // own Set-Cookie replaces a config one.
+  it.each([
+    { path: "/config-cookie-page", cookies: ["config-cookie=1; Path=/"] },
+    { path: "/config-cookie-page?middleware-cookie", cookies: ["middleware-cookie=1; Path=/"] },
+    { path: "/config-cookie-page?empty-middleware-cookie", cookies: ["config-cookie=1; Path=/"] },
+    { path: "/config-cookie-redirect", cookies: ["config-cookie=1; Path=/"] },
+    { path: "/config-cookie-redirect?middleware-cookie", cookies: ["middleware-cookie=1; Path=/"] },
+    {
+      path: "/config-cookie-redirect?empty-middleware-cookie",
+      cookies: ["config-cookie=1; Path=/"],
+    },
+    {
+      path: "/config-cookie-response?empty-middleware-cookie",
+      cookies: ["config-cookie=1; Path=/"],
+    },
+    { path: "/config-cookie-response", cookies: ["config-cookie=1; Path=/"] },
+    { path: "/config-cookie-response?middleware-cookie", cookies: ["middleware-cookie=1; Path=/"] },
+  ])(
+    "orders next.config Set-Cookie like Next.js for $path in production",
+    async ({ path, cookies }) => {
+      // Read raw headers: fetch() hides an empty Set-Cookie line.
+      const rawCookies = await new Promise<string[]>((resolve, reject) => {
+        httpGet(`${prodUrl}${path}`, (res) => {
+          res.resume();
+          resolve(res.headers["set-cookie"] ?? []);
+        }).on("error", reject);
+      });
+      expect(rawCookies).toEqual(cookies);
+    },
+  );
 
   it("redirects /old-page to /about via middleware", async () => {
     const res = await fetch(`${prodUrl}/old-page`, { redirect: "manual" });
