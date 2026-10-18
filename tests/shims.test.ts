@@ -9661,18 +9661,19 @@ describe("middleware matcher patterns", () => {
     const { compileMiddlewareMatcherPattern } =
       await import("../packages/vinext/src/server/middleware-matcher-pattern.js");
 
-    for (const matcher of [
-      "/:path((?:a|aa)+)",
-      "/:path((?:aa|a)*)",
-      "/:path((?:[a]|aa){1,})",
-      "/:path((?:a|aa){2})",
-      "/:path((?:a|A)+)",
-      "/:path((?:é|É)+)",
+    // Unbounded repeats get the exact automaton verdict, bounded ones the
+    // structural check.
+    for (const [matcher, issue] of [
+      ["/:path((?:a|aa)+)", "exponentially ambiguous repetition"],
+      ["/:path((?:aa|a)*)", "exponentially ambiguous repetition"],
+      ["/:path((?:[a]|aa){1,})", "exponentially ambiguous repetition"],
+      ["/:path((?:a|aa){2})", "ambiguous alternatives under repetition"],
+      ["/:path((?:a|A)+)", "exponentially ambiguous repetition"],
+      ["/:path((?:é|É)+)", "exponentially ambiguous repetition"],
     ]) {
-      expect(compileMiddlewareMatcherPattern(matcher), matcher).toMatchObject({
+      expect(compileMiddlewareMatcherPattern(matcher!), matcher).toMatchObject({
         kind: "unsafe",
-        // Unbounded repeats get the exact automaton verdict.
-        error: expect.stringMatching(/ambiguous alternatives|exponentially ambiguous repetition/),
+        error: `parameter "path" contains ${issue}`,
       });
     }
 
@@ -10171,7 +10172,7 @@ describe("middleware matcher patterns", () => {
       expect(compileMiddlewareMatcherPattern(matcher), matcher).toMatchObject({
         kind: "unsafe",
         // Unbounded repeats get the exact automaton verdict.
-        error: expect.stringMatching(/ambiguous alternatives|exponentially ambiguous repetition/),
+        error: 'parameter "path" contains exponentially ambiguous repetition',
       });
     }
   });
@@ -10221,17 +10222,17 @@ describe("middleware matcher patterns", () => {
     // `(?i:...)` bodies and `\141` (an octal "a" with no group 141) were
     // opaque atoms, hiding the overlapping repeats inside them.
     // A folded `a` keyed as `A` looked disjoint from a case-sensitive `a`.
-    for (const matcher of [
-      "/:id(a(?i:a+)(?i:a+)(?i:a+))",
-      "/:id(\\141+\\141+\\141+)",
-      "/:a((?i:a+)):b((?-i:a+)):c((?i:a+))",
-      "/:a((?i:a+)):b(a+):c(a+)",
+    // Within one param the sequence check sees the chain; across params
+    // only the whole-source automaton does.
+    for (const [matcher, error] of [
+      ["/:id(a(?i:a+)(?i:a+)(?i:a+))", 'parameter "id" contains overlapping sequential repetition'],
+      ["/:id(\\141+\\141+\\141+)", 'parameter "id" contains overlapping sequential repetition'],
+      ["/:a((?i:a+)):b((?-i:a+)):c((?i:a+))", "source contains polynomially ambiguous repetition"],
+      ["/:a((?i:a+)):b(a+):c(a+)", "source contains polynomially ambiguous repetition"],
     ]) {
-      expect(compileMiddlewareMatcherPattern(matcher), matcher).toMatchObject({
+      expect(compileMiddlewareMatcherPattern(matcher!), matcher).toMatchObject({
         kind: "unsafe",
-        error: expect.stringMatching(
-          /overlapping sequential repetition|polynomially ambiguous repetition/,
-        ),
+        error,
       });
     }
     // A case-sensitive `(?!A)` lets "a" through even though `(?i:...)`
