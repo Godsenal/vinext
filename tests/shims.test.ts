@@ -14830,12 +14830,12 @@ describe("checkHasConditions", () => {
       // `^x|(?:a+){2}X$` leaves its second branch unanchored at the start, so
       // a near miss costs a quadratic attempt at each of its positions.
       const value = "x|(?:a+){2}X";
-      const ctx = makeCtx({ headers: { "x-auth": `${"a".repeat(2_000)}!` } });
+      const ctx = makeCtx({ headers: { "x-auth": `${"a".repeat(4_000)}!` } });
       const started = performance.now();
       expect(checkHasConditions([{ type: "header", key: "x-auth", value }], undefined, ctx)).toBe(
         false,
       );
-      expect(performance.now() - started).toBeLessThan(250);
+      expect(performance.now() - started).toBeLessThan(1_000);
       expect(warn).toHaveBeenCalledWith(expect.stringContaining("(ReDoS risk)"));
     } finally {
       warn.mockRestore();
@@ -14848,10 +14848,10 @@ describe("checkHasConditions", () => {
     try {
       // `(?m:^...)` starts a match after every line terminator.
       const value = "x|(?m:^(?:[\\s\\S]+){2}X)";
-      const ctx = makeCtx({ query: { q: "\n".repeat(2_000) } });
+      const ctx = makeCtx({ query: { q: "\n".repeat(4_000) } });
       const started = performance.now();
       expect(checkHasConditions([{ type: "query", key: "q", value }], undefined, ctx)).toBe(false);
-      expect(performance.now() - started).toBeLessThan(250);
+      expect(performance.now() - started).toBeLessThan(1_000);
       expect(warn).toHaveBeenCalledWith(expect.stringContaining("(ReDoS risk)"));
     } finally {
       warn.mockRestore();

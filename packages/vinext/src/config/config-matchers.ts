@@ -317,7 +317,8 @@ export function isSafeRegex(pattern: string, flags?: string): boolean {
 
 /**
  * Compile a regex pattern safely. Returns the compiled RegExp or null if the
- * pattern is invalid or vulnerable to ReDoS.
+ * pattern is invalid, vulnerable to ReDoS, or uses the `u` or `v` flag, whose
+ * syntax the ReDoS check does not model.
  *
  * Logs a warning when a pattern is rejected so developers can fix their config.
  */
