@@ -14264,8 +14264,12 @@ describe("isSafeRegex", () => {
     expect(isSafeRegex("^x|^(a+){2}X$")).toBe(true);
     expect(isSafeRegex("(?:^x|^y)(a+){2}X")).toBe(true);
     expect(isSafeRegex("(?=a)^(a+){2}X")).toBe(true);
-    // Under the `m` flag `^` also matches after every line terminator.
+    // Under the `m` flag `^` also matches after every line terminator, and
+    // so does a `^` inside a `(?m:...)` group.
     expect(isSafeRegex("^(a+){2}X", "m")).toBe(false);
+    expect(isSafeRegex("(?m:^(a+){2}X)")).toBe(false);
+    expect(isSafeRegex("^x|(?m:^(a+){2}X)$")).toBe(false);
+    expect(isSafeRegex("(?m:(?-m:^)(a+){2}X)")).toBe(true);
     // Linear attempts stay accepted without an anchor.
     expect(isSafeRegex("a+X")).toBe(true);
   });
@@ -14831,6 +14835,22 @@ describe("checkHasConditions", () => {
       expect(checkHasConditions([{ type: "header", key: "x-auth", value }], undefined, ctx)).toBe(
         false,
       );
+      expect(performance.now() - started).toBeLessThan(250);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("(ReDoS risk)"));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("has query with value: rejects a quadratic branch a scoped multiline ^ retries after every newline", async () => {
+    const { checkHasConditions } = await import("../packages/vinext/src/config/config-matchers.js");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      // `(?m:^...)` starts a match after every line terminator.
+      const value = "x|(?m:^(?:[\\s\\S]+){2}X)";
+      const ctx = makeCtx({ query: { q: "\n".repeat(2_000) } });
+      const started = performance.now();
+      expect(checkHasConditions([{ type: "query", key: "q", value }], undefined, ctx)).toBe(false);
       expect(performance.now() - started).toBeLessThan(250);
       expect(warn).toHaveBeenCalledWith(expect.stringContaining("(ReDoS risk)"));
     } finally {

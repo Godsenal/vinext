@@ -253,6 +253,9 @@ class RegexParser {
   private foldedCaseSensitive = false;
   // Whether `.` matches line terminators, which `(?s:...)` sets for its body.
   private dotAll = false;
+  // Whether `^` also matches after line terminators, which `(?m:...)` sets
+  // for its body. The `m` flag itself is the caller's to report.
+  private multiline = false;
   // Annex B reads `\N` as a backreference only up to the capture count.
   private readonly captures: number;
   // Each closed capturing group's body, by number and by name, so a
@@ -373,7 +376,7 @@ class RegexParser {
       return this.node({
         kind: "assertion",
         child: this.node({ kind: "sequence", children: [] }),
-        ...(character === "^" && { startAnchor: true }),
+        ...(character === "^" && !this.multiline && { startAnchor: true }),
       });
     }
     if (character === ".") {
@@ -449,6 +452,7 @@ class RegexParser {
     let capture = false;
     let lookbehind = false;
     const outerDotAll = this.dotAll;
+    const outerMultiline = this.multiline;
     const outerIgnoreCase = this.scopeIgnoreCase;
     const outerFolded = this.foldedCaseSensitive;
     const modifiers = /^\?([ims]*)(?:-([ims]+))?:/.exec(this.pattern.slice(this.index));
@@ -456,6 +460,8 @@ class RegexParser {
       this.index += modifiers[0].length;
       if (modifiers[1]!.includes("s")) this.dotAll = true;
       if (modifiers[2]?.includes("s")) this.dotAll = false;
+      if (modifiers[1]!.includes("m")) this.multiline = true;
+      if (modifiers[2]?.includes("m")) this.multiline = false;
       if (modifiers[1]!.includes("i")) this.scopeIgnoreCase = true;
       if (modifiers[2]?.includes("i")) this.scopeIgnoreCase = false;
     } else if (this.pattern[this.index] !== "?") {
@@ -509,6 +515,7 @@ class RegexParser {
     const folded = this.foldedCaseSensitive;
     this.foldedCaseSensitive = outerFolded || folded;
     this.dotAll = outerDotAll;
+    this.multiline = outerMultiline;
     this.scopeIgnoreCase = outerIgnoreCase;
     this.depth--;
     if (!assertion) return child;
