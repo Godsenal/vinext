@@ -9,7 +9,13 @@
  */
 type RegexNode =
   | { kind: "atom"; symbol: RegexSymbol | null; fixedWidth: boolean }
-  | { kind: "assertion"; child: RegexNode; negativeLookahead?: boolean; lookbehind?: boolean }
+  | {
+      kind: "assertion";
+      child: RegexNode;
+      negativeLookahead?: boolean;
+      lookbehind?: boolean;
+      startAnchor?: boolean;
+    }
   | { kind: "sequence"; children: RegexNode[] }
   | { kind: "alternation"; branches: RegexNode[] }
   | { kind: "repeat"; child: RegexNode; min: number; max: number };
@@ -338,7 +344,11 @@ class RegexParser {
     if (character === "[") return this.parseClass();
     if (character === "\\") return this.parseEscape();
     if (character === "^" || character === "$") {
-      return this.node({ kind: "assertion", child: this.node({ kind: "sequence", children: [] }) });
+      return this.node({
+        kind: "assertion",
+        child: this.node({ kind: "sequence", children: [] }),
+        ...(character === "^" && { startAnchor: true }),
+      });
     }
     if (character === ".") {
       const pattern = this.dotAll ? "[\\s\\S]" : ".";
@@ -1253,16 +1263,17 @@ function findSafetyIssue(node: RegexNode): RegexSafetyIssue | null {
       }
       return null;
     case "repeat": {
-      // An unbounded repeat is a loop of the position automaton, whose
-      // ambiguity analyzeNodeAmbiguity measures exactly. A bounded one is
-      // unrolled into copies, which can still multiply the paths through a
-      // near miss without forming a loop.
-      if (!Number.isFinite(node.max)) return findSafetyIssue(node.child);
+      // An unbounded repeat ends in a loop of the position automaton, whose
+      // ambiguity analyzeNodeAmbiguity measures exactly. A bounded one, and
+      // the copies an unbounded one requires before its loop, are unrolled,
+      // which can still multiply the paths through a near miss without
+      // forming a loop, as `(?:a?){30,}` does.
+      const copies = Number.isFinite(node.max) ? node.max : node.min - 1;
       const nestedRepetition = containsBoundedVariableRepetition(node.child);
-      if (node.max > 1 && nestedRepetition && exactWidth(node.child) === null) {
+      if (copies > 1 && nestedRepetition && exactWidth(node.child) === null) {
         return "nested repetition";
       }
-      if (node.max > 1 && containsConsumingAlternation(node.child)) {
+      if (copies > 1 && containsConsumingAlternation(node.child)) {
         const prefixFree = hasPrefixFreeFiniteLanguage(node.child);
         if (!prefixFree.safe) {
           return prefixFree.budgetExceeded
@@ -1302,6 +1313,14 @@ function findRepetitionChainDeep(node: RegexNode): RegexSafetyIssue | null {
 
 /** The flags of the RegExp a pattern compiles to that change what it matches. */
 type RegexAnalysisOptions = { ignoreCase?: boolean; dotAll?: boolean; namedGroups?: boolean };
+
+/**
+ * `search` when `pattern` is a whole RegExp run as a search, which the engine
+ * tries again at each start position its `^` does not rule out, multiplying
+ * the cost of one attempt by the text's length. `multiline` is its `m` flag,
+ * under which `^` also matches after each line terminator.
+ */
+type RegexSearchOptions = { search?: boolean; multiline?: boolean };
 
 /**
  * Only analyzeRegexSafety's check for chains of overlapping variable repeats
@@ -1358,7 +1377,7 @@ export function mayHaveNamedGroups(pattern: string): boolean {
  */
 export function analyzeRegexSafety(
   pattern: string,
-  options: RegexAnalysisOptions & { captures?: CaptureContext } = {},
+  options: RegexAnalysisOptions & RegexSearchOptions & { captures?: CaptureContext } = {},
 ): RegexSafetyIssue | null {
   if (pattern.length > MAX_PATTERN_LENGTH) return "analysis budget exceeded";
   const parser = new RegexParser(
@@ -1377,9 +1396,36 @@ export function analyzeRegexSafety(
   return (
     findSafetyIssue(node) ??
     (containsVariableRepetition(node) && !parser.referencesOuterGroup
-      ? analyzeNodeAmbiguity(node)
+      ? analyzeNodeAmbiguity(node, searchDegree(node, options))
       : null)
   );
+}
+
+/** The degree one attempt may reach, a degree lower when every start runs one. */
+function searchDegree(node: RegexNode, options: RegexSearchOptions): number {
+  const retried = options.search === true && (options.multiline === true || !startAnchored(node));
+  return retried ? MAX_POLYNOMIAL_DEGREE - 1 : MAX_POLYNOMIAL_DEGREE;
+}
+
+/** Whether every match of `node` starts with `^`, so it can only start at 0. */
+function startAnchored(node: RegexNode): boolean {
+  switch (node.kind) {
+    case "atom":
+      return false;
+    case "assertion":
+      return node.startAnchor === true;
+    case "sequence":
+      for (const child of node.children) {
+        if (startAnchored(child)) return true;
+        // A lookaround reads nothing, so the next part still starts the match.
+        if (child.kind !== "assertion") return false;
+      }
+      return false;
+    case "alternation":
+      return node.branches.length > 0 && node.branches.every(startAnchored);
+    case "repeat":
+      return node.min > 0 && startAnchored(node.child);
+  }
 }
 
 export function regexAtomsMayOverlap(left: string, right: string, ignoreCase = false): boolean {
@@ -2298,7 +2344,7 @@ function polynomialDegree(
  */
 export function analyzeRegexAmbiguity(
   pattern: string,
-  options: RegexAnalysisOptions = {},
+  options: RegexAnalysisOptions & RegexSearchOptions = {},
 ): RegexSafetyIssue | null {
   if (pattern.length > MAX_PATTERN_LENGTH) return "analysis budget exceeded";
   const parser = new RegexParser(
@@ -2309,7 +2355,7 @@ export function analyzeRegexAmbiguity(
   );
   const node = parser.parse();
   if (parser.exceededBudget || parser.index !== pattern.length) return "analysis budget exceeded";
-  return analyzeNodeAmbiguity(node);
+  return analyzeNodeAmbiguity(node, searchDegree(node, options));
 }
 
 /** `reverse` when the body is a lookbehind's, which runs right to left. */
@@ -2546,6 +2592,8 @@ function reversedNode(node: RegexNode): RegexNode {
  * body wherever it is reached. Each body is analyzed on its own. One that
  * may run at a growing number of positions must stay a degree lower, and so
  * must the rest of the pattern, as each path to a position runs it again.
+ * Below degree 0 any body with a variable repeat is rejected: it runs at a
+ * number of positions that already grows as fast as the budget allows.
  */
 function analyzeNodeAmbiguity(
   node: RegexNode,

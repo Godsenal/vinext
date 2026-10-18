@@ -309,6 +309,8 @@ export function isSafeRegex(pattern: string, flags?: string): boolean {
     analyzeRegexSafety(pattern, {
       ignoreCase: flags?.includes("i"),
       dotAll: flags?.includes("s"),
+      multiline: flags?.includes("m"),
+      search: true,
     }) === null
   );
 }

@@ -9954,7 +9954,7 @@ describe("middleware matcher patterns", () => {
     // A body outside any repeat runs once per match attempt, so it may be
     // quadratic like the rest of the pattern. Under a repeat it may run at
     // every position, so it must be linear.
-    expect(isSafeRegex("(?=[^/]+.*X)")).toBe(true);
+    expect(isSafeRegex("^(?=[^/]+.*X)")).toBe(true);
     expect(isSafeRegex("(?:(?=[^/]+.*X).)*")).toBe(false);
     expect(isSafeRegex("(?=.*a.*a.*b)")).toBe(false);
     expect(isSafeRegex("^(?=a*a*X)")).toBe(true);
@@ -14221,14 +14221,14 @@ describe("isSafeRegex", () => {
     expect(isSafeRegex("(a+){2,}")).toBe(false);
   });
 
-  it("rejects bounded outer repetition around an unbounded inner atom", async () => {
+  it("rejects bounded outer repetition around an unbounded inner atom past one pair", async () => {
     const { isSafeRegex } = await import("../packages/vinext/src/config/config-matchers.js");
     // Three or more copies chain their overlapping loops: cubic or worse.
     expect(isSafeRegex("(a+){3}")).toBe(false);
     expect(isSafeRegex("(a+){2,4}")).toBe(false);
     expect(isSafeRegex("(a+){10}")).toBe(false);
     // Two copies are one overlapping pair, quadratic like `(?:a+)(?:a+)`.
-    expect(isSafeRegex("(a+){2}")).toBe(true);
+    expect(isSafeRegex("^(a+){2}$")).toBe(true);
   });
 
   it("accepts quantifier on group without inner quantifier", async () => {
@@ -14237,7 +14237,36 @@ describe("isSafeRegex", () => {
     expect(isSafeRegex("(ab)+")).toBe(true);
     expect(isSafeRegex("(foo|bar)*")).toBe(true);
     expect(isSafeRegex("(?:(?!\\.)[^/])+?")).toBe(true);
-    expect(isSafeRegex("[^/]+.*")).toBe(true);
+    expect(isSafeRegex("^[^/]+.*$")).toBe(true);
+  });
+
+  it("counts a search's attempts at every start the pattern does not anchor", async () => {
+    const { isSafeRegex } = await import("../packages/vinext/src/config/config-matchers.js");
+    // Each attempt of `(a+){2}X` on a near miss is quadratic. Without `^` the
+    // engine makes one at every start position, which is cubic overall.
+    expect(isSafeRegex("^(a+){2}X")).toBe(true);
+    expect(isSafeRegex("(a+){2}X")).toBe(false);
+    // `^` binds tighter than `|`, so only the first branch is anchored.
+    expect(isSafeRegex("^x|(a+){2}X$")).toBe(false);
+    expect(isSafeRegex("^x|^(a+){2}X$")).toBe(true);
+    expect(isSafeRegex("(?:^x|^y)(a+){2}X")).toBe(true);
+    expect(isSafeRegex("(?=a)^(a+){2}X")).toBe(true);
+    // Under the `m` flag `^` also matches after every line terminator.
+    expect(isSafeRegex("^(a+){2}X", "m")).toBe(false);
+    // Linear attempts stay accepted without an anchor.
+    expect(isSafeRegex("a+X")).toBe(true);
+  });
+
+  it("checks the copies an unbounded repeat requires before its loop", async () => {
+    const { analyzeRegexSafety } = await import("../packages/vinext/src/utils/regex-safety.js");
+    // `(?:a?){30,}` reads as 29 copies of `a?` and then a loop. A near miss
+    // splits its run of `a`s among the copies in about 2^29 ways.
+    expect(analyzeRegexSafety("^(?:a?){30,}$")).toBe("nested repetition");
+    expect(analyzeRegexSafety("^(?:a?){30}$")).toBe("nested repetition");
+    expect(analyzeRegexSafety("^(?:a|b?){30,}$")).toBe("nested repetition");
+    expect(analyzeRegexSafety("^(?:a|ab){30,}$")).toBe("ambiguous alternatives under repetition");
+    expect(analyzeRegexSafety("^(?:ab|b){30,}$")).toBeNull();
+    expect(analyzeRegexSafety("^(?:a?){2,}$")).toBeNull();
   });
 
   it("treats escaped characters as safe", async () => {
@@ -14738,6 +14767,41 @@ describe("checkHasConditions", () => {
         ctx,
       ),
     ).toBe(false);
+  });
+
+  it("has header with value: anchors only the outer branches, like Next.js", async () => {
+    const { checkHasConditions } = await import("../packages/vinext/src/config/config-matchers.js");
+    // Next.js compiles `^${value}$`, so `x|y` matches a value that starts
+    // with x or ends with y.
+    const condition = [{ type: "header" as const, key: "x-auth", value: "x|y" }];
+    expect(checkHasConditions(condition, undefined, makeCtx({ headers: { "x-auth": "x1" } }))).toBe(
+      true,
+    );
+    expect(checkHasConditions(condition, undefined, makeCtx({ headers: { "x-auth": "1y" } }))).toBe(
+      true,
+    );
+    expect(checkHasConditions(condition, undefined, makeCtx({ headers: { "x-auth": "1x" } }))).toBe(
+      false,
+    );
+  });
+
+  it("has header with value: rejects a quadratic branch the engine retries at every start", async () => {
+    const { checkHasConditions } = await import("../packages/vinext/src/config/config-matchers.js");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      // `^x|(?:a+){2}X$` leaves its second branch unanchored at the start, so
+      // a near miss costs a quadratic attempt at each of its positions.
+      const value = "x|(?:a+){2}X";
+      const ctx = makeCtx({ headers: { "x-auth": `${"a".repeat(2_000)}!` } });
+      const started = performance.now();
+      expect(checkHasConditions([{ type: "header", key: "x-auth", value }], undefined, ctx)).toBe(
+        false,
+      );
+      expect(performance.now() - started).toBeLessThan(250);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("(ReDoS risk)"));
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   // -- cookie conditions --
