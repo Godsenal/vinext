@@ -263,13 +263,14 @@ class RegexParser {
 
   /**
    * An opaque symbol keeps its own scope's case sensitivity: folding `[^A]`
-   * would drop the `a` it reads in a case-sensitive scope.
+   * would drop the `a` it reads in a case-sensitive scope. Its key does too,
+   * so `(?i:[^A])` and `(?-i:[^A])` stay distinct words.
    */
   private opaqueSymbol(pattern: string): RegexSymbol {
     const folded = this.fold() && !this.scopeIgnoreCase;
     return {
       kind: "opaque",
-      key: `opaque:${pattern}`,
+      key: `opaque:${this.scopeIgnoreCase ? "i:" : ""}${pattern}`,
       pattern,
       ignoreCase: this.scopeIgnoreCase,
       ...(folded && { caseVariants: true }),
