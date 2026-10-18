@@ -174,7 +174,7 @@ export function clientConfigSourceCouldMatch(pathname: string, source: string): 
   if (literalPrefix === "/" && optionalPrefix === null) return true;
   if (!isAscii(literalPrefix)) return true;
   const path = asciiLowerCase(pathname);
-  const prefix = literalPrefix === "/" ? "" : asciiLowerCase(literalPrefix);
+  const prefix = asciiLowerCase(literalPrefix);
   if (!path.startsWith(prefix)) return false;
   if (after === null) return true;
   const rest = path.slice(prefix.length);

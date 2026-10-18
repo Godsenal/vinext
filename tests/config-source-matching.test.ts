@@ -318,6 +318,9 @@ describe("Pages client sync matcher agrees with the server matcher", () => {
     "/foo//",
     "/foo/bar",
     "/foo.json",
+    "/bar",
+    "/.json",
+    "/.x.json",
   ];
   const CLIENT_SOURCES = [
     ...SOURCES,
@@ -342,6 +345,10 @@ describe("Pages client sync matcher agrees with the server matcher", () => {
     "/foo.:ext*.json",
     "/foo/:id?/:slug?",
     "/foo/:id(b)?ar",
+    // At the root the `/` before `.` is plain text and the `.` the prefix.
+    "/.:id?bar",
+    "/.:id?",
+    "/.:id?.json",
   ];
 
   it("returns the server's params whenever it does not defer", () => {
@@ -395,6 +402,10 @@ describe("Pages client sync matcher agrees with the server matcher", () => {
       ["/foo.:ext*.json", "/foo.json"],
       // The `/` before `:slug?` is that param's own optional prefix.
       ["/foo/:id?/:slug?", "/foo"],
+      // At the root only the `.` is optional; the `/` before it stays.
+      ["/.:id?bar", "/bar"],
+      ["/.:id?", "/.json"],
+      ["/.:id?.json", "/.json"],
     ] as const) {
       expect(clientConfigSourceCouldMatch(pathname, source), source).toBe(true);
     }
