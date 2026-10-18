@@ -9982,6 +9982,17 @@ describe("middleware matcher patterns", () => {
     expect(compileMiddlewareMatcherPattern("/:id((?:(?!A)a+|(?i:a)+))+")).toMatchObject({
       kind: "unsafe",
     });
+    // Likewise a case-sensitive `[^A]` reads "a", so it overlaps the `a`
+    // that `(?i:x)` folds.
+    expect(compileMiddlewareMatcherPattern("/:id((?i:x)(?:[^A]|a)+b)")).toMatchObject({
+      kind: "unsafe",
+      error: expect.stringContaining("exponentially ambiguous repetition"),
+    });
+    const { analyzeRegexSafety } = await import("../packages/vinext/src/utils/regex-safety.js");
+    expect(analyzeRegexSafety("(?:(?-i:[^A])|a)+b", { ignoreCase: true })).not.toBeNull();
+    // In a case-insensitive scope `[^a]` rules out both cases of "a".
+    expect(analyzeRegexSafety("(?:[^a]|a)+b", { ignoreCase: true })).toBeNull();
+    expect(analyzeRegexSafety("(?:[^a]|a)+b")).toBeNull();
     for (const matcher of [
       "/:id((?i:ab)+)",
       // An escaped `\(` opens no scoped flag group, so `A+` keeps the
@@ -9989,6 +10000,8 @@ describe("middleware matcher patterns", () => {
       "/:a(a+):b(A+):c(a+\\(?i:)",
       "/:id((?-i:a)b)",
       "/:id((?s:.)x)",
+      // `/` has no other case, so `[^/]` and `/` stay apart.
+      "/:id((?i:x)(?:[^/]|/)+b)",
       "/:id(\\8+)",
       "/:id(\\101\\102)",
     ]) {

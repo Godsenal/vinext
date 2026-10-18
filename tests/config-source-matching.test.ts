@@ -1063,6 +1063,9 @@ describe("config sources do not backtrack catastrophically", () => {
         "/:a((?i:a+)):b((?-i:a+)):c((?i:a+))",
         // `(?-i:(?!A))` lets "a" through, so both alternatives read it.
         "/:id((?:(?-i:(?!A)a+)|a+))+",
+        // A case-sensitive `[^A]` reads the "a" a folded `a` reads too.
+        "/:id((?:(?-i:[^A])|a)+b)",
+        "/:id((?i:x)(?:(?-i:[^A])|a)+b)",
         // A guard that leaves both alternatives able to read "a".
         "/{ab:id((?:(?!ab)a|a))}+",
         // Adjacent params form one chain of overlapping repeats.
