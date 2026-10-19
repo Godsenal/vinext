@@ -534,7 +534,11 @@ function matchSingleCondition(
  * compared literally, like an exact string) and "unsafe" when the ReDoS check
  * rejected it.
  */
-function _cachedConditionRegex(value: string): CompiledRegExp {
+function _cachedConditionRegex(conditionValue: string): CompiledRegExp {
+  // Config loading does not check value types. Key every value by the text
+  // its pattern is built from, so the unsafe-value checks see the same
+  // pattern the matchers do.
+  const value = String(conditionValue);
   let re = _compiledConditionCache.get(value);
   if (re === undefined) {
     // Anchor the regex to match the full value, not a substring.
@@ -565,20 +569,19 @@ export function hasUnsafeConditionValue(
 const CONDITION_TYPES = new Set(["header", "cookie", "query", "host"]);
 
 /**
- * The non-empty string values in a has/missing list that matchSingleCondition
- * would compare. Config loading does not check condition shapes, so a
- * malformed list or entry, including one whose type the matcher ignores,
- * contributes nothing here rather than throwing in config load or build-time
- * callers.
+ * The patterns in a has/missing list that matchSingleCondition would compare.
+ * Config loading does not check condition shapes, so a malformed list or
+ * entry, including one whose type the matcher ignores, contributes nothing
+ * here rather than throwing in config load or build-time callers.
  */
 function conditionValues(conditions: unknown): string[] {
   if (!Array.isArray(conditions)) return [];
   const values: string[] = [];
   for (const condition of conditions as unknown[]) {
     const { type, value } = (condition ?? {}) as { type?: unknown; value?: unknown };
-    if (CONDITION_TYPES.has(type as string) && typeof value === "string" && value) {
-      values.push(value);
-    }
+    // The matchers treat any truthy value as a pattern, and
+    // _cachedConditionRegex keys it by its text.
+    if (CONDITION_TYPES.has(type as string) && value) values.push(value as string);
   }
   return values;
 }
