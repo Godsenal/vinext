@@ -45,7 +45,12 @@ import { VINEXT_PRERENDER_SECRET_HEADER } from "../server/headers.js";
 import type { VinextRouteRootConfig } from "../config/prerender.js";
 import { enterPrerenderPhase } from "./prerender-phase.js";
 import type { CdnCacheAdapterCapabilities } from "../cache/cache-adapters-virtual.js";
-import { isExternalUrl, matchHeaders, matchesRewriteSource } from "../config/config-matchers.js";
+import {
+  hasUnsafeConditions,
+  isExternalUrl,
+  matchHeaders,
+  matchesRewriteSource,
+} from "../config/config-matchers.js";
 import { pagesRouteHasPriorityOverAppRoute } from "../server/hybrid-route-priority.js";
 import { resolveAppPageDynamicConfig } from "../server/app-segment-config.js";
 import {
@@ -1144,8 +1149,11 @@ function annotateCacheabilityProbeSafety(
   unlisted: ReadonlySet<string>,
   isResponsePolicyHeader: (name: string) => boolean,
 ): Record<string, PrerenderRoutePattern> {
-  const cachePolicyRules = config.headers.filter((rule) =>
-    rule.headers.some((header) => isResponsePolicyHeader(header.key)),
+  // A rule with a has/missing value rejected as unsafe never applies.
+  const cachePolicyRules = config.headers.filter(
+    (rule) =>
+      !hasUnsafeConditions(rule) &&
+      rule.headers.some((header) => isResponsePolicyHeader(header.key)),
   );
   const matchingPolicyRules = new Map(
     Object.keys(routePatterns).map((pathname) => [

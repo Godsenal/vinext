@@ -571,7 +571,10 @@ export function hasUnsafeConditionValue(
  * source matches: production entries start with an empty cache, so checking
  * every rule first would analyze every value on a cold isolate's first request.
  */
-function hasUnsafeConditions(rule: { has?: HasCondition[]; missing?: HasCondition[] }): boolean {
+export function hasUnsafeConditions(rule: {
+  has?: HasCondition[];
+  missing?: HasCondition[];
+}): boolean {
   return hasUnsafeConditionValue(rule.has) || hasUnsafeConditionValue(rule.missing);
 }
 

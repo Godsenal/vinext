@@ -1,7 +1,11 @@
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 import { toClientRedirects } from "../packages/vinext/src/client/client-redirects.js";
+import { toClientRewrites } from "../packages/vinext/src/client/client-rewrites.js";
 import { matchClientRedirect } from "../packages/vinext/src/client/client-redirect-matcher.js";
-import type { RequestContext } from "../packages/vinext/src/config/config-matchers.js";
+import {
+  matchRedirect,
+  type RequestContext,
+} from "../packages/vinext/src/config/config-matchers.js";
 
 function browserContext(query = ""): RequestContext {
   return {
@@ -106,5 +110,40 @@ describe("client redirects", () => {
     expect(
       matchClientRedirect("/docs/intro", redirects, browserContext("from=link"), basePathState),
     ).toMatchObject({ destination: "/v2/intro", permanent: false });
+  });
+
+  it("leaves out rules with a condition value the server rejects as unsafe", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      // The server never applies such a rule, so it must not defer to the
+      // server or hide the later rule from the client either.
+      const unsafe = [{ type: "header" as const, key: "x-auth", value: "[ab]*a[ab]*a[ab]*" }];
+      const config = [
+        { source: "/docs/:slug", destination: "/beta/:slug", permanent: false, has: unsafe },
+        { source: "/docs/:slug", destination: "/v2/:slug", permanent: false },
+      ];
+      const redirects = toClientRedirects(config);
+      expect(redirects.map((redirect) => redirect.destination)).toEqual(["/v2/:slug"]);
+      const ctx = browserContext();
+      expect(matchClientRedirect("/docs/intro", redirects, ctx, basePathState)).toMatchObject({
+        destination: "/v2/intro",
+      });
+      expect(matchRedirect("/docs/intro", config, ctx, basePathState)).toMatchObject({
+        destination: "/v2/intro",
+      });
+
+      const rewrites = toClientRewrites({
+        beforeFiles: [{ source: "/a", destination: "/b", missing: unsafe }],
+        afterFiles: [
+          { source: "/a", destination: "/c", has: unsafe },
+          { source: "/a", destination: "/d" },
+        ],
+        fallback: [],
+      });
+      expect(rewrites.beforeFiles).toEqual([]);
+      expect(rewrites.afterFiles.map((rewrite) => rewrite.source)).toEqual(["/a"]);
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
