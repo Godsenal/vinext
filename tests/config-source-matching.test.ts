@@ -1,6 +1,7 @@
 import { createRequire } from "node:module";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  checkHasConditions,
   configSourceError,
   matchConfigPattern,
   matchHeaders,
@@ -854,6 +855,28 @@ describe("next.config.js source validation", () => {
       expect(skipped()).toHaveLength(1);
       expect(matchConfigPattern("/redos-at-load/aab", source)).toBeNull();
       expect(skipped()).toHaveLength(1);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("reports a condition value the ReDoS check rejects when the config loads", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const value = "[ab]*a[ab]*a[ab]*-at-load";
+    try {
+      await expect(
+        resolveNextConfig({
+          headers: () => [
+            { source: "/x", headers: [], missing: [{ type: "header", key: "x", value }] },
+          ],
+        } as never),
+      ).resolves.toBeDefined();
+      const rejected = () =>
+        warn.mock.calls.filter(([message]) => String(message).includes(`(ReDoS risk): ^${value}$`));
+      expect(rejected()).toHaveLength(1);
+      const ctx = { headers: new Headers(), cookies: {}, query: new URLSearchParams(), host: "" };
+      expect(checkHasConditions([{ type: "header", key: "x", value }], undefined, ctx)).toBe(false);
+      expect(rejected()).toHaveLength(1);
     } finally {
       warn.mockRestore();
     }

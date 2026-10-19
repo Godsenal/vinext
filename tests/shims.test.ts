@@ -15232,8 +15232,8 @@ describe("checkHasConditions", () => {
     }
   });
 
-  it("does not report the source match of a rule whose value is rejected as unsafe", async () => {
-    const { matchHeaders, matchRedirect, matchRewrite } =
+  it("does not report a source match for a rule whose value is rejected as unsafe", async () => {
+    const { matchHeaders, matchRedirect, matchRewrite, matchesRewriteSource } =
       await import("../packages/vinext/src/config/config-matchers.js");
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
@@ -15269,6 +15269,11 @@ describe("checkHasConditions", () => {
         ),
       ).toEqual([]);
       expect(onRuleSourceMatch).not.toHaveBeenCalled();
+      // The source-only preflight skips it too: middleware cannot make it apply.
+      expect(matchesRewriteSource("/y", { source: "/y", destination: "/z", missing: has })).toBe(
+        false,
+      );
+      expect(matchesRewriteSource("/y", { source: "/y", destination: "/z" })).toBe(true);
     } finally {
       warn.mockRestore();
     }
