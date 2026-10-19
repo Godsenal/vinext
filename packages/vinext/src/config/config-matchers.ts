@@ -723,8 +723,14 @@ export function prepareConfigRule(rule: {
   missing?: HasCondition[];
 }): void {
   compileConfigSource(rule.source);
-  for (const condition of [...(rule.has ?? []), ...(rule.missing ?? [])]) {
-    if (condition.value) _cachedConditionRegex(condition.value);
+  // Config loading does not check condition shapes, so a malformed list is
+  // left for request time rather than failing the load here.
+  for (const conditions of [rule.has, rule.missing]) {
+    if (!Array.isArray(conditions)) continue;
+    for (const condition of conditions as unknown[]) {
+      const value = (condition as { value?: unknown } | null)?.value;
+      if (typeof value === "string" && value) _cachedConditionRegex(value);
+    }
   }
 }
 
