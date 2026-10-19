@@ -1,5 +1,5 @@
 import type { NextRedirect, ResolvedNextConfig } from "../config/next-config.js";
-import { configSourceCanMatch } from "../config/config-matchers.js";
+import { configRuleCanMatch } from "../config/config-matchers.js";
 import {
   isClientHasCondition,
   toClientConditions,
@@ -53,11 +53,10 @@ function toClientRedirect(redirect: NextRedirect): ClientRedirect {
 
 /**
  * The redirects to publish to client builds. Client builds do not check
- * sources for ReDoS, so rules whose source the server skips, and which can
- * never match, are left out without changing which rule matches first.
+ * regexes for ReDoS, so rules the server never applies, for a skipped source
+ * or a rejected has/missing value, are left out without changing which
+ * rule matches first.
  */
 export function toClientRedirects(redirects: ResolvedNextConfig["redirects"]): ClientRedirect[] {
-  return redirects
-    .filter((redirect) => configSourceCanMatch(redirect.source))
-    .map(toClientRedirect);
+  return redirects.filter(configRuleCanMatch).map(toClientRedirect);
 }

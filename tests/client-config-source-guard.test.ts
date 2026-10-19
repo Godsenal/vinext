@@ -22,6 +22,7 @@ const CLIENT_GUARD_ID = "\0vinext:client-config-source-guard";
 const ANALYZER_MARKER = "exponentially ambiguous repetition";
 const UNSAFE_SOURCE = "/:id((?:a+)+)";
 const UNSAFE_VALUE = "(?:a+)+";
+const INVALID_VALUE = "(a[";
 const BASE_PATH_STATE = { basePath: "", hadBasePath: false };
 
 function resolveGuard(id: string, importer: string | undefined, consumer: string | undefined) {
@@ -79,20 +80,48 @@ describe("rules published to client builds", () => {
     expect(rewrites.fallback).toEqual([]);
   });
 
+  it("leaves out rules with a condition value the server rejects as unsafe", () => {
+    const redirects: NextRedirect[] = [
+      {
+        source: "/has",
+        destination: "/unsafe",
+        permanent: false,
+        has: [{ type: "query", key: "q", value: UNSAFE_VALUE }],
+      },
+      // A server-only condition still keeps the rule from ever applying.
+      {
+        source: "/missing",
+        destination: "/unsafe",
+        permanent: false,
+        missing: [{ type: "header", key: "x-skip", value: UNSAFE_VALUE }],
+      },
+      { source: "/old", destination: "/new", permanent: false },
+    ];
+    expect(toClientRedirects(redirects).map((redirect) => redirect.source)).toEqual(["/old"]);
+    const rewrites = toClientRewrites({
+      beforeFiles: [
+        { source: "/a", destination: "/b", has: [{ type: "host", key: "", value: UNSAFE_VALUE }] },
+      ],
+      afterFiles: [],
+      fallback: [],
+    });
+    expect(rewrites.beforeFiles).toEqual([]);
+  });
+
   it("publishes a condition value the server compares as text as a regex for that text", () => {
     const redirect: NextRedirect = {
       source: "/old",
       destination: "/new",
       permanent: false,
-      has: [{ type: "query", key: "q", value: UNSAFE_VALUE }],
+      has: [{ type: "query", key: "q", value: INVALID_VALUE }],
       missing: [{ type: "query", key: "m", value: "a|b" }],
     };
     const [published] = toClientRedirects([redirect]);
-    expect(published!.has).toEqual([{ type: "query", key: "q", value: "\\(\\?:a\\+\\)\\+" }]);
-    // A safe value is published unchanged.
+    expect(published!.has).toEqual([{ type: "query", key: "q", value: "\\(a\\[" }]);
+    // A valid value is published unchanged.
     expect(published!.missing).toEqual([{ type: "query", key: "m", value: "a|b" }]);
 
-    for (const query of [`?q=${encodeURIComponent(UNSAFE_VALUE)}`, "?q=aaa", "?q=a"]) {
+    for (const query of [`?q=${encodeURIComponent(INVALID_VALUE)}`, "?q=a", "?q=(a"]) {
       const ctx = requestContextFromRequest(new Request(`http://localhost/old${query}`));
       expect(
         matchClientRedirect("/old", [published!], ctx, BASE_PATH_STATE)?.destination ?? null,
@@ -100,19 +129,19 @@ describe("rules published to client builds", () => {
       ).toBe(matchRedirect("/old", [redirect], ctx, BASE_PATH_STATE)?.destination ?? null);
     }
     const literal = requestContextFromRequest(
-      new Request(`http://localhost/old?q=${encodeURIComponent(UNSAFE_VALUE)}`),
+      new Request(`http://localhost/old?q=${encodeURIComponent(INVALID_VALUE)}`),
     );
     expect(matchClientRedirect("/old", [published!], literal, BASE_PATH_STATE)).not.toBeNull();
 
     const [rewrite] = toClientRewrites({
       beforeFiles: [
-        { source: "/a", destination: "/b", has: [{ type: "host", key: "", value: UNSAFE_VALUE }] },
+        { source: "/a", destination: "/b", has: [{ type: "host", key: "", value: INVALID_VALUE }] },
       ],
       afterFiles: [],
       fallback: [],
     }).beforeFiles;
-    expect(rewrite!.has).toEqual([{ type: "host", key: "", value: "\\(\\?:a\\+\\)\\+" }]);
-    const ctx = requestContextFromRequest(new Request("http://aaa/a"));
+    expect(rewrite!.has).toEqual([{ type: "host", key: "", value: "\\(a\\[" }]);
+    const ctx = requestContextFromRequest(new Request("http://a/a"));
     expect(matchClientRewrite("/a", rewrite!, ctx, BASE_PATH_STATE)).toBeNull();
   });
 });
@@ -147,7 +176,8 @@ describe("client build", () => {
   async redirects() {
     return [
       { source: ${JSON.stringify(UNSAFE_SOURCE)}, destination: "/unsafe-redirect", permanent: false },
-      { source: "/old", destination: "/", permanent: false, has: [{ type: "query", key: "q", value: ${JSON.stringify(UNSAFE_VALUE)} }] },
+      { source: "/unsafe-value", destination: "/", permanent: false, has: [{ type: "query", key: "q", value: ${JSON.stringify(UNSAFE_VALUE)} }] },
+      { source: "/old", destination: "/", permanent: false, has: [{ type: "query", key: "q", value: ${JSON.stringify(INVALID_VALUE)} }] },
     ];
   },
   async rewrites() {
@@ -176,7 +206,8 @@ describe("client build", () => {
       expect(client).toContain("/about");
       expect(client).not.toContain(ANALYZER_MARKER);
       expect(client).not.toContain("/unsafe-redirect");
-      expect(client).toContain(JSON.stringify("\\(\\?:a\\+\\)\\+").slice(1, -1));
+      expect(client).not.toContain("/unsafe-value");
+      expect(client).toContain(JSON.stringify("\\(a\\[").slice(1, -1));
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }

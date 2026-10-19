@@ -1,5 +1,5 @@
 import type { HasCondition, NextRewrite, ResolvedNextConfig } from "../config/next-config.js";
-import { clientConditionValue, configSourceCanMatch } from "../config/config-matchers.js";
+import { clientConditionValue, configRuleCanMatch } from "../config/config-matchers.js";
 import { isExternalUrl } from "../utils/external-url.js";
 
 export type ClientHasCondition = Omit<HasCondition, "type"> & {
@@ -99,12 +99,11 @@ function toClientRewrite(rewrite: NextRewrite): ClientRewrite {
 
 /**
  * The rewrites to publish to client builds. Client builds do not check
- * sources for ReDoS, so rules whose source the server skips, and which can
- * never match, are left out.
+ * regexes for ReDoS, so rules the server never applies, for a skipped source
+ * or a rejected has/missing value, are left out.
  */
 export function toClientRewrites(rewrites: ResolvedNextConfig["rewrites"]): ClientRewrites {
-  const publish = (phase: NextRewrite[]) =>
-    phase.filter((rewrite) => configSourceCanMatch(rewrite.source)).map(toClientRewrite);
+  const publish = (phase: NextRewrite[]) => phase.filter(configRuleCanMatch).map(toClientRewrite);
   return {
     beforeFiles: publish(rewrites.beforeFiles),
     afterFiles: publish(rewrites.afterFiles),

@@ -687,21 +687,29 @@ export function prepareConfigSource(source: string): void {
 }
 
 /**
- * Whether `source` can match at all: false for one skipped as invalid or a
- * ReDoS risk. Client builds do not check sources, so only sources that can
- * match are published to them.
+ * Whether a rule can apply at all: false when its source is skipped as invalid
+ * or a ReDoS risk, or a has/missing value is rejected as unsafe. Client builds
+ * do not check regexes, so only rules that can apply are published to them.
  */
-export function configSourceCanMatch(source: string): boolean {
-  return compileConfigSource(source) !== null;
+export function configRuleCanMatch(rule: {
+  source: string;
+  has?: HasCondition[];
+  missing?: HasCondition[];
+}): boolean {
+  return (
+    compileConfigSource(rule.source) !== null &&
+    !hasUnsafeConditionValue(rule.has) &&
+    !hasUnsafeConditionValue(rule.missing)
+  );
 }
 
 /**
  * The has/missing condition value to publish to client builds, which do not
- * check regexes. A value the server cannot compile safely is compared as
- * plain text, so it is published as a regex for exactly that text.
+ * check regexes. A value that is not a valid regex is compared as plain text,
+ * so it is published as a regex for exactly that text.
  */
 export function clientConditionValue(value: string): string {
-  if (_cachedConditionRegex(value)) return value;
+  if (_cachedConditionRegex(value) !== "invalid") return value;
   return value.replace(/[$()*+.?[\\\]^{|}/-]/g, "\\$&");
 }
 
