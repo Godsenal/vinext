@@ -9,7 +9,7 @@ import fs from "node:fs";
 import os from "node:os";
 import vm from "node:vm";
 import { parseAst } from "vite";
-import { describe, it, expect } from "vite-plus/test";
+import { describe, it, expect, vi } from "vite-plus/test";
 import {
   generateBrowserEntry,
   toLinkPrefetchRoute,
@@ -2489,6 +2489,43 @@ describe("Pages Router entry template", () => {
       );
       expect(code).not.toContain(`const page_0 = await import(${JSON.stringify(pagePath)})`);
     } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not count rewrites the server never applies toward Pages readiness", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-has-rewrites-entry-"));
+    const pagesDir = path.join(tmpDir, "pages");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      fs.mkdirSync(pagesDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(pagesDir, "index.tsx"),
+        "export default function Page() { return null; }",
+      );
+      const matcher = createValidFileMatcher();
+      // A has value the ReDoS check rejects, so the rule never applies.
+      const unsafe = {
+        source: "/a",
+        destination: "/b",
+        has: [{ type: "query", key: "q", value: "[ab]*a[ab]*a[ab]*" }],
+      };
+      const entryFor = async (rewrites: unknown[]) =>
+        generateServerEntry(
+          pagesDir,
+          await resolveNextConfig({ rewrites: () => rewrites } as never),
+          matcher,
+          null,
+          null,
+        );
+
+      expect(await entryFor([unsafe])).toContain("hasRewrites: false,");
+      expect(await entryFor([unsafe, { source: "/c", destination: "/d" }])).toContain(
+        "hasRewrites: true,",
+      );
+    } finally {
+      warn.mockRestore();
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   });
