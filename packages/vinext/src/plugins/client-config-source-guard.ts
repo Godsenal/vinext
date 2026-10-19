@@ -2,30 +2,50 @@ import path from "pathslash";
 import type { Plugin } from "vite";
 
 const CLIENT_GUARD_ID = "\0vinext:client-config-source-guard";
-const GUARD_PATH = path.resolve(import.meta.dirname, "../config/config-source-guard");
+const CLIENT_RULES_QUERY = "?vinext-client-rules";
+const PACKAGE_DIR = path.resolve(import.meta.dirname, "..");
+const MATCHERS_PATH = path.join(PACKAGE_DIR, "config/config-matchers");
+const MATCHERS_FILE = MATCHERS_PATH + path.extname(import.meta.filename);
+const GUARD_PATH = path.join(PACKAGE_DIR, "config/config-source-guard");
+
+function withoutExtension(file: string): string {
+  return file.replace(/\.[cm]?[jt]s$/, "");
+}
 
 /**
  * Keeps the ReDoS analyzer out of client builds.
  *
  * config-matchers checks next.config.js sources and condition regexes
- * through config/config-source-guard. In the browser it only matches the
- * redirects and rewrites the server published, after leaving out rules with a
- * skipped source or a condition value rejected as unsafe, and escaping
+ * through config/config-source-guard. vinext's own client modules only match
+ * the redirects and rewrites the server published, after leaving out rules
+ * with a skipped source or a condition value rejected as unsafe, and escaping
  * condition values that are not valid regexes (toClientRedirects,
- * toClientRewrites), so the client build gets a guard that accepts every
- * pattern. Server environments keep the real one.
+ * toClientRewrites). So in client environments their config-matchers imports
+ * resolve to a separate copy whose guard accepts every pattern. Other
+ * importers, such as app code using the public `vinext/config/config-matchers`
+ * export, and server environments keep the real guard.
  */
 export const clientConfigSourceGuardPlugin: Plugin = {
   name: "vinext:client-config-source-guard",
   enforce: "pre",
 
   resolveId: {
-    filter: { id: /(?:^|\/)config-source-guard(?:\.[cm]?[jt]s)?$/ },
+    filter: { id: /(?:^|\/)config-(?:matchers|source-guard)(?:\.[cm]?[jt]s)?$/ },
     handler(id, importer) {
       if (this.environment?.config.consumer !== "client" || !importer) return;
-      const resolved = path.resolve(path.dirname(importer.split("?")[0]!), id);
-      if (resolved.replace(/\.[cm]?[jt]s$/, "") !== GUARD_PATH) return;
-      return CLIENT_GUARD_ID;
+      const [importerPath, query = ""] = importer.split("?");
+      if (!id.startsWith(".") && !path.isAbsolute(id)) return;
+      const resolved = withoutExtension(path.resolve(path.dirname(importerPath!), id));
+      if (resolved === MATCHERS_PATH && importerPath!.startsWith(`${PACKAGE_DIR}/`)) {
+        return MATCHERS_FILE + CLIENT_RULES_QUERY;
+      }
+      if (
+        resolved === GUARD_PATH &&
+        withoutExtension(importerPath!) === MATCHERS_PATH &&
+        `?${query}` === CLIENT_RULES_QUERY
+      ) {
+        return CLIENT_GUARD_ID;
+      }
     },
   },
 

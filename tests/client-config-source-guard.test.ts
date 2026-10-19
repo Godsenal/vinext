@@ -25,7 +25,7 @@ const UNSAFE_VALUE = "(?:a+)+";
 const INVALID_VALUE = "(a[";
 const BASE_PATH_STATE = { basePath: "", hadBasePath: false };
 
-function resolveGuard(id: string, importer: string | undefined, consumer: string | undefined) {
+function resolveClientId(id: string, importer: string | undefined, consumer: string | undefined) {
   const { handler } = clientConfigSourceGuardPlugin.resolveId as {
     handler: (id: string, importer: string | undefined) => string | undefined;
   };
@@ -37,22 +37,49 @@ function resolveGuard(id: string, importer: string | undefined, consumer: string
 }
 
 describe("vinext:client-config-source-guard", () => {
-  const importer = path.join(SRC, "config", "config-matchers.ts");
+  const matchers = path.join(SRC, "config", "config-matchers.ts");
+  const clientMatchers = `${matchers}?vinext-client-rules`;
+  const vinextClientModule = path.join(SRC, "client", "client-redirect-matcher.ts");
 
-  it("swaps the guard config-matchers imports only in client environments", () => {
-    expect(resolveGuard("./config-source-guard.js", importer, "client")).toBe(CLIENT_GUARD_ID);
-    expect(resolveGuard("./config-source-guard.js", `${importer}?v=1`, "client")).toBe(
+  it("gives vinext's own client modules a config-matchers copy without the analyzer", () => {
+    expect(resolveClientId("../config/config-matchers.js", vinextClientModule, "client")).toBe(
+      clientMatchers,
+    );
+    expect(resolveClientId("./config-source-guard.js", clientMatchers, "client")).toBe(
       CLIENT_GUARD_ID,
     );
-    expect(resolveGuard("./config-source-guard.js", importer, "server")).toBeUndefined();
-    expect(resolveGuard("./config-source-guard.js", importer, undefined)).toBeUndefined();
+    for (const consumer of ["server", undefined]) {
+      expect(
+        resolveClientId("../config/config-matchers.js", vinextClientModule, consumer),
+      ).toBeUndefined();
+      expect(resolveClientId("./config-source-guard.js", clientMatchers, consumer)).toBeUndefined();
+    }
+  });
+
+  it("keeps the real guard for other importers of config-matchers", () => {
+    // App code importing the public `vinext/config/config-matchers` export
+    // reaches the module without the query, so its safety APIs still check.
+    expect(resolveClientId("./config-source-guard.js", matchers, "client")).toBeUndefined();
+    expect(
+      resolveClientId("./config-source-guard.js", `${matchers}?v=1`, "client"),
+    ).toBeUndefined();
+    expect(
+      resolveClientId("../config/config-matchers.js", "/app/client/page.tsx", "client"),
+    ).toBeUndefined();
+    expect(
+      resolveClientId("vinext/config/config-matchers", "/app/page.tsx", "client"),
+    ).toBeUndefined();
   });
 
   it("leaves other modules with the same name alone", () => {
     expect(
-      resolveGuard("./config-source-guard.js", "/app/src/config-matchers.ts", "client"),
+      resolveClientId(
+        "./config-source-guard.js",
+        "/app/src/config-matchers.ts?vinext-client-rules",
+        "client",
+      ),
     ).toBeUndefined();
-    expect(resolveGuard("./config-source-guard.js", undefined, "client")).toBeUndefined();
+    expect(resolveClientId("./config-source-guard.js", undefined, "client")).toBeUndefined();
   });
 });
 
