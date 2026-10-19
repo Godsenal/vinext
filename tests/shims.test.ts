@@ -15232,6 +15232,48 @@ describe("checkHasConditions", () => {
     }
   });
 
+  it("does not report the source match of a rule whose value is rejected as unsafe", async () => {
+    const { matchHeaders, matchRedirect, matchRewrite } =
+      await import("../packages/vinext/src/config/config-matchers.js");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      // The callback marks the route dynamic, but such a rule never applies.
+      const has = [{ type: "header" as const, key: "x-auth", value: "[ab]*a[ab]*a[ab]*" }];
+      const ctx = makeCtx({ headers: { "x-auth": "aa" } });
+      const onRuleSourceMatch = vi.fn();
+      const redirects = [
+        // Locale-static and linear rules take different paths.
+        { source: "/:locale(en|fr)?/x", destination: "/new", permanent: false, has },
+        { source: "/y", destination: "/new", permanent: false, missing: has },
+      ];
+      for (const pathname of ["/x", "/en/x", "/y"]) {
+        expect(matchRedirect(pathname, redirects, ctx, undefined, onRuleSourceMatch)).toBeNull();
+      }
+      expect(
+        matchRewrite(
+          "/y",
+          [{ source: "/y", destination: "/z", has }],
+          ctx,
+          undefined,
+          "/y",
+          onRuleSourceMatch,
+        ),
+      ).toBeNull();
+      expect(
+        matchHeaders(
+          "/y",
+          [{ source: "/y", headers: [{ key: "x-a", value: "1" }], missing: has }],
+          ctx,
+          undefined,
+          onRuleSourceMatch,
+        ),
+      ).toEqual([]);
+      expect(onRuleSourceMatch).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it("compares a value that is not a valid regex literally", async () => {
     const { checkHasConditions } = await import("../packages/vinext/src/config/config-matchers.js");
     const condition = [{ type: "header" as const, key: "x-auth", value: "a[" }];

@@ -555,6 +555,15 @@ export function hasUnsafeConditionValue(conditions: HasCondition[] | undefined):
 }
 
 /**
+ * Whether a rule has a has/missing value rejected as unsafe, so it never
+ * applies. The matchers skip such a rule before reporting its source match,
+ * so it does not mark the route dynamic either.
+ */
+function hasUnsafeConditions(rule: { has?: HasCondition[]; missing?: HasCondition[] }): boolean {
+  return hasUnsafeConditionValue(rule.has) || hasUnsafeConditionValue(rule.missing);
+}
+
+/**
  * Check all has/missing conditions for a config rule.
  * Returns true if the rule should be applied (all has conditions pass, all missing conditions pass).
  *
@@ -879,6 +888,7 @@ export function matchRedirect(
         if (entry.originalIndex >= localeMatchIndex) continue; // already have a better match
         const redirect = entry.redirect;
         if (!shouldEvaluateRule(redirect.basePath, basePathState)) continue;
+        if (hasUnsafeConditions(redirect)) continue;
         onRuleSourceMatch?.(redirect);
         const conditionParams =
           redirect.has || redirect.missing
@@ -910,6 +920,7 @@ export function matchRedirect(
           if (!entry.altRe.test(localePart)) continue;
           const redirect = entry.redirect;
           if (!shouldEvaluateRule(redirect.basePath, basePathState)) continue;
+          if (hasUnsafeConditions(redirect)) continue;
           onRuleSourceMatch?.(redirect);
           const conditionParams =
             redirect.has || redirect.missing
@@ -938,6 +949,7 @@ export function matchRedirect(
       break;
     }
     if (!shouldEvaluateRule(redirect.basePath, basePathState)) continue;
+    if (hasUnsafeConditions(redirect)) continue;
     const params = matchConfigPattern(pathname, redirect.source);
     if (params) {
       onRuleSourceMatch?.(redirect);
@@ -975,6 +987,7 @@ export function matchRewrite(
 ): string | null {
   for (const rewrite of rewrites) {
     if (!shouldEvaluateRule(rewrite.basePath, basePathState)) continue;
+    if (hasUnsafeConditions(rewrite)) continue;
     const matched = execConfigSource(pathname, rewrite.source);
     if (matched) {
       onRuleSourceMatch?.(rewrite);
@@ -1427,6 +1440,7 @@ export function matchHeaders(
   const result: Array<{ key: string; value: string }> = [];
   for (const rule of headers) {
     if (!shouldEvaluateRule(rule.basePath, basePathState)) continue;
+    if (hasUnsafeConditions(rule)) continue;
     const compiledSource = compileConfigSource(rule.source);
     const sourceMatch = compiledSource?.re.exec(pathname);
     if (compiledSource && sourceMatch) {
