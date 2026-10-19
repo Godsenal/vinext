@@ -1,4 +1,5 @@
 import type { HasCondition, NextRewrite, ResolvedNextConfig } from "../config/next-config.js";
+import { clientConditionValue, configSourceCanMatch } from "../config/config-matchers.js";
 import { isExternalUrl } from "../utils/external-url.js";
 
 export type ClientHasCondition = Omit<HasCondition, "type"> & {
@@ -50,13 +51,28 @@ export function isClientHasCondition(condition: HasCondition): condition is Clie
   }
 }
 
+/**
+ * Client-safe conditions, with values the server compares as plain text
+ * published as regexes for that text: client builds do not check regexes.
+ */
+export function toClientConditions(
+  conditions: HasCondition[] | undefined,
+): ClientHasCondition[] | undefined {
+  const client = conditions
+    ?.filter(isClientHasCondition)
+    .map((condition) =>
+      condition.value ? { ...condition, value: clientConditionValue(condition.value) } : condition,
+    );
+  return client?.length ? client : undefined;
+}
+
 function toClientRewrite(rewrite: NextRewrite): ClientRewrite {
-  const clientHas = rewrite.has?.filter(isClientHasCondition);
+  const clientHas = toClientConditions(rewrite.has);
   const hasServerOnlyCondition =
     rewrite.has?.some((condition) => !isClientHasCondition(condition)) ?? false;
   const common = {
     source: rewrite.source,
-    has: clientHas?.length ? clientHas : undefined,
+    has: clientHas,
     locale: rewrite.locale,
     basePath: rewrite.basePath,
   };
@@ -81,10 +97,17 @@ function toClientRewrite(rewrite: NextRewrite): ClientRewrite {
   };
 }
 
+/**
+ * The rewrites to publish to client builds. Client builds do not check
+ * sources for ReDoS, so rules whose source the server skips, and which can
+ * never match, are left out.
+ */
 export function toClientRewrites(rewrites: ResolvedNextConfig["rewrites"]): ClientRewrites {
+  const publish = (phase: NextRewrite[]) =>
+    phase.filter((rewrite) => configSourceCanMatch(rewrite.source)).map(toClientRewrite);
   return {
-    beforeFiles: rewrites.beforeFiles.map(toClientRewrite),
-    afterFiles: rewrites.afterFiles.map(toClientRewrite),
-    fallback: rewrites.fallback.map(toClientRewrite),
+    beforeFiles: publish(rewrites.beforeFiles),
+    afterFiles: publish(rewrites.afterFiles),
+    fallback: publish(rewrites.fallback),
   };
 }

@@ -237,6 +237,7 @@ import {
 } from "./build/public-dir-conflict.js";
 import { renderVinextBuiltUrl } from "./utils/built-asset-url.js";
 import { asyncHooksStubPlugin } from "./plugins/async-hooks-stub.js";
+import { clientConfigSourceGuardPlugin } from "./plugins/client-config-source-guard.js";
 import { clientReferenceDedupPlugin } from "./plugins/client-reference-dedup.js";
 import { dataUrlCssPlugin } from "./plugins/css-data-url.js";
 import { createCssModuleImportCompatibilityPlugin } from "./plugins/css-module-imports.js";
@@ -5657,6 +5658,8 @@ export const loadServerActionClient = ${
     },
     // Stub node:async_hooks in client builds — see src/plugins/async-hooks-stub.ts
     asyncHooksStubPlugin,
+    // Keep the ReDoS analyzer out of client builds — see src/plugins/client-config-source-guard.ts
+    clientConfigSourceGuardPlugin,
     createInstrumentationClientTransformPlugin(
       () => instrumentationClientPath,
       () => nextConfig.instrumentationClientRouteManifest,

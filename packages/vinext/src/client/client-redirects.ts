@@ -1,5 +1,10 @@
 import type { NextRedirect, ResolvedNextConfig } from "../config/next-config.js";
-import { isClientHasCondition, type ClientHasCondition } from "./client-rewrites.js";
+import { configSourceCanMatch } from "../config/config-matchers.js";
+import {
+  isClientHasCondition,
+  toClientConditions,
+  type ClientHasCondition,
+} from "./client-rewrites.js";
 
 type ClientRedirectFields = Pick<NextRedirect, "basePath" | "locale" | "source"> & {
   has?: ClientHasCondition[];
@@ -31,12 +36,10 @@ function toClientRedirect(redirect: NextRedirect): ClientRedirect {
   const hasServerOnlyCondition =
     (redirect.has?.some((condition) => !isClientHasCondition(condition)) ?? false) ||
     (redirect.missing?.some((condition) => !isClientHasCondition(condition)) ?? false);
-  const clientHas = redirect.has?.filter(isClientHasCondition);
-  const clientMissing = redirect.missing?.filter(isClientHasCondition);
   const common = {
     source: redirect.source,
-    has: clientHas?.length ? clientHas : undefined,
-    missing: clientMissing?.length ? clientMissing : undefined,
+    has: toClientConditions(redirect.has),
+    missing: toClientConditions(redirect.missing),
     locale: redirect.locale,
     basePath: redirect.basePath,
   };
@@ -48,6 +51,13 @@ function toClientRedirect(redirect: NextRedirect): ClientRedirect {
   return { ...common, destination: redirect.destination, permanent: redirect.permanent };
 }
 
+/**
+ * The redirects to publish to client builds. Client builds do not check
+ * sources for ReDoS, so rules whose source the server skips, and which can
+ * never match, are left out without changing which rule matches first.
+ */
 export function toClientRedirects(redirects: ResolvedNextConfig["redirects"]): ClientRedirect[] {
-  return redirects.map(toClientRedirect);
+  return redirects
+    .filter((redirect) => configSourceCanMatch(redirect.source))
+    .map(toClientRedirect);
 }

@@ -27,7 +27,8 @@ import {
   buildRequestHeadersFromMiddlewareResponse,
   getUnconsumedMiddlewareRequestHeaders,
 } from "../utils/middleware-request-headers.js";
-import { analyzeRegexSafety, canonicalizeIgnoreCase } from "../utils/regex-safety.js";
+import { canonicalizeIgnoreCase } from "../utils/regex-safety.js";
+import { isSafeConfigRegex, unsafeConfigSourceReason } from "./config-source-guard.js";
 import {
   normalizePathTokens,
   parsePathPattern,
@@ -35,7 +36,6 @@ import {
   type PathKey,
   type PathToken,
 } from "../utils/path-to-regexp.js";
-import { unsafePathTokensReason } from "../utils/path-token-safety.js";
 import { requestContextFromRequest, type RequestContext } from "./request-context.js";
 import { isExternalUrl } from "../utils/external-url.js";
 import { attachRequestCfMetadata } from "../server/request-pipeline.js";
@@ -308,18 +308,7 @@ function stripHopByHopRequestHeaders(headers: Headers): void {
  * or uses the `u` or `v` flag.
  */
 export function isSafeRegex(pattern: string, flags?: string): boolean {
-  // The analyzer does not model Unicode-mode syntax such as `\p{…}` or `v`
-  // class sets, so it cannot vouch for those patterns.
-  if (flags?.includes("u") || flags?.includes("v")) return false;
-  return (
-    analyzeRegexSafety(pattern, {
-      ignoreCase: flags?.includes("i"),
-      dotAll: flags?.includes("s"),
-      multiline: flags?.includes("m"),
-      // A sticky RegExp makes one attempt, at its lastIndex.
-      search: !flags?.includes("y"),
-    }) === null
-  );
+  return isSafeConfigRegex(pattern, flags);
 }
 
 /**
@@ -596,7 +585,7 @@ function compileConfigSourceUncached(
   const parsed = parseConfigSource(source);
   if ("kind" in parsed) return parsed;
   const { tokens, re } = parsed;
-  const unsafeReason = unsafePathTokensReason(tokens, { ignoreCase: true });
+  const unsafeReason = unsafeConfigSourceReason(tokens);
   if (unsafeReason) return { kind: "unsafe", error: unsafeReason };
   // tokensToRegexp only captures tokens with a pattern.
   const keys = tokens.filter(
@@ -663,6 +652,25 @@ export function configSourceError(source: unknown): string | null {
  */
 export function prepareConfigSource(source: string): void {
   compileConfigSource(source);
+}
+
+/**
+ * Whether `source` can match at all: false for one skipped as invalid or a
+ * ReDoS risk. Client builds do not check sources, so only sources that can
+ * match are published to them.
+ */
+export function configSourceCanMatch(source: string): boolean {
+  return compileConfigSource(source) !== null;
+}
+
+/**
+ * The has/missing condition value to publish to client builds, which do not
+ * check regexes. A value the server cannot compile safely is compared as
+ * plain text, so it is published as a regex for exactly that text.
+ */
+export function clientConditionValue(value: string): string {
+  if (_cachedConditionRegex(value)) return value;
+  return value.replace(/[$()*+.?[\\\]^{|}/-]/g, "\\$&");
 }
 
 function compileConfigSource(source: string): CompiledConfigSource | null {
