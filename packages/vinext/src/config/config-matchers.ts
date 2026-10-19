@@ -1029,7 +1029,8 @@ function serializeRewriteDestinationTemplate(destination: string): string {
  * Dev uses this only as a conservative preflight before middleware runs. The
  * conditions may become true after middleware overrides request headers, so
  * evaluating them against the original request would incorrectly skip the
- * Pages request pipeline for file-looking paths.
+ * Pages request pipeline for file-looking paths. A rule with a value rejected
+ * as unsafe never applies, whatever middleware does, so it never matches.
  */
 export function matchesRewriteSource(
   pathname: string,
@@ -1038,6 +1039,7 @@ export function matchesRewriteSource(
 ): boolean {
   return (
     shouldEvaluateRule(rewrite.basePath, basePathState) &&
+    !hasUnsafeConditions(rewrite) &&
     matchConfigPattern(pathname, rewrite.source) !== null
   );
 }
