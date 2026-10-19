@@ -10247,6 +10247,8 @@ describe("middleware matcher patterns", () => {
   });
 
   it("releases each automaton before analyzing nested lookaround bodies", async () => {
+    // Runs regex-safety.ts on its own under a small heap. That relies on the
+    // module having no imports, so its transpiled output loads by itself.
     const { transformWithOxc } = await import("vite-plus");
     const file = fileURLToPath(
       new URL("../packages/vinext/src/utils/regex-safety.ts", import.meta.url),
@@ -15274,6 +15276,31 @@ describe("checkHasConditions", () => {
         false,
       );
       expect(matchesRewriteSource("/y", { source: "/y", destination: "/z" })).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("analyzes a condition value only once its rule's source matches", async () => {
+    const { matchHeaders, matchRedirect, matchRewrite, matchesRewriteSource } =
+      await import("../packages/vinext/src/config/config-matchers.js");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      // Production entries start with an empty cache, so analyzing every
+      // rule's values up front would cost a cold isolate's first request.
+      const has = [{ type: "header" as const, key: "x-auth", value: "[ab]*a[ab]*a[ab]*-cold" }];
+      const ctx = makeCtx();
+      const redirect = { source: "/private", destination: "/new", permanent: false, has };
+      const rewrite = { source: "/private", destination: "/z", has };
+      const header = { source: "/private", headers: [{ key: "x-a", value: "1" }], has };
+      expect(matchRedirect("/public", [redirect], ctx)).toBeNull();
+      expect(matchRewrite("/public", [rewrite], ctx)).toBeNull();
+      expect(matchHeaders("/public", [header], ctx)).toEqual([]);
+      expect(matchesRewriteSource("/public", rewrite)).toBe(false);
+      expect(warn).not.toHaveBeenCalled();
+
+      expect(matchRedirect("/private", [redirect], ctx)).toBeNull();
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("(ReDoS risk)"));
     } finally {
       warn.mockRestore();
     }
