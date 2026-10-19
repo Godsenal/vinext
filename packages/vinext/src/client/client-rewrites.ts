@@ -95,3 +95,16 @@ export function toClientRewrites(rewrites: ResolvedNextConfig["rewrites"]): Clie
     fallback: publish(rewrites.fallback),
   };
 }
+
+/**
+ * Whether any rewrite is published to client builds. Pages Router readiness
+ * waits for rewrite resolution only then.
+ */
+export function hasClientRewrites(rewrites: ResolvedNextConfig["rewrites"]): boolean {
+  const published = toClientRewrites(rewrites);
+  return (
+    published.beforeFiles.length > 0 ||
+    published.afterFiles.length > 0 ||
+    published.fallback.length > 0
+  );
+}

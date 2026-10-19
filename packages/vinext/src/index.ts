@@ -210,6 +210,7 @@ import {
   validateHybridRouteConflicts,
 } from "./server/hybrid-route-priority.js";
 import { matchesRewriteSource, proxyExternalRequest } from "./config/config-matchers.js";
+import { hasClientRewrites } from "./client/client-rewrites.js";
 import { encodeMiddlewareRequestHeaders } from "./utils/middleware-request-headers.js";
 import {
   detectPackageManager,
@@ -7345,9 +7346,7 @@ export const loadServerActionClient = ${
                       nextConfig?.basePath ?? "",
                       nextConfig?.trailingSlash ?? false,
                       middlewarePath !== null,
-                      (nextConfig?.rewrites.beforeFiles.length ?? 0) > 0 ||
-                        (nextConfig?.rewrites.afterFiles.length ?? 0) > 0 ||
-                        (nextConfig?.rewrites.fallback.length ?? 0) > 0,
+                      nextConfig ? hasClientRewrites(nextConfig.rewrites) : false,
                       nextConfig?.clientTraceMetadata,
                       nextConfig?.htmlLimitedBots,
                       nextConfig?.reactStrictMode === true,

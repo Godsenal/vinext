@@ -12,6 +12,7 @@ import { resolveEntryPath } from "./runtime-entry-module.js";
 import { pagesRouter, apiRouter, type Route } from "../routing/pages-router.js";
 import { createValidFileMatcher } from "../routing/file-matcher.js";
 import { type ResolvedNextConfig } from "../config/next-config.js";
+import { hasClientRewrites } from "../client/client-rewrites.js";
 import { isProxyFile } from "../server/middleware.js";
 import { findFileWithExts } from "./pages-entry-helpers.js";
 import { hasExportedName } from "../build/report.js";
@@ -669,10 +670,7 @@ function __createRenderPage() {
   buildId,
   hasMiddleware,
   appAssetPath: _appAssetPath,
-  hasRewrites:
-    vinextConfig.rewrites.beforeFiles.length > 0 ||
-    vinextConfig.rewrites.afterFiles.length > 0 ||
-    vinextConfig.rewrites.fallback.length > 0,
+  hasRewrites: ${JSON.stringify(hasClientRewrites(nextConfig.rewrites))},
 
   // next/*-derived closures
   setSSRContext: typeof setSSRContext === "function" ? setSSRContext : null,
