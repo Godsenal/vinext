@@ -885,6 +885,17 @@ describe("next.config.js source validation", () => {
     }
   });
 
+  it("loads a config whose conditions are malformed", async () => {
+    // Condition shapes are not validated at load, so checking condition
+    // values there must not make a malformed list fail it.
+    for (const has of [{}, "x", [null], [{ type: "header", key: "x", value: 1 }]]) {
+      await expect(
+        resolveNextConfig({ headers: () => [{ source: "/x", headers: [], has }] } as never),
+        JSON.stringify(has),
+      ).resolves.toBeDefined();
+    }
+  });
+
   it("reports a missing route entry instead of crashing on it", async () => {
     for (const type of ["redirect", "rewrite", "header"]) {
       await expect(
