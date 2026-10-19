@@ -8164,6 +8164,196 @@ describe('"use cache" runtime', () => {
     ).rejects.toThrow(/`searchParams` cannot be called inside "use cache"/);
   });
 
+  // Next.js: `makeErroringSearchParamsForUseCache` throws when `then` is read,
+  // so React fails while it checks the value, before it counts pending work.
+  it("fails a read of searchParams.then inside the cache scope", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { makeThenableParams } = await import("../packages/vinext/src/shims/thenable-params.js");
+    setCacheHandler(new MemoryCacheHandler());
+
+    const cached = registerCachedFunction(
+      async (props: {
+        params: Promise<{ slug: string }>;
+        searchParams?: Promise<Record<string, unknown>>;
+      }) => typeof Reflect.get(props.searchParams!, "then"),
+      "/fixture/app/cached/then-read/page.tsx:default",
+      "",
+    );
+
+    await expect(
+      cached(
+        asPageInvocation({
+          params: makeThenableParams({ slug: "same" }),
+          searchParams: makeThenableParams({ q: "first" }),
+        }),
+      ),
+    ).rejects.toThrow(/`searchParams` cannot be called inside "use cache"/);
+  });
+
+  // Next.js: `makeErroringSearchParamsForUseCache` throws on every access, not
+  // only while the cache function runs.
+  it("keeps the page searchParams erroring after they escape the cache scope", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { makeThenableParams } = await import("../packages/vinext/src/shims/thenable-params.js");
+    setCacheHandler(new MemoryCacheHandler());
+
+    let escaped: Promise<Record<string, unknown>> | undefined;
+    const cached = registerCachedFunction(
+      async (props: {
+        params: Promise<{ slug: string }>;
+        searchParams?: Promise<Record<string, unknown>>;
+      }) => {
+        escaped = props.searchParams;
+        return "done";
+      },
+      "/fixture/app/cached/escape/page.tsx:default",
+      "",
+    );
+
+    const { consumeInvalidDynamicUsageError } =
+      await import("../packages/vinext/src/shims/headers.js");
+    const { createRequestContext, runWithRequestContext } =
+      await import("../packages/vinext/src/shims/unified-request-context.js");
+    const requestContext = createRequestContext({
+      headersContext: { headers: new Headers(), cookies: new Map() },
+    });
+    let caught: unknown;
+    await runWithRequestContext(requestContext, async () => {
+      await expect(
+        cached(
+          asPageInvocation({
+            params: makeThenableParams({ slug: "same" }),
+            searchParams: makeThenableParams({ q: "first" }),
+          }),
+        ),
+      ).resolves.toBe("done");
+    });
+    // Read later, outside that request's scope.
+    try {
+      Reflect.get(escaped!, "then");
+    } catch (error) {
+      caught = error;
+    }
+    expect(String(caught)).toMatch(/`searchParams` cannot be called inside "use cache"/);
+    // The caught access is still recorded on the request the value was made
+    // for, like Next.js's `workStore.invalidDynamicUsageError`.
+    await runWithRequestContext(requestContext, async () => {
+      expect(consumeInvalidDynamicUsageError()).toBe(caught);
+    });
+    expect(() => Reflect.get(escaped!, "q")).toThrow(
+      /`searchParams` cannot be called inside "use cache"/,
+    );
+
+    // Another "use cache" that catches the read still fails, so it can't
+    // store a fallback.
+    const fallsBack = registerCachedFunction(
+      async () => {
+        try {
+          return typeof Reflect.get(escaped!, "then");
+        } catch {
+          return "fallback";
+        }
+      },
+      "/fixture/app/cached/escape-fallback.tsx:default",
+      "",
+    );
+    await expect(fallsBack()).rejects.toThrow(/`searchParams` cannot be called inside "use cache"/);
+
+    // A read inside another cache scope fails with the same error.
+    const { unstable_cache } = await import("../packages/vinext/src/shims/cache.js");
+    const readsEscaped = unstable_cache(
+      async () => typeof Reflect.get(escaped!, "then"),
+      ["escaped-search-params"],
+    );
+    await expect(readsEscaped()).rejects.toThrow(
+      /`searchParams` cannot be called inside "use cache"/,
+    );
+  });
+
+  // Next.js keeps the first invalid access (`workStore.invalidDynamicUsageError
+  // ??= error`).
+  it("fails the cache with the first caught searchParams access", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { makeThenableParams } = await import("../packages/vinext/src/shims/thenable-params.js");
+    const { consumeInvalidDynamicUsageError } =
+      await import("../packages/vinext/src/shims/headers.js");
+    setCacheHandler(new MemoryCacheHandler());
+
+    const caught: unknown[] = [];
+    const cached = registerCachedFunction(
+      async (props: {
+        params: Promise<{ slug: string }>;
+        searchParams?: Promise<Record<string, unknown>>;
+      }) => {
+        for (const key of ["then", "q"]) {
+          try {
+            Reflect.get(props.searchParams!, key);
+          } catch (error) {
+            caught.push(error);
+          }
+        }
+        return "done";
+      },
+      "/fixture/app/cached/caught-twice/page.tsx:default",
+      "",
+    );
+
+    const rejection = await cached(
+      asPageInvocation({
+        params: makeThenableParams({ slug: "same" }),
+        searchParams: makeThenableParams({ q: "first" }),
+      }),
+    ).catch((error: unknown) => error);
+    expect(caught).toHaveLength(2);
+    expect(caught[0]).not.toBe(caught[1]);
+    expect(rejection).toBe(caught[0]);
+    consumeInvalidDynamicUsageError();
+  });
+
+  // Next.js's erroring proxy only traps `get`, and binds `catch` and
+  // `finally` to the underlying promise, so they don't read its `then`.
+  it("lets catch, finally and key checks on the page searchParams settle", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { makeThenableParams } = await import("../packages/vinext/src/shims/thenable-params.js");
+    setCacheHandler(new MemoryCacheHandler());
+
+    const cached = registerCachedFunction(
+      async (props: {
+        params: Promise<{ slug: string }>;
+        searchParams?: Promise<Record<string, unknown>>;
+      }) => [
+        await props.searchParams!.catch(() => "rejected"),
+        await props.searchParams!.finally(() => {}),
+        Object.keys(props.searchParams!),
+        "q" in props.searchParams!,
+        Object.hasOwn(props.searchParams!, "q"),
+      ],
+      "/fixture/app/cached/catch-finally/page.tsx:default",
+      "",
+    );
+
+    await expect(
+      cached(
+        asPageInvocation({
+          params: makeThenableParams({ slug: "same" }),
+          searchParams: makeThenableParams({ q: "first" }),
+        }),
+      ),
+    ).resolves.toEqual([{}, {}, [], false, false]);
+  });
+
   // Next.js passes `$$isPage` to a "use cache" function invoked as a page
   // component or page metadata resolver (create-component-tree.tsx,
   // resolve-metadata.ts), so page semantics also hold for a cache function
@@ -15016,6 +15206,202 @@ describe("matchHeaders source matching parity with Next.js", () => {
     } finally {
       warn.mockRestore();
     }
+  });
+});
+
+describe("matchHeaders param substitution parity with Next.js", () => {
+  type HasItem = { type: "header" | "cookie" | "query" | "host"; key: string; value?: string };
+  type Case = {
+    source: string;
+    pathname: string;
+    has?: HasItem[];
+    request?: { headers?: Record<string, string>; search?: string };
+  };
+  const headerTemplates = [
+    { key: "x-slug", value: ":slug" },
+    { key: "x-:slug", value: "pre-:slug-post" },
+    { key: "x-path", value: ":path*" },
+    { key: "x-path-plus", value: "list=:path+" },
+    { key: "x-path-single", value: ":path" },
+    { key: "x-optional", value: ":a-:id?" },
+    { key: "x-unnamed", value: ":0 :id" },
+    {
+      key: "x-literal",
+      value: "https://example.com/:slug?x=1 (a) {b} * + max-age=60 :unknown a\\b",
+    },
+    { key: "x-locale", value: ":nextInternalLocale" },
+    { key: "x-adjacent", value: ":a:id" },
+    { key: "x-has", value: "tenant=:tenant page=:page host=:host token=:token" },
+    { key: "x-static", value: "no params" },
+  ];
+  const cases: Case[] = [
+    { source: "/docs/:slug", pathname: "/docs/hello" },
+    // Next.js matches the raw pathname, so captures stay percent-encoded.
+    { source: "/docs/:slug", pathname: "/docs/hello%20world%3A" },
+    { source: "/files/:path*", pathname: "/files/a/b" },
+    { source: "/files/:path*", pathname: "/files" },
+    { source: "/files/:path+", pathname: "/files/a/b/c" },
+    { source: "/opt/:a/:id?", pathname: "/opt/x" },
+    { source: "/opt/:a/:id?", pathname: "/opt/x/7" },
+    { source: "/opt/:id?", pathname: "/opt" },
+    { source: "/api/(.*)", pathname: "/api/x" },
+    { source: "/u/:id(\\d+)/(.*)", pathname: "/u/12/z" },
+    { source: "/:nextInternalLocale(en|fr)/about", pathname: "/fr/about" },
+    { source: "/:slug.md", pathname: "/readme.md" },
+    {
+      source: "/t/:slug",
+      pathname: "/t/x",
+      has: [
+        { type: "header", key: "x-tenant", value: "(?<tenant>[a-z]+)" },
+        { type: "query", key: "page" },
+        { type: "host", key: "", value: "example\\.com" },
+        { type: "cookie", key: "token" },
+      ],
+      request: {
+        headers: { "x-tenant": "acme", host: "example.com:3000", cookie: "token=abc" },
+        search: "?page=2",
+      },
+    },
+    // A duplicate query key is an array param; a has group that did not
+    // participate is undefined. Next.js throws compiling either.
+    {
+      source: "/t/:slug",
+      pathname: "/t/x",
+      has: [
+        { type: "query", key: "page" },
+        { type: "header", key: "x-tenant", value: "(?<tenant>a)?.*" },
+      ],
+      request: { headers: { "x-tenant": "zzz" }, search: "?page=1&page=2" },
+    },
+    // Decoded has captures can carry characters a header value cannot.
+    {
+      source: "/t/:slug",
+      pathname: "/t/x",
+      has: [{ type: "query", key: "page" }],
+      request: { search: "?page=a%0D%0Aset-cookie:%20x=1" },
+    },
+    {
+      source: "/t/:slug",
+      pathname: "/t/x",
+      has: [{ type: "cookie", key: "token" }],
+      request: { headers: { cookie: "token=%E2%9C%93" } },
+    },
+  ];
+
+  it.each(cases)("substitutes params like Next.js for $source at $pathname", async (testCase) => {
+    const { matchHeaders } = await import("../packages/vinext/src/config/config-matchers.js");
+    const { parseCookies } = await import("../packages/vinext/src/config/request-context.js");
+    const { getPathMatch } = await import("next/dist/shared/lib/router/utils/path-match.js");
+    const { modifyRouteRegex } = await import("next/dist/lib/redirect-status.js");
+    const { compileNonPath, matchHas } =
+      await import("next/dist/shared/lib/router/utils/prepare-destination.js");
+    const { validateHeaderName, validateHeaderValue } = await import("node:http");
+
+    const requestHeaders = testCase.request?.headers ?? {};
+    const searchParams = new URLSearchParams(testCase.request?.search ?? "");
+    const query: Record<string, string | string[]> = {};
+    for (const key of new Set(searchParams.keys())) {
+      const values = searchParams.getAll(key);
+      query[key] = values.length > 1 ? values : values[0];
+    }
+
+    // Next.js resolve-routes: route.match, then matchHas, then compileNonPath.
+    const nextMatch = getPathMatch(testCase.source, {
+      strict: true,
+      removeUnnamedParams: true,
+      regexModifier: (regex: string) => modifyRouteRegex(regex),
+    });
+    const params = nextMatch(testCase.pathname) as Record<string, any> | false;
+    expect(params).not.toBe(false);
+    if (testCase.has) {
+      const hasParams = matchHas({ headers: requestHeaders } as any, query, testCase.has as any);
+      expect(hasParams).not.toBe(false);
+      Object.assign(params as object, hasParams);
+    }
+    const hasParams = Object.keys(params as object).length > 0;
+    const expected: Array<{ key: string; value: string }> = [];
+    for (const header of headerTemplates) {
+      try {
+        const key = hasParams ? compileNonPath(header.key, params as any) : header.key;
+        const value = hasParams ? compileNonPath(header.value, params as any) : header.value;
+        // Next.js fails the request when a substituted header is invalid;
+        // vinext omits only that header. Templates without substitutions
+        // pass through unchanged, as before param support.
+        if (key !== header.key || value !== header.value) {
+          validateHeaderName(key);
+          validateHeaderValue(key, value);
+        }
+        expected.push({ key, value });
+      } catch {}
+    }
+
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const actual = matchHeaders(
+        testCase.pathname,
+        [{ source: testCase.source, has: testCase.has, headers: headerTemplates }],
+        {
+          headers: new Headers(requestHeaders),
+          cookies: parseCookies(requestHeaders.cookie ?? null),
+          query: searchParams,
+          host: (requestHeaders.host ?? "localhost").split(":", 1)[0],
+        },
+      );
+      expect(actual).toEqual(expected);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("omits a header Next.js cannot compile without throwing, and warns once", async () => {
+    const { matchHeaders } = await import("../packages/vinext/src/config/config-matchers.js");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const rules = [
+        {
+          source: "/files/:path*",
+          headers: [
+            { key: "x-path", value: ":path" },
+            { key: "x-ok", value: ":path*" },
+          ],
+        },
+      ];
+      const ctx = {
+        headers: new Headers(),
+        cookies: {},
+        query: new URLSearchParams(),
+        host: "localhost",
+      };
+      expect(matchHeaders("/files/a/b", rules, ctx)).toEqual([{ key: "x-ok", value: "a/b" }]);
+      expect(matchHeaders("/files/c", rules, ctx)).toEqual([{ key: "x-ok", value: "c" }]);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('Omitting headers() header "x-path: :path"'),
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("compiles each template once per set of param names", async () => {
+    const { compileHeaderParamTemplate } =
+      await import("../packages/vinext/src/config/header-params.js");
+    // The same template compiles differently for different param names, so
+    // the compiled form is keyed by both.
+    expect(compileHeaderParamTemplate("v=:a", { a: "x" })).toBe("v=x");
+    expect(compileHeaderParamTemplate("v=:a", { b: "y" })).toBe("v=:a");
+    expect(compileHeaderParamTemplate("v=:a", { a: "z" })).toBe("v=z");
+    // Params are still read per call; a compile error is rethrown each time.
+    expect(() => compileHeaderParamTemplate(":a", { a: ["1", "2"] })).toThrow(TypeError);
+    expect(compileHeaderParamTemplate(":a", { a: "3" })).toBe("3");
+    expect(() => compileHeaderParamTemplate(":a", { a: ["1", "2"] })).toThrow(TypeError);
+  });
+
+  it("does not let a template containing NUL share another template's cache entry", async () => {
+    const { compileHeaderParamTemplate } =
+      await import("../packages/vinext/src/config/header-params.js");
+    expect(compileHeaderParamTemplate("v=:a/:b\0a", { b: "B", c: "C" })).toBe("v=:a/B\0a");
+    expect(compileHeaderParamTemplate("v=:a/:b", { a: "A", b: "B", c: "C" })).toBe("v=A/B");
   });
 });
 
@@ -32727,6 +33113,134 @@ describe("default-locale path normalisation (issue #1336, item 4)", () => {
     expect(
       matchRedirect(normalizeDefaultLocalePathname("/sv/old", i18n), rules, emptyCtx)?.destination,
     ).toBe("/sv/new");
+  });
+
+  it("applyLocaleToRoutes emits only the locale-capture variant for headers", async () => {
+    // Next.js processRoutes (load-custom-routes.ts) gives header rules only the
+    // `/:nextInternalLocale(...)` source. An unprefixed copy would let
+    // `/((?!api).*)` match `/fr/api/x` (the lookahead sees `fr/api/x`).
+    const { applyLocaleToRoutes } =
+      await import("../packages/vinext/src/config/config-matchers.js");
+    const i18n = { locales: ["en", "fr"], defaultLocale: "en" };
+    const headers = [{ key: "x-test", value: "1" }];
+    const out = applyLocaleToRoutes(
+      [
+        { source: "/((?!api).*)", headers },
+        { source: "/en", headers, locale: false as const },
+      ],
+      i18n,
+      "header",
+    );
+    expect(out.map((rule) => rule.source)).toEqual([
+      "/:nextInternalLocale(en|fr)/((?!api).*)",
+      "/en",
+    ]);
+  });
+
+  it("matchHeaders matches i18n header rules like Next.js after normalisation", async () => {
+    // Ported from Next.js resolve-routes.ts: unprefixed requests get the
+    // (domain-aware) default locale spliced in before headers are matched,
+    // except `/_next/*`, which stays unprefixed.
+    const { matchHeaders, applyLocaleToRoutes } =
+      await import("../packages/vinext/src/config/config-matchers.js");
+    const { normalizeDefaultLocalePathname } =
+      await import("../packages/vinext/src/server/pages-i18n.js");
+    const i18n = {
+      locales: ["en", "fr"],
+      defaultLocale: "en",
+      domains: [{ domain: "example.fr", defaultLocale: "fr" }],
+    };
+    const rules = applyLocaleToRoutes(
+      [
+        {
+          source: "/((?!api).*)",
+          headers: [
+            { key: "Set-Cookie", value: "seen=1" },
+            { key: "x-page", value: "1" },
+          ],
+        },
+        { source: "/en", headers: [{ key: "x-en-root", value: "1" }], locale: false as const },
+      ],
+      i18n,
+      "header",
+    );
+    const match = (pathname: string, hostname?: string) =>
+      matchHeaders(normalizeDefaultLocalePathname(pathname, i18n, { hostname }), rules, emptyCtx);
+    const pageHeaders = [
+      { key: "Set-Cookie", value: "seen=1" },
+      { key: "x-page", value: "1" },
+    ];
+
+    // Negative lookahead excludes API routes under every locale.
+    expect(match("/fr/api/x")).toEqual([]);
+    expect(match("/en/api/x")).toEqual([]);
+    expect(match("/api/x")).toEqual([]);
+    // Prefixed and default-locale paths match exactly once (no duplicate
+    // additive Set-Cookie from a second, unprefixed variant).
+    expect(match("/fr/about")).toEqual(pageHeaders);
+    expect(match("/about")).toEqual(pageHeaders);
+    expect(match("/about", "example.fr")).toEqual(pageHeaders);
+    // `/` is matched as `/en`, which `/:nextInternalLocale(en|fr)/((?!api).*)`
+    // does not match (verified against next@16.2.7). A `locale: false` `/en`
+    // source does, but not on a domain whose default locale is fr.
+    expect(match("/")).toEqual([{ key: "x-en-root", value: "1" }]);
+    expect(match("/", "example.fr")).toEqual([]);
+    // `/_next/*` is not locale-normalised, so locale-default rules skip it.
+    expect(match("/_next/static/chunks/main.js")).toEqual([]);
+  });
+
+  it("matchHeaders keeps the root trailing slash where Next.js restores it", async () => {
+    // Next.js re-adds the root's trailing slash after splicing in the default
+    // locale only when the raw request pathname (basePath included) ended
+    // with `/`, trailingSlash is on, and skipProxyUrlNormalize is off
+    // (resolve-routes.ts `hadTrailingSlash` + `maybeAddTrailingSlash`).
+    const { matchHeaders, applyLocaleToRoutes } =
+      await import("../packages/vinext/src/config/config-matchers.js");
+    const { normalizeDefaultLocalePathname, shouldRestoreLocaleRootTrailingSlash } =
+      await import("../packages/vinext/src/server/pages-i18n.js");
+    const i18n = { locales: ["en", "fr"], defaultLocale: "en" };
+    const trailing = { trailingSlash: true };
+    const rootPathname = (
+      rawPathname: string,
+      config: { trailingSlash: boolean; skipProxyUrlNormalize?: boolean } = trailing,
+    ) =>
+      normalizeDefaultLocalePathname("/", i18n, {
+        restoreRootTrailingSlash: shouldRestoreLocaleRootTrailingSlash(rawPathname, config),
+      });
+
+    expect(rootPathname("/")).toBe("/en/");
+    // basePath "/docs": `/docs` becomes `/docs/en`, `/docs/` becomes `/docs/en/`.
+    expect(rootPathname("/docs")).toBe("/en");
+    expect(rootPathname("/docs/")).toBe("/en/");
+    expect(rootPathname("/", { ...trailing, skipProxyUrlNormalize: true })).toBe("/en");
+    expect(rootPathname("/", { trailingSlash: false })).toBe("/en");
+    expect(
+      normalizeDefaultLocalePathname("/about/", i18n, { restoreRootTrailingSlash: true }),
+    ).toBe("/en/about/");
+
+    const rules = applyLocaleToRoutes(
+      [
+        { source: "/", headers: [{ key: "x-root", value: "1" }] },
+        { source: "/((?!api).*)", headers: [{ key: "x-page", value: "1" }] },
+      ],
+      i18n,
+      "header",
+      trailing,
+    );
+    const rootHeaders = [
+      { key: "x-root", value: "1" },
+      { key: "x-page", value: "1" },
+    ];
+    expect(matchHeaders(rootPathname("/docs/"), rules, emptyCtx)).toEqual(rootHeaders);
+    expect(matchHeaders("/fr/", rules, emptyCtx)).toEqual(rootHeaders);
+    expect(matchHeaders(rootPathname("/docs"), rules, emptyCtx)).toEqual([]);
+    expect(
+      matchHeaders(
+        rootPathname("/", { ...trailing, skipProxyUrlNormalize: true }),
+        rules,
+        emptyCtx,
+      ),
+    ).toEqual([]);
   });
 });
 
