@@ -349,6 +349,12 @@ describe("Pages client sync matcher agrees with the server matcher", () => {
     "/.:id?bar",
     "/.:id?",
     "/.:id?.json",
+    // An optional unnamed group also makes the `/` or `.` before it optional.
+    "/foo/(bar)?",
+    "/foo/(bar)*",
+    "/foo.(bar)?",
+    "/foo.(bar)*",
+    "/foo/(bar)?/x",
   ];
 
   it("returns the server's params whenever it does not defer", () => {
@@ -406,6 +412,11 @@ describe("Pages client sync matcher agrees with the server matcher", () => {
       ["/.:id?bar", "/bar"],
       ["/.:id?", "/.json"],
       ["/.:id?.json", "/.json"],
+      ["/foo/(bar)?", "/foo"],
+      ["/foo/(bar)*", "/foo"],
+      ["/foo.(bar)?", "/foo"],
+      ["/foo.(bar)*", "/foo"],
+      ["/foo/(bar)?/x", "/foo/x"],
     ] as const) {
       expect(clientConfigSourceCouldMatch(pathname, source), source).toBe(true);
     }
@@ -429,6 +440,7 @@ describe("Pages client sync matcher agrees with the server matcher", () => {
       ["/From/:id/:rest*", "/from/foo"],
       ["/docs/:path*", "/docs"],
       ["/:id/:id", "/a/b"],
+      ["/foo/(bar)?", "/foo"],
     ]) {
       expect(matchSimpleClientConfigSource(pathname, source), source).toBeUndefined();
     }
