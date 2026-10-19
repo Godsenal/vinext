@@ -321,6 +321,10 @@ describe("Pages client sync matcher agrees with the server matcher", () => {
     "/bar",
     "/.json",
     "/.x.json",
+    "/post-123",
+    "/post-123/",
+    "/post-123/extra",
+    "/post-1-a/b",
   ];
   const CLIENT_SOURCES = [
     ...SOURCES,
@@ -355,6 +359,10 @@ describe("Pages client sync matcher agrees with the server matcher", () => {
     "/foo.(bar)?",
     "/foo.(bar)*",
     "/foo/(bar)?/x",
+    "/post-:id",
+    "/post-:id-:slug",
+    "/post-{:id}?",
+    "/post-:id(.*)",
   ];
 
   it("returns the server's params whenever it does not defer", () => {
@@ -419,6 +427,28 @@ describe("Pages client sync matcher agrees with the server matcher", () => {
       ["/foo/(bar)?/x", "/foo/x"],
     ] as const) {
       expect(clientConfigSourceCouldMatch(pathname, source), source).toBe(true);
+    }
+  });
+
+  it("rules out a deeper pathname when the rest of the source stays in one segment", () => {
+    for (const [source, pathname] of [
+      ["/post-:id", "/post-123/extra"],
+      ["/post-:id", "/post-123//"],
+      ["/post-:id-:slug", "/post-1-a/b"],
+      ["/post-{:id}?", "/post-123/extra"],
+      ["/foo", "/foo/bar"],
+      ["/foo.:ext*", "/foo.x/y"],
+    ] as const) {
+      expect(clientConfigSourceCouldMatch(pathname, source), `${source} ← ${pathname}`).toBe(false);
+    }
+    for (const [source, pathname] of [
+      ["/post-:id", "/post-123"],
+      ["/post-:id", "/post-123/"],
+      // A custom pattern may match a slash.
+      ["/post-:id(.*)", "/post-123/extra"],
+    ] as const) {
+      expect(clientConfigSourceCouldMatch(pathname, source), `${source} ← ${pathname}`).toBe(true);
+      expect(matchConfigPattern(pathname, source), `${source} ← ${pathname}`).not.toBeNull();
     }
   });
 
