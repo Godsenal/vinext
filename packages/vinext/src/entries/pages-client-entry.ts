@@ -29,6 +29,7 @@ import { toSlash } from "pathslash";
 import { hasExportedName, type StaticMiddlewareMatcher } from "../build/report.js";
 import { resolveClientRuntimeModule } from "./runtime-entry-module.js";
 import { compileMiddlewareMatcherPattern } from "../server/middleware-matcher-pattern.js";
+import { hasUnsafeConditionValue } from "../config/config-matchers.js";
 
 export function compileClientMiddlewareMatchers(
   matcher: StaticMiddlewareMatcher | undefined,
@@ -37,6 +38,14 @@ export function compileClientMiddlewareMatchers(
 
   const entries = typeof matcher === "string" ? [matcher] : matcher;
   return entries.map((entry) => {
+    // The server runs middleware for every path when a condition value is
+    // rejected as unsafe, so the browser must not rule any path out either.
+    if (
+      typeof entry !== "string" &&
+      (hasUnsafeConditionValue(entry.has) || hasUnsafeConditionValue(entry.missing))
+    ) {
+      return entry;
+    }
     const source = typeof entry === "string" ? entry : entry.source;
     const compiled = compileMiddlewareMatcherPattern(source);
     if (!compiled.regexp) return entry;

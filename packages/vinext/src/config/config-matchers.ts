@@ -72,12 +72,12 @@ export { isExternalUrl } from "../utils/external-url.js";
 const _compiledSourceCache = new Map<string, CompiledConfigSource | null>();
 
 /**
- * Cache for compiled has/missing condition value regexes in checkSingleCondition.
+ * Cache for compiled has/missing condition value regexes.
  *
- * Each has/missing condition may carry a `value` string that is passed directly
- * to safeRegExp() for matching against header/cookie/query/host values. The
- * condition objects are static (from next.config.js) so the compiled RegExp
- * never changes. Without caching, safeRegExp() is called on every request for
+ * Each has/missing condition may carry a `value` string that is compiled with
+ * compileSafeRegExp() for matching against header/cookie/query/host values.
+ * The condition objects are static (from next.config.js) so the result never
+ * changes. Without caching, the ReDoS check would run on every request for
  * every condition on every rule.
  *
  * Value is "invalid" when the value is not a valid regex (it is compared
@@ -548,7 +548,9 @@ function _cachedConditionRegex(value: string): CompiledRegExp {
  * never applies: comparing the value literally instead would let a request
  * that sends the pattern's own text satisfy a `has` or dodge a `missing`.
  */
-export function hasUnsafeConditionValue(conditions: HasCondition[] | undefined): boolean {
+export function hasUnsafeConditionValue(
+  conditions: ReadonlyArray<{ value?: string }> | undefined,
+): boolean {
   return !!conditions?.some(
     (condition) => !!condition.value && _cachedConditionRegex(condition.value) === "unsafe",
   );

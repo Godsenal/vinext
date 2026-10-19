@@ -55,6 +55,31 @@ describe("prefetchPagesData", () => {
     expect(getPagesMiddlewareDataHref("/other", "")).toBeNull();
   });
 
+  it("probes middleware for every path when a matcher condition value is rejected as unsafe", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      // The server runs middleware for every path for such a matcher, so a
+      // component-only navigation must not skip the middleware data probe.
+      const has = [{ type: "header", key: "x-skip", value: "[ab]*a[ab]*a[ab]*" }];
+      vi.stubGlobal("window", {
+        location: { href: "http://localhost/", origin: "http://localhost" },
+        __NEXT_DATA__: { buildId: "build-id", __vinext: { hasMiddleware: true } },
+        __VINEXT_MIDDLEWARE_MATCHER__: compileClientMiddlewareMatchers([
+          { source: "/private", has },
+          "/admin",
+        ]),
+      });
+      expect(getPagesMiddlewareDataHref("/public", "")).toBe("/_next/data/build-id/public.json");
+
+      window.__VINEXT_MIDDLEWARE_MATCHER__ = compileClientMiddlewareMatchers([
+        { source: "/private", has: [{ type: "header", key: "x-skip", value: "a" }] },
+      ]);
+      expect(getPagesMiddlewareDataHref("/public", "")).toBeNull();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   // Ported from Next.js: test/production/deployment-id-handling/deployment-id-handling.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/production/deployment-id-handling/deployment-id-handling.test.ts
   it("sends the deployment ID on Pages data prefetch requests", async () => {
