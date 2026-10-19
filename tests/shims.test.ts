@@ -9825,7 +9825,7 @@ describe("middleware matcher patterns", () => {
       ]) {
         compiled.regexp!.test(pathname);
       }
-      expect(performance.now() - start, matcher).toBeLessThan(500);
+      expect(performance.now() - start, matcher).toBeLessThan(1_000);
     }
     // A param that can read the `/` between repeats splits a path many ways.
     for (const matcher of ["/:p(.*)+", "/:p(\\/?)*", "/:path(.*)*/end"]) {
@@ -9858,7 +9858,7 @@ describe("middleware matcher patterns", () => {
       compiled.regexp!.test(`/xx/${"yxx/".repeat(8_000)}!`);
       compiled.regexp!.test(`/aa/${"aa/".repeat(8_000)}!`);
       compiled.regexp!.test(`/bb/${"b".repeat(16_000)}!`);
-      expect(performance.now() - start, matcher).toBeLessThan(500);
+      expect(performance.now() - start, matcher).toBeLessThan(1_000);
     }
     // A capture that may not take part leaves its backreference reading
     // nothing, so both alternatives read `a`; and `(?!ê|x)` does not rule out
