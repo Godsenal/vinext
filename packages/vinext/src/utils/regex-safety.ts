@@ -1441,6 +1441,8 @@ class PositionAutomaton {
   private edgeCount = 0;
   private work = 0;
   private readonly sizes = new WeakMap<RegexNode, number>();
+  /** Each alternation's branches with their shared prefixes factored. */
+  private readonly factored = new WeakMap<RegexNode, RegexNode[]>();
   /** Alternations nested by factoring their shared prefixes. */
   private factoredDepth = 0;
 
@@ -1620,10 +1622,11 @@ class PositionAutomaton {
       }
       case "alternation": {
         const fragment: PositionFragment = { first: new Map(), last: new Map(), empty: 0 };
-        const branches =
-          this.factoredDepth < MAX_NESTING_DEPTH
-            ? factorSharedPrefixes(node.branches)
-            : node.branches;
+        let branches = node.branches;
+        if (this.factoredDepth < MAX_NESTING_DEPTH) {
+          branches = this.factored.get(node) ?? factorSharedPrefixes(node.branches);
+          this.factored.set(node, branches);
+        }
         if (branches !== node.branches) this.factoredDepth++;
         for (const branch of branches) {
           const child = this.fragment(branch);
