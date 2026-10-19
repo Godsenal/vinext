@@ -874,6 +874,9 @@ describe("next.config.js source validation", () => {
       const rejected = () =>
         warn.mock.calls.filter(([message]) => String(message).includes(`(ReDoS risk): ^${value}$`));
       expect(rejected()).toHaveLength(1);
+      expect(String(rejected()[0]![0])).toContain(
+        "Redirects, rewrites and headers with this has/missing value never apply",
+      );
       const ctx = { headers: new Headers(), cookies: {}, query: new URLSearchParams(), host: "" };
       expect(checkHasConditions([{ type: "header", key: "x", value }], undefined, ctx)).toBe(false);
       expect(rejected()).toHaveLength(1);

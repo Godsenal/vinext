@@ -330,9 +330,10 @@ type CompiledRegExp = RegExp | "invalid" | "unsafe";
  * uses the `u` or `v` flag, whose syntax the ReDoS check does not model.
  *
  * Logs a warning when a valid pattern is rejected, as a ReDoS risk or for its
- * flag, so developers can fix their config.
+ * flag, so developers can fix their config. `consequence` is appended to it to
+ * say what the rejection does.
  */
-function compileSafeRegExp(pattern: string, flags?: string): CompiledRegExp {
+function compileSafeRegExp(pattern: string, flags?: string, consequence = ""): CompiledRegExp {
   // Compiling does not run the pattern, so an invalid one is ruled out first
   // instead of being reported as a ReDoS risk.
   let regex: RegExp;
@@ -344,7 +345,8 @@ function compileSafeRegExp(pattern: string, flags?: string): CompiledRegExp {
   if (flags?.includes("u") || flags?.includes("v")) {
     console.warn(
       `[vinext] Rejecting regex pattern with the unsupported "u" or "v" flag: ${pattern}\n` +
-        `  Its ReDoS safety cannot be checked.`,
+        `  Its ReDoS safety cannot be checked.` +
+        consequence,
     );
     return "unsafe";
   }
@@ -352,7 +354,8 @@ function compileSafeRegExp(pattern: string, flags?: string): CompiledRegExp {
     console.warn(
       `[vinext] Rejecting potentially unsafe regex pattern (ReDoS risk): ${pattern}\n` +
         `  Nested or ambiguous repetition can cause catastrophic backtracking.\n` +
-        `  Simplify the pattern to make repeated matches fixed and unambiguous.`,
+        `  Simplify the pattern to make repeated matches fixed and unambiguous.` +
+        consequence,
     );
     return "unsafe";
   }
@@ -548,7 +551,12 @@ function _cachedConditionRegex(value: string): CompiledRegExp {
     // Anchor the regex to match the full value, not a substring.
     // Matches Next.js: new RegExp(`^${hasItem.value}$`)
     // Without anchoring, has:[cookie:role=admin] would match "not-admin".
-    re = compileSafeRegExp(`^${value}$`);
+    re = compileSafeRegExp(
+      `^${value}$`,
+      undefined,
+      `\n  Redirects, rewrites and headers with this has/missing value never apply, and` +
+        ` middleware matchers with it run middleware for every path.`,
+    );
     _compiledConditionCache.set(value, re);
   }
   return re;

@@ -10247,6 +10247,8 @@ describe("middleware matcher patterns", () => {
   });
 
   it("releases each automaton before analyzing nested lookaround bodies", async () => {
+    // Runs regex-safety.ts on its own under a small heap. That relies on the
+    // module having no imports, so its transpiled output loads by itself.
     const { transformWithOxc } = await import("vite-plus");
     const file = fileURLToPath(
       new URL("../packages/vinext/src/utils/regex-safety.ts", import.meta.url),
