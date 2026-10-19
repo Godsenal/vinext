@@ -9959,6 +9959,28 @@ describe("middleware matcher patterns", () => {
     });
   });
 
+  it("accepts a long list of words that share a prefix", async () => {
+    const { compileMiddlewareMatcherPattern } =
+      await import("../packages/vinext/src/server/middleware-matcher-pattern.js");
+    const { matchConfigPattern } = await import("../packages/vinext/src/config/config-matchers.js");
+    const tenants = Array.from(
+      { length: 300 },
+      (_, index) => `tenant${String(index).padStart(3, "0")}`,
+    );
+    const source = `/:tenant(${tenants.join("|")})`;
+
+    expect(compileMiddlewareMatcherPattern(source).regexp).toBeInstanceOf(RegExp);
+    expect(matchConfigPattern("/tenant123", source)).toEqual({ tenant: "tenant123" });
+    expect(matchConfigPattern("/tenant300", source)).toBeNull();
+    // Branches that read the same text still multiply under a repeat.
+    expect(compileMiddlewareMatcherPattern("/:tenant((?:tenant|tenant)+)")).toMatchObject({
+      kind: "unsafe",
+    });
+    expect(compileMiddlewareMatcherPattern("/:tenant((?:ab|a(?:b))+)")).toMatchObject({
+      kind: "unsafe",
+    });
+  });
+
   it("bounds the work of expanding a long lookahead guard", async () => {
     const { compileMiddlewareMatcherPattern } =
       await import("../packages/vinext/src/server/middleware-matcher-pattern.js");
