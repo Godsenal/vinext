@@ -10473,6 +10473,35 @@ describe("middleware matcher patterns", () => {
     }
   });
 
+  it("keeps lookahead guard state keys small when a symbol's key is long", async () => {
+    const { transformWithOxc } = await import("vite-plus");
+    const file = fileURLToPath(
+      new URL("../packages/vinext/src/utils/regex-safety.ts", import.meta.url),
+    );
+    const { code } = await transformWithOxc(await readFile(file, "utf8"), file, { lang: "ts" });
+    const dir = await mkdtemp(path.join(os.tmpdir(), "vinext-regex-safety-"));
+    try {
+      await writeFile(path.join(dir, "regex-safety.mjs"), code);
+      // The class's key is about 8 KB. Copied into each of the ~16,000 guard
+      // states, it needs more memory than the heap allows.
+      const script = `
+        import { analyzeRegexAmbiguity } from "./regex-safety.mjs";
+        const atom = "[" + String.raw\`\\q\`.repeat(4000) + "]";
+        console.log(JSON.stringify(analyzeRegexAmbiguity(\`(?:(?:(?!ab)\${atom}){16000})?\`)));
+      `;
+      await writeFile(path.join(dir, "run.mjs"), script);
+      const result = spawnSync(process.execPath, ["--max-old-space-size=128", "run.mjs"], {
+        cwd: dir,
+        encoding: "utf8",
+        timeout: 30_000,
+      });
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout.trim()).toBe("null");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("reads scoped flag groups and legacy octal escapes like the RegExp engine", async () => {
     const { compileMiddlewareMatcherPattern } =
       await import("../packages/vinext/src/server/middleware-matcher-pattern.js");

@@ -1917,6 +1917,17 @@ function applyLookaheadGuards(
     { position: 0, pending: [] },
   ];
   const ids = new Map<string, number>();
+  // Symbol keys can be as long as the pattern, so state keys name each
+  // symbol by a number instead of copying its key into every state.
+  const symbolIds = new Map<string, number>();
+  const symbolId = (symbol: RegexSymbol): number => {
+    let id = symbolIds.get(symbol.key);
+    if (id === undefined) {
+      id = symbolIds.size;
+      symbolIds.set(symbol.key, id);
+    }
+    return id;
+  };
   const queue = [0];
   let work = 0;
   const stateFor = (
@@ -1927,10 +1938,10 @@ function applyLookaheadGuards(
   ): number | null => {
     const key = [
       position,
-      symbol?.key ?? "",
-      without.map((character) => character.key).join("\0"),
+      symbol ? symbolId(symbol) : "",
+      without.map(symbolId).join(","),
       pending.map(([guard, matched]) => `${guard}:${matched}`).join(","),
-    ].join("\u0001");
+    ].join(";");
     let id = ids.get(key);
     if (id === undefined) {
       if (graph.symbols.length > MAX_POSITIONS) return null;
