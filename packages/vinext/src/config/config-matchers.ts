@@ -559,7 +559,9 @@ function _cachedConditionRegex(value: string): CompiledRegExp {
  * never applies: comparing the value literally instead would let a request
  * that sends the pattern's own text satisfy a `has` or dodge a `missing`.
  */
-export function hasUnsafeConditionValue(conditions: HasCondition[] | undefined): boolean {
+export function hasUnsafeConditionValue(
+  conditions: ReadonlyArray<{ value?: string }> | undefined,
+): boolean {
   return !!conditions?.some(
     (condition) => !!condition.value && _cachedConditionRegex(condition.value) === "unsafe",
   );
