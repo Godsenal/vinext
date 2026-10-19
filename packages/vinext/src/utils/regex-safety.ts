@@ -2716,14 +2716,7 @@ function analyzeNodeAmbiguity(
   // A body without a variable repeat reads fixed-length words, as above.
   const bodies = assertionBodies(node).filter(({ body }) => containsVariableRepetition(body));
   const degree = bodies.some(({ repeated }) => repeated) ? maxDegree - 1 : maxDegree;
-  // Unroll repeats exactly while the automaton fits, and only read long
-  // repeats as loops when it does not.
-  const exact = new PositionAutomaton(MAX_POSITIONS, budget);
-  let issue = analyzePositionAutomaton(exact, node, degree, budget);
-  if (issue === "analysis budget exceeded" && exact.unrolledLongRepeat) {
-    const loops = new PositionAutomaton(MAX_UNROLLED_REPEAT, budget);
-    issue = analyzePositionAutomaton(loops, node, degree, budget);
-  }
+  const issue = analyzeAutomata(node, degree, budget);
   if (issue) return issue;
   for (const { body, repeated, reverse: bodyReverse } of bodies) {
     const bodyDegree = repeated ? maxDegree - 1 : maxDegree;
@@ -2731,6 +2724,24 @@ function analyzeNodeAmbiguity(
     if (bodyIssue) return bodyIssue;
   }
   return null;
+}
+
+/**
+ * Unroll repeats exactly while the automaton fits, and only read long
+ * repeats as loops when it does not. The automata are released on return,
+ * before the caller descends into lookaround bodies, so nested bodies do not
+ * keep one alive per level.
+ */
+function analyzeAutomata(
+  node: RegexNode,
+  degree: number,
+  budget: AnalysisBudget,
+): RegexSafetyIssue | null {
+  const exact = new PositionAutomaton(MAX_POSITIONS, budget);
+  const issue = analyzePositionAutomaton(exact, node, degree, budget);
+  if (issue !== "analysis budget exceeded" || !exact.unrolledLongRepeat) return issue;
+  const loops = new PositionAutomaton(MAX_UNROLLED_REPEAT, budget);
+  return analyzePositionAutomaton(loops, node, degree, budget);
 }
 
 function analyzePositionAutomaton(

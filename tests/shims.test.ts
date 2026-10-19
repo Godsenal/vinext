@@ -10056,6 +10056,36 @@ describe("middleware matcher patterns", () => {
     });
   });
 
+  it("releases each automaton before analyzing nested lookaround bodies", async () => {
+    const { transformWithOxc } = await import("vite-plus");
+    const file = fileURLToPath(
+      new URL("../packages/vinext/src/utils/regex-safety.ts", import.meta.url),
+    );
+    const { code } = await transformWithOxc(await readFile(file, "utf8"), file, { lang: "ts" });
+    const dir = await mkdtemp(path.join(os.tmpdir(), "vinext-regex-safety-"));
+    try {
+      await writeFile(path.join(dir, "regex-safety.mjs"), code);
+      // Each level's automaton holds 16,000 positions. Kept alive across 30
+      // levels, they need several hundred MB.
+      const script = `
+        import { analyzeRegexSafety } from "./regex-safety.mjs";
+        const pattern = "(?=a{16000}".repeat(30) + "a*X" + ")".repeat(30);
+        console.log(JSON.stringify(analyzeRegexSafety("^" + pattern + "$", { search: true })));
+      `;
+      await writeFile(path.join(dir, "run.mjs"), script);
+      const result = spawnSync(process.execPath, ["--max-old-space-size=64", "run.mjs"], {
+        cwd: dir,
+        encoding: "utf8",
+        timeout: 30_000,
+      });
+      expect(result.stderr).toBe("");
+      expect(result.status).toBe(0);
+      expect(result.stdout.trim()).toBe("null");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("keeps analysis cheap for long alternations", async () => {
     const { isSafeRegex } = await import("../packages/vinext/src/config/config-matchers.js");
     const { analyzeRegexSafety } = await import("../packages/vinext/src/utils/regex-safety.js");
