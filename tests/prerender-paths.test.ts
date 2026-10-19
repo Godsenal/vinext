@@ -868,6 +868,44 @@ describe("prerender path manifest", () => {
     expect(fs.existsSync(path.join(tmpDir, "dist/server/vinext-prerender-paths.json"))).toBe(false);
   });
 
+  it("ignores a cache policy rule whose condition value is rejected as unsafe", async () => {
+    // Such a rule never applies, so it cannot vary the policy of a path.
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile(
+      "app/unsafe/page.tsx",
+      "export const dynamic = 'force-dynamic'; export default function Page() { return null; }\n",
+    );
+    writeFile(
+      "next.config.mjs",
+      [
+        "export default {",
+        "  headers: async () => [",
+        "    { source: '/unsafe', has: [{ type: 'header', key: 'x-auth', value: '[ab]*a[ab]*a[ab]*' }], headers: [{ key: 'Cache-Control', value: 's-maxage=60' }] },",
+        "  ],",
+        "};",
+      ].join("\n"),
+    );
+
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const { emitPrerenderPathManifest } =
+        await import("../packages/vinext/src/build/prerender-paths.js");
+      const manifest = await emitPrerenderPathManifest({
+        root: tmpDir,
+        buildIdentity: "response-header",
+        responseVary: "verbatim",
+      });
+      expect(manifest?.routePatterns).toMatchObject({
+        "/unsafe": { cacheabilityProbe: { canPrunePattern: true } },
+      });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it("marks probe collapses unsafe when config cache policy varies by path or request", async () => {
     // Next.js applies pathname-specific custom Cache-Control to dynamic App
     // routes and evaluates has/missing conditions against each request:

@@ -1,4 +1,5 @@
 import type { NextRedirect, ResolvedNextConfig } from "../config/next-config.js";
+import { hasUnsafeConditions } from "../config/config-matchers.js";
 import { isClientHasCondition, type ClientHasCondition } from "./client-rewrites.js";
 
 type ClientRedirectFields = Pick<NextRedirect, "basePath" | "locale" | "source"> & {
@@ -48,6 +49,11 @@ function toClientRedirect(redirect: NextRedirect): ClientRedirect {
   return { ...common, destination: redirect.destination, permanent: redirect.permanent };
 }
 
+/**
+ * The redirects to publish to client builds. Rules the server never applies,
+ * for a has/missing value rejected as unsafe, are left out, so they neither
+ * defer to the server nor stop a later rule from matching.
+ */
 export function toClientRedirects(redirects: ResolvedNextConfig["redirects"]): ClientRedirect[] {
-  return redirects.map(toClientRedirect);
+  return redirects.filter((redirect) => !hasUnsafeConditions(redirect)).map(toClientRedirect);
 }

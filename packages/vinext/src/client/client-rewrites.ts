@@ -1,4 +1,5 @@
 import type { HasCondition, NextRewrite, ResolvedNextConfig } from "../config/next-config.js";
+import { hasUnsafeConditions } from "../config/config-matchers.js";
 import { isExternalUrl } from "../utils/external-url.js";
 
 export type ClientHasCondition = Omit<HasCondition, "type"> & {
@@ -81,10 +82,16 @@ function toClientRewrite(rewrite: NextRewrite): ClientRewrite {
   };
 }
 
+/**
+ * The rewrites to publish to client builds. Rules the server never applies,
+ * for a has/missing value rejected as unsafe, are left out.
+ */
 export function toClientRewrites(rewrites: ResolvedNextConfig["rewrites"]): ClientRewrites {
+  const publish = (phase: NextRewrite[]) =>
+    phase.filter((rewrite) => !hasUnsafeConditions(rewrite)).map(toClientRewrite);
   return {
-    beforeFiles: rewrites.beforeFiles.map(toClientRewrite),
-    afterFiles: rewrites.afterFiles.map(toClientRewrite),
-    fallback: rewrites.fallback.map(toClientRewrite),
+    beforeFiles: publish(rewrites.beforeFiles),
+    afterFiles: publish(rewrites.afterFiles),
+    fallback: publish(rewrites.fallback),
   };
 }
