@@ -1557,6 +1557,65 @@ function addPaths(target: PathCounts, source: PathCounts, factor = 1): PathCount
  * those characters from what the atom reads, and a literal word such as
  * `(?!ab)` is kept as a guard for applyLookaheadGuards.
  */
+/**
+ * `branches` with the atoms that several of them start with read once, as
+ * `tenant(?:000|001)` for `tenant000|tenant001`, or `branches` itself when
+ * none share one. Each branch still reads every text in as many ways, an
+ * empty remainder included, so ambiguity is unchanged. Without it, a list
+ * of words sharing a prefix gives the product a pair of positions for every
+ * two words, at each character of the prefix.
+ */
+function factorSharedPrefixes(branches: RegexNode[]): RegexNode[] {
+  const parts = (branch: RegexNode) => (branch.kind === "sequence" ? branch.children : [branch]);
+  const groups = new Map<string, RegexNode[]>();
+  for (const branch of branches) {
+    const head = parts(branch)[0];
+    if (head?.kind !== "atom" || head.symbol === null || !head.fixedWidth) continue;
+    const group = groups.get(head.symbol.key);
+    if (group) group.push(branch);
+    else groups.set(head.symbol.key, [branch]);
+  }
+  if ([...groups.values()].every((group) => group.length === 1)) return branches;
+  const factored: RegexNode[] = [];
+  for (const branch of branches) {
+    const head = parts(branch)[0];
+    const group =
+      head?.kind === "atom" && head.symbol !== null && head.fixedWidth
+        ? groups.get(head.symbol.key)!
+        : null;
+    if (!group || group.length === 1) {
+      factored.push(branch);
+      continue;
+    }
+    if (group[0] !== branch) continue;
+    // The run of atoms every branch in the group starts with.
+    const first = parts(branch);
+    let shared = 1;
+    for (; shared < first.length; shared++) {
+      const atom = first[shared]!;
+      if (atom.kind !== "atom" || atom.symbol === null || !atom.fixedWidth) break;
+      const key = atom.symbol.key;
+      if (
+        !group.every((other) => {
+          const part = parts(other)[shared];
+          return part?.kind === "atom" && part.fixedWidth && part.symbol?.key === key;
+        })
+      ) {
+        break;
+      }
+    }
+    const rests = group.map((other): RegexNode => ({
+      kind: "sequence",
+      children: parts(other).slice(shared),
+    }));
+    factored.push({
+      kind: "sequence",
+      children: [...first.slice(0, shared), { kind: "alternation", branches: rests }],
+    });
+  }
+  return factored;
+}
+
 class PositionAutomaton {
   readonly symbols: Array<RegexSymbol | null> = [null];
   readonly excluded: RegexSymbol[][] = [[]];
@@ -1575,6 +1634,10 @@ class PositionAutomaton {
     RegexNode,
     { characters: RegexSymbol[] | null; word: RegexSymbol[] | null }
   >();
+  /** Each alternation's branches with their shared prefixes factored. */
+  private readonly factored = new WeakMap<RegexNode, RegexNode[]>();
+  /** Alternations nested by factoring their shared prefixes. */
+  private factoredDepth = 0;
 
   constructor(
     private readonly maxUnrolledRepeat: number,
@@ -1777,12 +1840,19 @@ class PositionAutomaton {
         const merged = singleCharacterAlternationSymbol(node);
         if (merged) return this.single(this.position(merged));
         const fragment: PositionFragment = { first: new Map(), last: new Map(), empty: 0 };
-        for (const branch of node.branches) {
+        let branches = node.branches;
+        if (this.factoredDepth < MAX_NESTING_DEPTH) {
+          branches = this.factored.get(node) ?? factorSharedPrefixes(node.branches);
+          this.factored.set(node, branches);
+        }
+        if (branches !== node.branches) this.factoredDepth++;
+        for (const branch of branches) {
           const child = this.fragment(branch);
           addPaths(fragment.first, child.first);
           addPaths(fragment.last, child.last);
           fragment.empty = saturate(fragment.empty + child.empty);
         }
+        if (branches !== node.branches) this.factoredDepth--;
         return fragment;
       }
       case "repeat": {

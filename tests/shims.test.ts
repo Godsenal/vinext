@@ -10077,8 +10077,10 @@ describe("middleware matcher patterns", () => {
     expect(performance.now() - start).toBeLessThan(1_000);
 
     // Every lookaround body draws on one budget, so many bodies cannot each
-    // spend a full one.
-    const lookahead = `(?=(?:${Array.from({ length: 700 }, () => "a").join("|")})?)`;
+    // spend a full one. The classes overlap but differ, so no prefix is shared.
+    const classes = Array.from({ length: 300 }, (_, i) => `[a${String.fromCharCode(0x100 + i)}]`);
+    const lookahead = `(?=(?:${classes.join("|")})?)`;
+    expect(analyzeRegexSafety(lookahead)).toBeNull();
     start = performance.now();
     expect(analyzeRegexSafety(lookahead.repeat(20))).toBe("analysis budget exceeded");
     expect(performance.now() - start).toBeLessThan(2_000);
@@ -10212,6 +10214,28 @@ describe("middleware matcher patterns", () => {
     expect(compileMiddlewareMatcherPattern(expandingChoices)).toMatchObject({
       kind: "unsafe",
       error: expect.stringContaining("ambiguous sequence expansion"),
+    });
+  });
+
+  it("accepts a long list of words that share a prefix", async () => {
+    const { compileMiddlewareMatcherPattern } =
+      await import("../packages/vinext/src/server/middleware-matcher-pattern.js");
+    const { matchConfigPattern } = await import("../packages/vinext/src/config/config-matchers.js");
+    const tenants = Array.from(
+      { length: 300 },
+      (_, index) => `tenant${String(index).padStart(3, "0")}`,
+    );
+    const source = `/:tenant(${tenants.join("|")})`;
+
+    expect(compileMiddlewareMatcherPattern(source).regexp).toBeInstanceOf(RegExp);
+    expect(matchConfigPattern("/tenant123", source)).toEqual({ tenant: "tenant123" });
+    expect(matchConfigPattern("/tenant300", source)).toBeNull();
+    // Branches that read the same text still multiply under a repeat.
+    expect(compileMiddlewareMatcherPattern("/:tenant((?:tenant|tenant)+)")).toMatchObject({
+      kind: "unsafe",
+    });
+    expect(compileMiddlewareMatcherPattern("/:tenant((?:ab|a(?:b))+)")).toMatchObject({
+      kind: "unsafe",
     });
   });
 
