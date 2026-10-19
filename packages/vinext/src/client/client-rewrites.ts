@@ -61,9 +61,7 @@ export function toClientConditions(
   const client = conditions
     ?.filter(isClientHasCondition)
     .map((condition) =>
-      typeof condition.value === "string" && condition.value
-        ? { ...condition, value: clientConditionValue(condition.value) }
-        : condition,
+      condition.value ? { ...condition, value: clientConditionValue(condition.value) } : condition,
     );
   return client?.length ? client : undefined;
 }
