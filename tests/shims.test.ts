@@ -14300,6 +14300,10 @@ describe("isSafeRegex", () => {
     expect(isSafeRegex("(a+){3}X", "y")).toBe(false);
     // Linear attempts stay accepted without an anchor.
     expect(isSafeRegex("a+X")).toBe(true);
+    // A backreference in a lookbehind compares as much text as its group
+    // captured, at every split of `(a*)` the attempt backtracks through.
+    expect(isSafeRegex("^x|(a*)(?<=X\\1)$")).toBe(false);
+    expect(isSafeRegex("^x|^(a*)(?<=X\\1)$")).toBe(true);
   });
 
   it("checks the copies an unbounded repeat requires before its loop", async () => {
@@ -14859,6 +14863,25 @@ describe("checkHasConditions", () => {
       // a near miss costs a quadratic attempt at each of its positions.
       const value = "x|(?:a+){2}X";
       const ctx = makeCtx({ headers: { "x-auth": `${"a".repeat(4_000)}!` } });
+      const started = performance.now();
+      expect(checkHasConditions([{ type: "header", key: "x-auth", value }], undefined, ctx)).toBe(
+        false,
+      );
+      expect(performance.now() - started).toBeLessThan(1_000);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("(ReDoS risk)"));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("has header with value: rejects a lookbehind backreference the engine compares at every split", async () => {
+    const { checkHasConditions } = await import("../packages/vinext/src/config/config-matchers.js");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      // Each attempt of `(a*)(?<=X\1)` compares `\1` once per split of the
+      // run of `a`s, and the unanchored branch is retried at every start.
+      const value = "x|(a*)(?<=X\\1)";
+      const ctx = makeCtx({ headers: { "x-auth": "a".repeat(4_000) } });
       const started = performance.now();
       expect(checkHasConditions([{ type: "header", key: "x-auth", value }], undefined, ctx)).toBe(
         false,

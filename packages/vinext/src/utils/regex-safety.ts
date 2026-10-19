@@ -835,11 +835,15 @@ function exactWidth(node: RegexNode): number | null {
   }
 }
 
-/** Whether `node`, lookaround bodies included, holds a repeat such as `a?`, `a{0,500}` or `a*`. */
+/**
+ * Whether `node`, lookaround bodies included, holds a repeat such as `a?`,
+ * `a{0,500}` or `a*`, or an atom of unknown width, such as a backreference
+ * in a lookbehind, which the automaton reads as a loop.
+ */
 function containsVariableRepetition(node: RegexNode): boolean {
   switch (node.kind) {
     case "atom":
-      return false;
+      return !node.fixedWidth;
     case "assertion":
       return containsVariableRepetition(node.child);
     case "sequence":
