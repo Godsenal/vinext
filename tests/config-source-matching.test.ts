@@ -885,15 +885,57 @@ describe("next.config.js source validation", () => {
     }
   });
 
-  it("loads a config whose conditions are malformed", async () => {
-    // Condition shapes are not validated at load, so checking condition
-    // values there must not make a malformed list fail it.
-    for (const has of [{}, "x", [null], [{ type: "header", key: "x", value: 1 }]]) {
-      await expect(
-        resolveNextConfig({ headers: () => [{ source: "/x", headers: [], has }] } as never),
-        JSON.stringify(has),
-      ).resolves.toBeDefined();
+  it("rejects malformed has/missing conditions like Next.js", async () => {
+    // checkCustomRoutes in Next.js's load-custom-routes.ts fails the build
+    // for each of these.
+    const malformed = [
+      {},
+      "x",
+      [null],
+      [{ key: "x" }],
+      [{ type: "unknown", key: "x" }],
+      [{ type: "header" }],
+      [{ type: "header", key: "x", value: 1 }],
+      [{ type: "query", key: "q", value: ["[ab]*a[ab]*a[ab]*"] }],
+      [{ type: "cookie", key: "c", value: Symbol("value") }],
+      [{ type: "host" }],
+    ];
+    for (const has of malformed) {
+      for (const field of ["has", "missing"]) {
+        await expect(
+          resolveNextConfig({
+            redirects: () => [{ source: "/x", destination: "/y", permanent: false, [field]: has }],
+          } as never),
+          `${field} ${String(JSON.stringify(has))}`,
+        ).rejects.toThrow(`Invalid next.config.js redirect has/missing condition`);
+      }
     }
+    await expect(
+      resolveNextConfig({
+        rewrites: () => ({ fallback: [{ source: "/x", destination: "/y", has: [null] }] }),
+      } as never),
+    ).rejects.toThrow("Invalid next.config.js rewrite has/missing condition");
+    await expect(
+      resolveNextConfig({ headers: () => [{ source: "/x", headers: [], missing: {} }] } as never),
+    ).rejects.toThrow("Invalid next.config.js header has/missing condition");
+
+    // Next.js allows a host key, extra fields, and an omitted value for the
+    // other types.
+    await expect(
+      resolveNextConfig({
+        headers: () => [
+          {
+            source: "/x",
+            headers: [],
+            has: [
+              { type: "host", key: "ignored", value: "example.com" },
+              { type: "header", key: "x", extra: true },
+            ],
+            missing: [],
+          },
+        ],
+      } as never),
+    ).resolves.toBeDefined();
   });
 
   it("reports a missing route entry instead of crashing on it", async () => {
