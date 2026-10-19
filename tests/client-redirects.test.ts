@@ -168,4 +168,26 @@ describe("client redirects", () => {
     });
     expect(rewrites.beforeFiles).toHaveLength(malformed.length);
   });
+
+  it("publishes condition values that are not strings unchanged", () => {
+    // Config loading does not check condition shapes; only string values
+    // are escaped for the client.
+    const values = [Symbol("x"), ["("], 1];
+    const has = values.map((value) => ({
+      type: "query",
+      key: "q",
+      value,
+    })) as unknown as NextRewrite["has"];
+    const rewrites = toClientRewrites({
+      beforeFiles: [{ source: "/a", destination: "/b", has }],
+      afterFiles: [],
+      fallback: [],
+    });
+    expect(rewrites.beforeFiles[0]?.has?.map((condition) => condition.value)).toEqual(values);
+    const [redirect] = toClientRedirects([
+      { source: "/a", destination: "/b", permanent: false, has, missing: has },
+    ]);
+    expect(redirect?.has?.map((condition) => condition.value)).toEqual(values);
+    expect(redirect?.missing?.map((condition) => condition.value)).toEqual(values);
+  });
 });
