@@ -925,10 +925,22 @@ describe("next.config.js source validation", () => {
     // Next.js accepts these, and the ReDoS check is conservative: it also
     // flags linear shapes such as this slug pattern.
     const source = "/blog/:slug([a-z0-9]+(?:-[a-z0-9]+)*)";
-    const config = await resolveNextConfig({
-      headers: () => [{ source, headers: [{ key: "x", value: "1" }] }],
-    } as never);
-    expect(config.headers).toHaveLength(1);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const config = await resolveNextConfig({
+        headers: () => [{ source, headers: [{ key: "x", value: "1" }] }],
+      } as never);
+      // The rule stays in the config but is reported when it loads, and never
+      // matches a request.
+      expect(config.headers).toHaveLength(1);
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining(`Ignoring next.config.js source "${source}" (ReDoS risk)`),
+      );
+      const ctx = requestContextFromRequest(new Request("http://localhost/"));
+      expect(matchHeaders("/blog/a-b", config.headers, ctx)).toEqual([]);
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it("accepts valid sources", async () => {
