@@ -9,10 +9,11 @@ const GUARD_PATH = path.resolve(import.meta.dirname, "../config/config-source-gu
  *
  * config-matchers checks next.config.js sources and condition regexes
  * through config/config-source-guard. In the browser it only matches the
- * redirects and rewrites the server published, after leaving out sources it
- * skips and escaping condition values it cannot compile safely
- * (toClientRedirects, toClientRewrites), so the client build gets a guard
- * that accepts every pattern. Server environments keep the real one.
+ * redirects and rewrites the server published, after leaving out rules with a
+ * skipped source or a condition value rejected as unsafe, and escaping
+ * condition values that are not valid regexes (toClientRedirects,
+ * toClientRewrites), so the client build gets a guard that accepts every
+ * pattern. Server environments keep the real one.
  */
 export const clientConfigSourceGuardPlugin: Plugin = {
   name: "vinext:client-config-source-guard",
