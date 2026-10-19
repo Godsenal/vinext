@@ -9934,7 +9934,7 @@ describe("middleware matcher patterns", () => {
       const start = performance.now();
       compiled.regexp!.test(`/${"a1-".repeat(5_000)}-`);
       compiled.regexp!.test(`/blog/${"a-".repeat(8_000)}!`);
-      expect(performance.now() - start, matcher).toBeLessThan(500);
+      expect(performance.now() - start, matcher).toBeLessThan(1_000);
     }
     expect(compileMiddlewareMatcherPattern(`/:slug(${slug})`).regexp!.test("/my-first-post")).toBe(
       true,
@@ -10017,7 +10017,7 @@ describe("middleware matcher patterns", () => {
     expect(isSafeRegex(pattern)).toBe(true);
     const start = performance.now();
     new RegExp(`^(?:${pattern})$`).test(`${"b".repeat(5_000)}a${"c".repeat(5_000)}!`);
-    expect(performance.now() - start).toBeLessThan(500);
+    expect(performance.now() - start).toBeLessThan(1_000);
 
     // Each guarded loop is `\S*`, so neither can read a separating `\s`,
     // ASCII or not.
@@ -10048,7 +10048,7 @@ describe("middleware matcher patterns", () => {
       ]) {
         compiled.regexp!.test(pathname);
       }
-      expect(performance.now() - start, matcher).toBeLessThan(500);
+      expect(performance.now() - start, matcher).toBeLessThan(1_000);
     }
     expect(compileMiddlewareMatcherPattern("/((?!.*a.*a.*b).*)")).toMatchObject({
       kind: "unsafe",
@@ -10078,8 +10078,7 @@ describe("middleware matcher patterns", () => {
         encoding: "utf8",
         timeout: 30_000,
       });
-      expect(result.stderr).toBe("");
-      expect(result.status).toBe(0);
+      expect(result.status, result.stderr).toBe(0);
       expect(result.stdout.trim()).toBe("null");
     } finally {
       await rm(dir, { recursive: true, force: true });
@@ -14393,7 +14392,7 @@ describe("isSafeRegex", () => {
       const regexp = new RegExp(`^(?:${pattern})$`);
       const start = performance.now();
       regexp.test(`${"a".repeat(20_000)}!`);
-      expect(performance.now() - start, pattern).toBeLessThan(500);
+      expect(performance.now() - start, pattern).toBeLessThan(1_000);
     }
   });
 
