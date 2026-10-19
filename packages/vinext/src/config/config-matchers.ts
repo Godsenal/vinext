@@ -80,10 +80,10 @@ const _compiledSourceCache = new Map<string, CompiledConfigSource | null>();
  * never changes. Without caching, safeRegExp() is called on every request for
  * every condition on every rule.
  *
- * Value is `null` when safeRegExp rejected the pattern, or `false` when the
- * value string was undefined (no regex needed — use exact string comparison).
+ * Value is "invalid" when the value is not a valid regex (it is compared
+ * literally) and "unsafe" when the ReDoS check rejected it.
  */
-const _compiledConditionCache = new Map<string, RegExp | null>();
+const _compiledConditionCache = new Map<string, CompiledRegExp>();
 
 /**
  * Generic helper for the regex compilation caches above.
@@ -311,6 +311,43 @@ export function isSafeRegex(pattern: string, flags?: string): boolean {
   return isSafeConfigRegex(pattern, flags);
 }
 
+type CompiledRegExp = RegExp | "invalid" | "unsafe";
+
+/**
+ * Compile a regex pattern safely. Returns the compiled RegExp, "invalid" when
+ * the pattern does not compile, or "unsafe" when it is vulnerable to ReDoS or
+ * uses the `u` or `v` flag, whose syntax the ReDoS check does not model.
+ *
+ * Logs a warning when a valid pattern is rejected, as a ReDoS risk or for its
+ * flag, so developers can fix their config.
+ */
+function compileSafeRegExp(pattern: string, flags?: string): CompiledRegExp {
+  // Compiling does not run the pattern, so an invalid one is ruled out first
+  // instead of being reported as a ReDoS risk.
+  let regex: RegExp;
+  try {
+    regex = new RegExp(pattern, flags);
+  } catch {
+    return "invalid";
+  }
+  if (flags?.includes("u") || flags?.includes("v")) {
+    console.warn(
+      `[vinext] Rejecting regex pattern with the unsupported "u" or "v" flag: ${pattern}\n` +
+        `  Its ReDoS safety cannot be checked.`,
+    );
+    return "unsafe";
+  }
+  if (!isSafeRegex(pattern, flags)) {
+    console.warn(
+      `[vinext] Rejecting potentially unsafe regex pattern (ReDoS risk): ${pattern}\n` +
+        `  Nested or ambiguous repetition can cause catastrophic backtracking.\n` +
+        `  Simplify the pattern to make repeated matches fixed and unambiguous.`,
+    );
+    return "unsafe";
+  }
+  return regex;
+}
+
 /**
  * Compile a regex pattern safely. Returns the compiled RegExp or null if the
  * pattern is invalid, vulnerable to ReDoS, or uses the `u` or `v` flag, whose
@@ -320,30 +357,8 @@ export function isSafeRegex(pattern: string, flags?: string): boolean {
  * flag, so developers can fix their config.
  */
 export function safeRegExp(pattern: string, flags?: string): RegExp | null {
-  // Compiling does not run the pattern, so an invalid one is ruled out first
-  // instead of being reported as a ReDoS risk.
-  let regex: RegExp;
-  try {
-    regex = new RegExp(pattern, flags);
-  } catch {
-    return null;
-  }
-  if (flags?.includes("u") || flags?.includes("v")) {
-    console.warn(
-      `[vinext] Rejecting regex pattern with the unsupported "u" or "v" flag: ${pattern}\n` +
-        `  Its ReDoS safety cannot be checked.`,
-    );
-    return null;
-  }
-  if (!isSafeRegex(pattern, flags)) {
-    console.warn(
-      `[vinext] Rejecting potentially unsafe regex pattern (ReDoS risk): ${pattern}\n` +
-        `  Nested or ambiguous repetition can cause catastrophic backtracking.\n` +
-        `  Simplify the pattern to make repeated matches fixed and unambiguous.`,
-    );
-    return null;
-  }
-  return regex;
+  const regex = compileSafeRegExp(pattern, flags);
+  return regex instanceof RegExp ? regex : null;
 }
 
 /**
@@ -454,7 +469,8 @@ function _matchConditionValue(
   if (!expectedValue) return actualValue ? _emptyParams() : null;
 
   const re = _cachedConditionRegex(expectedValue);
-  if (re) {
+  if (re === "unsafe") return null;
+  if (re instanceof RegExp) {
     const match = re.exec(actualValue);
     if (!match) return null;
 
@@ -511,15 +527,30 @@ function matchSingleCondition(
 
 /**
  * Return a cached RegExp for a has/missing condition value string, compiling
- * on first use. Returns null if safeRegExp rejected the pattern or if the
- * value is not a valid regex (fall back to exact string comparison).
+ * on first use. Returns "invalid" when the value is not a valid regex (it is
+ * compared literally, like an exact string) and "unsafe" when the ReDoS check
+ * rejected it.
  */
-function _cachedConditionRegex(value: string): RegExp | null {
-  return getCachedRegex(_compiledConditionCache, value, () =>
+function _cachedConditionRegex(value: string): CompiledRegExp {
+  let re = _compiledConditionCache.get(value);
+  if (re === undefined) {
     // Anchor the regex to match the full value, not a substring.
     // Matches Next.js: new RegExp(`^${hasItem.value}$`)
     // Without anchoring, has:[cookie:role=admin] would match "not-admin".
-    safeRegExp(`^${value}$`),
+    re = compileSafeRegExp(`^${value}$`);
+    _compiledConditionCache.set(value, re);
+  }
+  return re;
+}
+
+/**
+ * Whether any condition carries a value the ReDoS check rejected. Such a rule
+ * never applies: comparing the value literally instead would let a request
+ * that sends the pattern's own text satisfy a `has` or dodge a `missing`.
+ */
+export function hasUnsafeConditionValue(conditions: HasCondition[] | undefined): boolean {
+  return !!conditions?.some(
+    (condition) => !!condition.value && _cachedConditionRegex(condition.value) === "unsafe",
   );
 }
 
@@ -535,6 +566,7 @@ function collectConditionParams(
   missing: HasCondition[] | undefined,
   ctx: RequestContext,
 ): Record<string, string> | null {
+  if (hasUnsafeConditionValue(has) || hasUnsafeConditionValue(missing)) return null;
   const params = _emptyParams();
 
   if (has) {
@@ -1468,9 +1500,9 @@ function collectHeaderHasParams(
       if (condition.type !== "host") params[condition.key.replace(/[^A-Za-z]/g, "")] = value;
       continue;
     }
-    const match = _cachedConditionRegex(condition.value)?.exec(
-      Array.isArray(value) ? value[value.length - 1] : value,
-    );
+    const re = _cachedConditionRegex(condition.value);
+    if (!(re instanceof RegExp)) continue;
+    const match = re.exec(Array.isArray(value) ? value[value.length - 1] : value);
     if (!match) continue;
     if (match.groups) {
       Object.assign(params, match.groups);

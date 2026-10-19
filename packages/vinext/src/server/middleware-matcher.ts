@@ -1,5 +1,6 @@
 import {
   checkHasConditions,
+  hasUnsafeConditionValue,
   requestContextFromRequest,
   type RequestContext,
 } from "../config/config-matchers.js";
@@ -31,6 +32,19 @@ type CompiledMatcherPattern = RegExp | typeof UNSAFE_MATCHER_PATTERN;
 
 const _mwPatternCache = new Map<string, CompiledMatcherPattern>();
 
+/**
+ * Invalid matcher objects make middleware run. A has/missing value the ReDoS
+ * check rejects counts as invalid too, so a request cannot skip middleware by
+ * sending the value's literal text.
+ */
+function isUsableMatcherObject(value: unknown): value is MiddlewareMatcherObject {
+  return (
+    isValidMiddlewareMatcherObjectConfig(value) &&
+    !hasUnsafeConditionValue(value.has) &&
+    !hasUnsafeConditionValue(value.missing)
+  );
+}
+
 export function matchesMiddleware(
   pathname: string,
   matcher: MatcherConfig | undefined,
@@ -61,7 +75,7 @@ export function matchesMiddleware(
       continue;
     }
 
-    if (!isValidMiddlewareMatcherObjectConfig(m)) {
+    if (!isUsableMatcherObject(m)) {
       return true;
     }
     if (!matchObjectMatcher(pathname, m, i18nConfig, localeContext)) {
@@ -110,7 +124,7 @@ export function matchesMiddlewarePathname(
       continue;
     }
 
-    if (!isValidMiddlewareMatcherObjectConfig(item)) {
+    if (!isUsableMatcherObject(item)) {
       return true;
     }
     if (matchObjectMatcher(pathname, item, i18nConfig, localeContext)) {

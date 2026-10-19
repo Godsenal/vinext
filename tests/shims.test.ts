@@ -10691,6 +10691,38 @@ describe("middleware matcher patterns", () => {
     }
   });
 
+  it("runs middleware for a matcher object whose condition value is rejected as unsafe", async () => {
+    const { matchesMiddleware, matchesMiddlewarePathname } =
+      await import("../packages/vinext/src/server/middleware-matcher.js");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      // Like an invalid matcher object, so a request cannot skip middleware by
+      // sending the rejected value's literal text in a `missing` header.
+      const value = "[ab]*a[ab]*a[ab]*";
+      const request = new Request("http://localhost/private", { headers: { "x-skip": value } });
+      for (const field of ["has", "missing"] as const) {
+        const matcher = [
+          { source: "/private", [field]: [{ type: "header", key: "x-skip", value }] },
+        ];
+        expect(matchesMiddleware("/private", matcher, request)).toBe(true);
+        expect(matchesMiddleware("/public", matcher, request)).toBe(true);
+        expect(matchesMiddlewarePathname("/public", matcher)).toBe(true);
+      }
+
+      // A value that is not a valid regex is still compared literally.
+      const invalid = [
+        { source: "/private", missing: [{ type: "header" as const, key: "x-skip", value: "a[" }] },
+      ];
+      const literal = new Request("http://localhost/private", { headers: { "x-skip": "a[" } });
+      expect(matchesMiddleware("/private", invalid, literal)).toBe(false);
+      expect(matchesMiddleware("/private", invalid, new Request("http://localhost/private"))).toBe(
+        true,
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it("matchPattern: dots are escaped in paths", async () => {
     const { matchPattern } = await import("../packages/vinext/src/server/middleware.js");
     expect(matchPattern("/files/data.json", "/files/data.json")).toBe(true);
@@ -15179,6 +15211,36 @@ describe("checkHasConditions", () => {
     } finally {
       warn.mockRestore();
     }
+  });
+
+  it("never applies a rule whose value is rejected as unsafe, even for the value's literal text", async () => {
+    const { checkHasConditions } = await import("../packages/vinext/src/config/config-matchers.js");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      // Comparing a rejected value literally would let a request that sends
+      // the pattern's own text satisfy `has` or dodge `missing`.
+      const condition = [{ type: "header" as const, key: "x-auth", value: "[ab]*a[ab]*a[ab]*" }];
+      const literal = makeCtx({ headers: { "x-auth": "[ab]*a[ab]*a[ab]*" } });
+      const matching = makeCtx({ headers: { "x-auth": "aa" } });
+      const absent = makeCtx();
+      for (const ctx of [literal, matching, absent]) {
+        expect(checkHasConditions(condition, undefined, ctx)).toBe(false);
+        expect(checkHasConditions(undefined, condition, ctx)).toBe(false);
+      }
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("compares a value that is not a valid regex literally", async () => {
+    const { checkHasConditions } = await import("../packages/vinext/src/config/config-matchers.js");
+    const condition = [{ type: "header" as const, key: "x-auth", value: "a[" }];
+    const literal = makeCtx({ headers: { "x-auth": "a[" } });
+    const other = makeCtx({ headers: { "x-auth": "a" } });
+    expect(checkHasConditions(condition, undefined, literal)).toBe(true);
+    expect(checkHasConditions(condition, undefined, other)).toBe(false);
+    expect(checkHasConditions(undefined, condition, literal)).toBe(false);
+    expect(checkHasConditions(undefined, condition, other)).toBe(true);
   });
 
   // -- cookie conditions --
