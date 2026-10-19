@@ -922,9 +922,9 @@ describe("next.config.js source validation", () => {
   });
 
   it("leaves ReDoS-unsafe sources to warn and skip when matched", async () => {
-    // Next.js accepts these, and the ReDoS check is conservative: it also
-    // flags linear shapes such as this slug pattern.
-    const source = "/blog/:slug([a-z0-9]+(?:-[a-z0-9]+)*)";
+    // Next.js accepts these. A near miss splits a run of `-`-joined words
+    // among the three params in cubically many ways.
+    const source = "/:a([^/]+)-:b([^/]+)-:c([^/]+)";
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
       const config = await resolveNextConfig({
@@ -937,7 +937,7 @@ describe("next.config.js source validation", () => {
         expect.stringContaining(`Ignoring next.config.js source "${source}" (ReDoS risk)`),
       );
       const ctx = requestContextFromRequest(new Request("http://localhost/"));
-      expect(matchHeaders("/blog/a-b", config.headers, ctx)).toEqual([]);
+      expect(matchHeaders("/a-b-c", config.headers, ctx)).toEqual([]);
     } finally {
       warn.mockRestore();
     }
