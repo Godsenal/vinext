@@ -149,6 +149,23 @@ describe("client redirects", () => {
     }
   });
 
+  it("never applies a rule whose unsafe condition value is not a string", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      // The matchers build a pattern from any truthy value, so the unsafe
+      // check must see the same text.
+      const missing = [
+        { type: "query", key: "q", value: ["[ab]*a[ab]*a[ab]*"] },
+      ] as unknown as NextRedirect["missing"];
+      const config = [{ source: "/a", destination: "/b", permanent: false, missing }];
+      expect(hasUnsafeConditions({ missing })).toBe(true);
+      expect(matchRedirect("/a", config, browserContext(), basePathState)).toBeNull();
+      expect(toClientRedirects(config)).toEqual([]);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it("publishes rewrites whose missing conditions are malformed", () => {
     // Config loading does not check condition shapes, so the unsafe-value
     // check must not throw on them while building the client manifests, nor
