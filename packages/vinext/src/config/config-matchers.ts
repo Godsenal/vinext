@@ -321,7 +321,8 @@ export function isSafeRegex(pattern: string, flags?: string): boolean {
  * pattern is invalid, vulnerable to ReDoS, or uses the `u` or `v` flag, whose
  * syntax the ReDoS check does not model.
  *
- * Logs a warning when a pattern is rejected so developers can fix their config.
+ * Logs a warning when a valid pattern is rejected, as a ReDoS risk or for its
+ * flag, so developers can fix their config.
  */
 export function safeRegExp(pattern: string, flags?: string): RegExp | null {
   // Compiling does not run the pattern, so an invalid one is ruled out first
