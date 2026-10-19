@@ -176,8 +176,14 @@ export function clientConfigSourceCouldMatch(pathname: string, source: string): 
   const path = asciiLowerCase(pathname);
   const prefix = asciiLowerCase(literalPrefix);
   if (!path.startsWith(prefix)) return false;
-  if (after === null) return true;
   const rest = path.slice(prefix.length);
+  // Params and `{}` groups only match a `/` through a custom pattern, an
+  // escape or a `/` prefix (the character before them, which a repeat
+  // reuses), so without those after the literal text the rest stays in one
+  // segment: `/post-:id` cannot reach `/post-1/x`.
+  const tail = wildcardIndex === -1 ? "" : source.slice(wildcardIndex - 1);
+  if (!/[/(\\]/.test(tail) && rest.slice(0, -1).includes("/")) return false;
+  if (after === null) return true;
   if (rest.startsWith(optionalPrefix!)) return true;
   if (after === "") return rest === "" || rest === "/";
   return !isAscii(after) || rest.startsWith(asciiLowerCase(after));
