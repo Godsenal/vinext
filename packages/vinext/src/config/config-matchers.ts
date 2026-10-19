@@ -562,17 +562,23 @@ export function hasUnsafeConditionValue(
   return conditionValues(conditions).some((value) => _cachedConditionRegex(value) === "unsafe");
 }
 
+const CONDITION_TYPES = new Set(["header", "cookie", "query", "host"]);
+
 /**
- * The non-empty string values in a has/missing list. Config loading does not
- * check condition shapes, so a malformed list or entry contributes nothing
- * here rather than throwing in config load or build-time callers.
+ * The non-empty string values in a has/missing list that matchSingleCondition
+ * would compare. Config loading does not check condition shapes, so a
+ * malformed list or entry, including one whose type the matcher ignores,
+ * contributes nothing here rather than throwing in config load or build-time
+ * callers.
  */
 function conditionValues(conditions: unknown): string[] {
   if (!Array.isArray(conditions)) return [];
   const values: string[] = [];
   for (const condition of conditions as unknown[]) {
-    const value = (condition as { value?: unknown } | null)?.value;
-    if (typeof value === "string" && value) values.push(value);
+    const { type, value } = (condition ?? {}) as { type?: unknown; value?: unknown };
+    if (CONDITION_TYPES.has(type as string) && typeof value === "string" && value) {
+      values.push(value);
+    }
   }
   return values;
 }
