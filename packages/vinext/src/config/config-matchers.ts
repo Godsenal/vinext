@@ -559,9 +559,22 @@ function _cachedConditionRegex(value: string): CompiledRegExp {
 export function hasUnsafeConditionValue(
   conditions: ReadonlyArray<{ value?: string }> | undefined,
 ): boolean {
-  return !!conditions?.some(
-    (condition) => !!condition.value && _cachedConditionRegex(condition.value) === "unsafe",
-  );
+  return conditionValues(conditions).some((value) => _cachedConditionRegex(value) === "unsafe");
+}
+
+/**
+ * The non-empty string values in a has/missing list. Config loading does not
+ * check condition shapes, so a malformed list or entry contributes nothing
+ * here rather than throwing in config load or build-time callers.
+ */
+function conditionValues(conditions: unknown): string[] {
+  if (!Array.isArray(conditions)) return [];
+  const values: string[] = [];
+  for (const condition of conditions as unknown[]) {
+    const value = (condition as { value?: unknown } | null)?.value;
+    if (typeof value === "string" && value) values.push(value);
+  }
+  return values;
 }
 
 /**
@@ -712,14 +725,8 @@ export function prepareConfigRule(rule: {
   missing?: HasCondition[];
 }): void {
   compileConfigSource(rule.source);
-  // Config loading does not check condition shapes, so a malformed list is
-  // left for request time rather than failing the load here.
-  for (const conditions of [rule.has, rule.missing]) {
-    if (!Array.isArray(conditions)) continue;
-    for (const condition of conditions as unknown[]) {
-      const value = (condition as { value?: unknown } | null)?.value;
-      if (typeof value === "string" && value) _cachedConditionRegex(value);
-    }
+  for (const value of [...conditionValues(rule.has), ...conditionValues(rule.missing)]) {
+    _cachedConditionRegex(value);
   }
 }
 
