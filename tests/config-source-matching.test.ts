@@ -830,9 +830,15 @@ describe("next.config.js source validation", () => {
   });
 
   it("reports a missing route entry instead of crashing on it", async () => {
-    await expect(resolveNextConfig({ headers: () => [null] } as never)).rejects.toThrow(
-      "Invalid next.config.js header source",
-    );
+    for (const type of ["redirect", "rewrite", "header"]) {
+      await expect(
+        resolveNextConfig({ [`${type}s`]: () => [null] } as never),
+        type,
+      ).rejects.toThrow(`Invalid next.config.js ${type} source`);
+    }
+    await expect(
+      resolveNextConfig({ rewrites: () => ({ beforeFiles: [null] }) } as never),
+    ).rejects.toThrow("Invalid next.config.js rewrite source");
   });
 
   it("checks sources again after adding basePath, like Next.js", async () => {

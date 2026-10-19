@@ -1901,6 +1901,10 @@ export async function resolveNextConfig(
 
   {
     const allRewrites = [...rewrites.beforeFiles, ...rewrites.afterFiles, ...rewrites.fallback];
+    // Before the checks below read their fields, so a missing entry is
+    // reported rather than crashing them.
+    validateConfigSources("redirect", redirects);
+    validateConfigSources("rewrite", allRewrites);
 
     // Like Next.js' checkCustomRoutes (packages/next/src/lib/load-custom-routes.ts),
     // reject a `basePath: false` rewrite to an internal destination: nothing
@@ -1946,12 +1950,6 @@ export async function resolveNextConfig(
     headers = await config.headers();
   }
 
-  validateConfigSources("redirect", redirects);
-  validateConfigSources("rewrite", [
-    ...rewrites.beforeFiles,
-    ...rewrites.afterFiles,
-    ...rewrites.fallback,
-  ]);
   validateConfigSources("header", headers);
   // Next.js checks the routes again after adding the basePath and locale
   // prefixes.
