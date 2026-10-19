@@ -21,7 +21,7 @@ import {
   applyLocaleToRoutes,
   configSourceError,
   isExternalUrl,
-  prepareConfigSource,
+  prepareConfigRule,
 } from "./config-matchers.js";
 import { loadTsconfigResolutionForRoot } from "./tsconfig-paths.js";
 import { loadCommonJsModule, shouldRetryAsCommonJs } from "../utils/commonjs-loader.js";
@@ -2177,8 +2177,8 @@ export async function resolveNextConfig(
     headers = applyLocaleToRoutes(headers, i18n, "header", opts);
   }
 
-  // Compile the sources requests will match now, so one the ReDoS check
-  // rejects is reported when the config loads.
+  // Compile the sources and condition values requests will match now, so one
+  // the ReDoS check rejects is reported when the config loads.
   for (const route of [
     ...redirects,
     ...rewrites.beforeFiles,
@@ -2186,7 +2186,7 @@ export async function resolveNextConfig(
     ...rewrites.fallback,
     ...headers,
   ]) {
-    prepareConfigSource(route.source);
+    prepareConfigRule(route);
   }
 
   const images = config.images

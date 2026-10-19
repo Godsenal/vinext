@@ -86,15 +86,15 @@ const _compiledSourceCache = new Map<string, CompiledConfigSource | null>();
 const _compiledConditionCache = new Map<string, CompiledRegExp>();
 
 /**
- * Generic helper for the regex compilation caches above.
+ * Caching helper for the source cache above.
  *
- * Each cache stores the compiled artifact (or `null` when safeRegExp rejected
- * the pattern) the first time a key is seen, and reuses it forever. The
- * `undefined` sentinel distinguishes "not yet seen" from "seen and rejected"
- * so we never re-run isSafeRegex on the same input.
+ * Stores the compiled artifact (or `null` when the source was skipped) the
+ * first time a key is seen, and reuses it forever. The `undefined` sentinel
+ * distinguishes "not yet seen" from "seen and skipped" so the ReDoS check
+ * never re-runs on the same input.
  *
- * Keep the security path intact: `compile()` is responsible for calling
- * safeRegExp(); this helper only handles caching.
+ * Keep the security path intact: `compile()` is responsible for the checks;
+ * this helper only handles caching.
  */
 function getCachedRegex<K, V>(cache: Map<K, V | null>, key: K, compile: () => V | null): V | null {
   let value = cache.get(key);
@@ -682,7 +682,7 @@ function validationRegExpLength(source: string): number | null {
  * Mirrors the source checks in Next.js's checkCustomRoutes, which fail the
  * build; config loading calls this to do the same. ReDoS-unsafe sources are
  * not errors, since Next.js accepts them and the safety check is
- * conservative: see prepareConfigSource.
+ * conservative: see prepareConfigRule.
  *
  * https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/lib/load-custom-routes.ts
  */
@@ -698,12 +698,19 @@ export function configSourceError(source: unknown): string | null {
 }
 
 /**
- * Compile and cache a valid source at config load, so a ReDoS-unsafe one is
- * reported as skipped then, rather than on the first request that reaches
- * it, and its analysis is not repeated per request.
+ * Compile and cache a rule's source and has/missing values at config load, so
+ * a ReDoS-unsafe one is reported as skipped then, rather than on the first
+ * request that reaches it, and its analysis is not repeated per request.
  */
-export function prepareConfigSource(source: string): void {
-  compileConfigSource(source);
+export function prepareConfigRule(rule: {
+  source: string;
+  has?: HasCondition[];
+  missing?: HasCondition[];
+}): void {
+  compileConfigSource(rule.source);
+  for (const condition of [...(rule.has ?? []), ...(rule.missing ?? [])]) {
+    if (condition.value) _cachedConditionRegex(condition.value);
+  }
 }
 
 function compileConfigSource(source: string): CompiledConfigSource | null {
