@@ -1722,7 +1722,15 @@ function validateConfigSources(type: string, routes: ReadonlyArray<{ source: unk
   const invalid: string[] = [];
   for (const route of routes) {
     const error = configSourceError(route?.source);
-    if (error) invalid.push(`  ${JSON.stringify(route?.source)}: ${error}`);
+    if (!error) continue;
+    // Only a string is shown as is; any other value, such as a BigInt, may
+    // not serialize.
+    const source = route?.source;
+    const shown =
+      typeof source === "string"
+        ? JSON.stringify(source)
+        : `(${source === null ? "null" : typeof source})`;
+    invalid.push(`  ${shown}: ${error}`);
   }
   if (invalid.length > 0) {
     throw new Error(

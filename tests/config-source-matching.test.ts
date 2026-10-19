@@ -839,6 +839,17 @@ describe("next.config.js source validation", () => {
     await expect(
       resolveNextConfig({ rewrites: () => ({ beforeFiles: [null] }) } as never),
     ).rejects.toThrow("Invalid next.config.js rewrite source");
+    // Sources that are not strings, some of which JSON cannot serialize.
+    const unserializable = {
+      toJSON: () => {
+        throw new Error("toJSON");
+      },
+    };
+    for (const source of [1n, Symbol("source"), Object.create(null), unserializable]) {
+      await expect(
+        resolveNextConfig({ headers: () => [{ source, headers: [] }] } as never),
+      ).rejects.toThrow("Invalid next.config.js header source");
+    }
   });
 
   it("checks sources again after adding basePath, like Next.js", async () => {
