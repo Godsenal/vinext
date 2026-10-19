@@ -1739,6 +1739,64 @@ function validateConfigSources(type: string, routes: ReadonlyArray<{ source: unk
   }
 }
 
+const CONDITION_TYPES = new Set(["header", "cookie", "query", "host"]);
+
+/**
+ * Fail config loading on a malformed has/missing list or item, with the rules
+ * of Next.js's checkCustomRoutes (load-custom-routes.ts). The matchers and
+ * the ReDoS check of condition values rely on these shapes.
+ */
+function validateConfigConditions(
+  type: string,
+  routes: ReadonlyArray<{ has?: unknown; missing?: unknown }>,
+): void {
+  const invalid: string[] = [];
+  for (const route of routes) {
+    for (const field of ["has", "missing"] as const) {
+      const items = route?.[field];
+      if (items === undefined) continue;
+      if (!Array.isArray(items)) {
+        invalid.push(`  \`${field}\` must be undefined or an array`);
+        continue;
+      }
+      for (const item of items as unknown[]) {
+        const condition = (item ?? {}) as { type?: unknown; key?: unknown; value?: unknown };
+        const parts: string[] = [];
+        if (!CONDITION_TYPES.has(condition.type as string)) parts.push("invalid type");
+        if (typeof condition.key !== "string" && condition.type !== "host") {
+          parts.push("invalid key");
+        }
+        if (condition.value !== undefined && typeof condition.value !== "string") {
+          parts.push("invalid value");
+        }
+        if (condition.value === undefined && condition.type === "host") {
+          parts.push('value is required for "host" type');
+        }
+        if (parts.length > 0) {
+          invalid.push(`  \`${field}\` item: ${parts.join(", ")} for ${describeConfigValue(item)}`);
+        }
+      }
+    }
+  }
+  if (invalid.length > 0) {
+    throw new Error(
+      `Invalid next.config.js ${type} has/missing condition${invalid.length === 1 ? "" : "s"}:\n` +
+        `${invalid.join("\n")}\n` +
+        "Each item must be { type: header, cookie, query or host, key: string, value?: string }, " +
+        "with a value and no key required for host.",
+    );
+  }
+}
+
+/** JSON for a config value, or its type when JSON cannot serialize it. */
+function describeConfigValue(value: unknown): string {
+  try {
+    return JSON.stringify(value) ?? `(${typeof value})`;
+  } catch {
+    return `(${typeof value})`;
+  }
+}
+
 /**
  * The sources Next.js's processRoutes builds from `routes` by adding the
  * basePath and locale prefixes, which checkCustomRoutes then checks again
@@ -1913,6 +1971,8 @@ export async function resolveNextConfig(
     // reported rather than crashing them.
     validateConfigSources("redirect", redirects);
     validateConfigSources("rewrite", allRewrites);
+    validateConfigConditions("redirect", redirects);
+    validateConfigConditions("rewrite", allRewrites);
 
     // Like Next.js' checkCustomRoutes (packages/next/src/lib/load-custom-routes.ts),
     // reject a `basePath: false` rewrite to an internal destination: nothing
@@ -1959,6 +2019,7 @@ export async function resolveNextConfig(
   }
 
   validateConfigSources("header", headers);
+  validateConfigConditions("header", headers);
   // Next.js checks the routes again after adding the basePath and locale
   // prefixes.
   if (config.basePath || i18n) {

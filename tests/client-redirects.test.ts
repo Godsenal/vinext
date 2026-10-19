@@ -2,9 +2,7 @@ import { describe, expect, it, vi } from "vite-plus/test";
 import { toClientRedirects } from "../packages/vinext/src/client/client-redirects.js";
 import { toClientRewrites } from "../packages/vinext/src/client/client-rewrites.js";
 import { matchClientRedirect } from "../packages/vinext/src/client/client-redirect-matcher.js";
-import type { NextRedirect, NextRewrite } from "../packages/vinext/src/config/next-config.js";
 import {
-  hasUnsafeConditions,
   matchRedirect,
   type RequestContext,
 } from "../packages/vinext/src/config/config-matchers.js";
@@ -147,55 +145,5 @@ describe("client redirects", () => {
     } finally {
       warn.mockRestore();
     }
-  });
-
-  it("never applies a rule whose unsafe condition value is not a string", () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    try {
-      // The matchers build a pattern from any truthy value, so the unsafe
-      // check must see the same text.
-      const missing = [
-        { type: "query", key: "q", value: ["[ab]*a[ab]*a[ab]*"] },
-      ] as unknown as NextRedirect["missing"];
-      const config = [{ source: "/a", destination: "/b", permanent: false, missing }];
-      expect(hasUnsafeConditions({ missing })).toBe(true);
-      expect(matchRedirect("/a", config, browserContext(), basePathState)).toBeNull();
-      expect(toClientRedirects(config)).toEqual([]);
-    } finally {
-      warn.mockRestore();
-    }
-  });
-
-  it("publishes rewrites whose missing conditions are malformed", () => {
-    // Config loading does not check condition shapes, so the unsafe-value
-    // check must not throw on them while building the client manifests, nor
-    // disable a rule for an entry the request matcher ignores.
-    const unsafeValue = "[ab]*a[ab]*a[ab]*";
-    const malformed = [
-      [null],
-      [{ type: "query" }],
-      [{ value: unsafeValue }],
-      [{ type: "unknown", key: "x", value: unsafeValue }],
-      {},
-      "x-auth",
-    ] as unknown as NextRewrite["missing"][];
-    for (const missing of malformed) {
-      expect(hasUnsafeConditions({ missing })).toBe(false);
-    }
-    const rewrites = toClientRewrites({
-      beforeFiles: malformed.map((missing) => ({ source: "/a", destination: "/b", missing })),
-      afterFiles: [],
-      fallback: [],
-    });
-    expect(rewrites.beforeFiles).toHaveLength(malformed.length);
-    const ignored = [{ value: unsafeValue }] as unknown as NextRedirect["missing"];
-    expect(
-      matchRedirect(
-        "/a",
-        [{ source: "/a", destination: "/b", permanent: false, missing: ignored }],
-        browserContext(),
-        basePathState,
-      ),
-    ).toMatchObject({ destination: "/b" });
   });
 });

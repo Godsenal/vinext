@@ -545,11 +545,7 @@ function matchSingleCondition(
  * compared literally, like an exact string) and "unsafe" when the ReDoS check
  * rejected it.
  */
-function _cachedConditionRegex(conditionValue: string): CompiledRegExp {
-  // Config loading does not check value types. Key every value by the text
-  // its pattern is built from, so the unsafe-value checks see the same
-  // pattern the matchers do.
-  const value = String(conditionValue);
+function _cachedConditionRegex(value: string): CompiledRegExp {
   let re = _compiledConditionCache.get(value);
   if (re === undefined) {
     // Anchor the regex to match the full value, not a substring.
@@ -574,27 +570,13 @@ function _cachedConditionRegex(conditionValue: string): CompiledRegExp {
 export function hasUnsafeConditionValue(
   conditions: ReadonlyArray<{ value?: string }> | undefined,
 ): boolean {
-  return conditionValues(conditions).some((value) => _cachedConditionRegex(value) === "unsafe");
-}
-
-const CONDITION_TYPES = new Set(["header", "cookie", "query", "host"]);
-
-/**
- * The patterns in a has/missing list that matchSingleCondition would compare.
- * Config loading does not check condition shapes, so a malformed list or
- * entry, including one whose type the matcher ignores, contributes nothing
- * here rather than throwing in config load or build-time callers.
- */
-function conditionValues(conditions: unknown): string[] {
-  if (!Array.isArray(conditions)) return [];
-  const values: string[] = [];
-  for (const condition of conditions as unknown[]) {
-    const { type, value } = (condition ?? {}) as { type?: unknown; value?: unknown };
-    // The matchers treat any truthy value as a pattern, and
-    // _cachedConditionRegex keys it by its text.
-    if (CONDITION_TYPES.has(type as string) && value) values.push(value as string);
-  }
-  return values;
+  // Config loading validates route conditions, but middleware matcher objects
+  // can reach here before their shape is checked.
+  if (!Array.isArray(conditions)) return false;
+  return conditions.some((condition: { value?: unknown } | null) => {
+    const value = condition?.value;
+    return typeof value === "string" && !!value && _cachedConditionRegex(value) === "unsafe";
+  });
 }
 
 /**
@@ -745,8 +727,8 @@ export function prepareConfigRule(rule: {
   missing?: HasCondition[];
 }): void {
   compileConfigSource(rule.source);
-  for (const value of [...conditionValues(rule.has), ...conditionValues(rule.missing)]) {
-    _cachedConditionRegex(value);
+  for (const condition of [...(rule.has ?? []), ...(rule.missing ?? [])]) {
+    if (condition.value) _cachedConditionRegex(condition.value);
   }
 }
 
