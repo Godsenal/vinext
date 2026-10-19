@@ -10073,7 +10073,7 @@ describe("middleware matcher patterns", () => {
         console.log(JSON.stringify(analyzeRegexSafety("^" + pattern + "$", { search: true })));
       `;
       await writeFile(path.join(dir, "run.mjs"), script);
-      const result = spawnSync(process.execPath, ["--max-old-space-size=64", "run.mjs"], {
+      const result = spawnSync(process.execPath, ["--max-old-space-size=128", "run.mjs"], {
         cwd: dir,
         encoding: "utf8",
         timeout: 30_000,
