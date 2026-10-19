@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vite-plus/test";
 import { toClientRedirects } from "../packages/vinext/src/client/client-redirects.js";
 import { toClientRewrites } from "../packages/vinext/src/client/client-rewrites.js";
 import { matchClientRedirect } from "../packages/vinext/src/client/client-redirect-matcher.js";
-import type { NextRewrite } from "../packages/vinext/src/config/next-config.js";
+import type { NextRedirect, NextRewrite } from "../packages/vinext/src/config/next-config.js";
 import {
   hasUnsafeConditions,
   matchRedirect,
@@ -151,10 +151,14 @@ describe("client redirects", () => {
 
   it("publishes rewrites whose missing conditions are malformed", () => {
     // Config loading does not check condition shapes, so the unsafe-value
-    // check must not throw on them while building the client manifests.
+    // check must not throw on them while building the client manifests, nor
+    // disable a rule for an entry the request matcher ignores.
+    const unsafeValue = "[ab]*a[ab]*a[ab]*";
     const malformed = [
       [null],
       [{ type: "query" }],
+      [{ value: unsafeValue }],
+      [{ type: "unknown", key: "x", value: unsafeValue }],
       {},
       "x-auth",
     ] as unknown as NextRewrite["missing"][];
@@ -167,5 +171,14 @@ describe("client redirects", () => {
       fallback: [],
     });
     expect(rewrites.beforeFiles).toHaveLength(malformed.length);
+    const ignored = [{ value: unsafeValue }] as unknown as NextRedirect["missing"];
+    expect(
+      matchRedirect(
+        "/a",
+        [{ source: "/a", destination: "/b", permanent: false, missing: ignored }],
+        browserContext(),
+        basePathState,
+      ),
+    ).toMatchObject({ destination: "/b" });
   });
 });
