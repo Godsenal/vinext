@@ -967,6 +967,7 @@ ${
 }
 import {
   resolveAppPageGenerateStaticParamsSources as __resolveAppPageGenerateStaticParamsSources,
+  validateAppPageRouteDynamicParams as __validateAppPageRouteDynamicParams,
 } from ${JSON.stringify(appPageRequestPath)};
 import {
   collectAppPageStaticGenerationRuntimes as __collectAppPageStaticGenerationRuntimes,
@@ -1122,6 +1123,25 @@ function __resolveRouteSegmentConfig(route, segmentConfigBranches) {
     page: route.page,
     parallelBranches: segmentConfigBranches,
     parallelPages: Object.values(route.slots ?? {}).map((slot) => slot.page ?? slot.default),
+    routeSegments: route.routeSegments,
+  });
+}
+
+function __resolveRouteGenerateStaticParams(route) {
+  return __resolveAppPageGenerateStaticParamsSources({
+    layouts: route.layouts,
+    layoutTreePositions: route.layoutTreePositions,
+    page: route.page,
+    parallelBranches: Object.values(route.slots ?? {}).map((slot) => ({
+      layout: slot.layout,
+      configLayouts: slot.configLayouts,
+      configLayoutTreePositions: slot.configLayoutTreePositions,
+      page: slot.page ?? slot.default,
+      paramNames: slot.slotParamNames,
+      patternParts: slot.slotPatternParts,
+      routeSegments: slot.routeSegments,
+    })),
+    routePatternParts: route.patternParts,
     routeSegments: route.routeSegments,
   });
 }
@@ -1434,6 +1454,19 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
   basePath: __basePath,
   buildId: process.env.__VINEXT_BUILD_ID ?? null,
   ensureRouteLoaded: __ensureRouteLoaded,
+  async isDynamicParamsMiss(route, params) {
+    if (!route.isDynamic) return false;
+    const __segmentConfig = __resolveRouteSegmentConfig(route, __resolveRouteSegmentConfigBranches(route));
+    if (__segmentConfig.dynamicParamsConfig !== false) return false;
+    return (await __validateAppPageRouteDynamicParams({
+      dynamicConfig: __segmentConfig.dynamicConfig,
+      dynamicParamsConfig: __segmentConfig.dynamicParamsConfig,
+      generateStaticParams: __resolveRouteGenerateStaticParams(route),
+      isDynamicRoute: route.isDynamic,
+      isProduction: process.env.NODE_ENV === "production",
+      params,
+    })) !== null;
+  },
   prefetchInlining: ${JSON.stringify(prefetchInlining)},
   clearRequestContext() {
     __clearRequestContext();
@@ -1489,22 +1522,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
     const __segmentConfigBranches = __resolveRouteSegmentConfigBranches(route);
     const __segmentConfig = __resolveRouteSegmentConfig(route, __segmentConfigBranches);
     const __staticGeneration = __resolveRouteStaticGeneration(route, __segmentConfigBranches);
-    const __generateStaticParams = __resolveAppPageGenerateStaticParamsSources({
-      layouts: route.layouts,
-      layoutTreePositions: route.layoutTreePositions,
-      page: route.page,
-      parallelBranches: Object.values(route.slots ?? {}).map((slot) => ({
-        layout: slot.layout,
-        configLayouts: slot.configLayouts,
-        configLayoutTreePositions: slot.configLayoutTreePositions,
-        page: slot.page ?? slot.default,
-        paramNames: slot.slotParamNames,
-        patternParts: slot.slotPatternParts,
-        routeSegments: slot.routeSegments,
-      })),
-      routePatternParts: route.patternParts,
-      routeSegments: route.routeSegments,
-    });
+    const __generateStaticParams = __resolveRouteGenerateStaticParams(route);
     return __dispatchAppPage({
       basePath: __basePath,
       bypassInterceptionContextCache,
@@ -1631,10 +1649,10 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
           interceptionContext,
           interceptionId,
         );
-        return __fallbackRenderer.renderHttpAccessFallback(route, statusCode, isRscRequest, request, opts, scriptNonce, currentMiddlewareContext, {
-          isEdgeRuntime: __isEdgeRuntime(__segmentConfig.runtime),
+        return __fallbackRenderer.renderHttpAccessFallback(opts.routeMiss ? null : route, statusCode, isRscRequest, request, opts, scriptNonce, currentMiddlewareContext, {
+          isEdgeRuntime: !opts.routeMiss && __isEdgeRuntime(__segmentConfig.runtime),
           routePathname: cleanPathname,
-          sourcePageSegments: __activeIntercept?.slotKey === __SIBLING_PAGE_INTERCEPT_SLOT_KEY
+          sourcePageSegments: !opts.routeMiss && __activeIntercept?.slotKey === __SIBLING_PAGE_INTERCEPT_SLOT_KEY
             ? __activeIntercept.sourcePageSegments
             : null,
         });
