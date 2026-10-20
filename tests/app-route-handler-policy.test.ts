@@ -19,12 +19,18 @@ describe("app route handler policy helpers", () => {
   // routes: packages/next/src/build/index.ts
   it("enforces dynamicParams = false where Next.js lists the route as prerendered", () => {
     const GET = () => new Response("ok");
-    expect(shouldEnforceAppRouteHandlerStaticParams({ GET }, false)).toBe(false);
-    expect(shouldEnforceAppRouteHandlerStaticParams({ GET, dynamicParams: true }, true)).toBe(
+    const generateStaticParams = () => [{ slug: "one" }];
+    expect(shouldEnforceAppRouteHandlerStaticParams({ GET, generateStaticParams }, false)).toBe(
       false,
     );
+    expect(
+      shouldEnforceAppRouteHandlerStaticParams(
+        { GET, dynamicParams: true, generateStaticParams },
+        true,
+      ),
+    ).toBe(false);
 
-    const closed = { GET, dynamicParams: false };
+    const closed = { GET, dynamicParams: false, generateStaticParams };
     expect(shouldEnforceAppRouteHandlerStaticParams(closed, true)).toBe(true);
     expect(shouldEnforceAppRouteHandlerStaticParams({ ...closed, revalidate: 60 }, true)).toBe(
       true,
@@ -37,8 +43,19 @@ describe("app route handler policy helpers", () => {
       { OPTIONS: GET },
     ]) {
       expect(shouldEnforceAppRouteHandlerStaticParams({ ...closed, ...bailout }, true)).toBe(false);
-      // Dev checks every dynamicParams = false route.
+      // Dev checks every dynamicParams = false route with generateStaticParams.
       expect(shouldEnforceAppRouteHandlerStaticParams({ ...closed, ...bailout }, false)).toBe(true);
+    }
+
+    // Without generateStaticParams, only static production routes are listed.
+    const noParams = { GET, dynamicParams: false };
+    expect(shouldEnforceAppRouteHandlerStaticParams(noParams, true)).toBe(false);
+    expect(shouldEnforceAppRouteHandlerStaticParams(noParams, false)).toBe(false);
+    for (const dynamic of ["force-static", "error"]) {
+      expect(
+        shouldEnforceAppRouteHandlerStaticParams({ ...noParams, dynamic, POST: GET }, true),
+      ).toBe(true);
+      expect(shouldEnforceAppRouteHandlerStaticParams({ ...noParams, dynamic }, false)).toBe(false);
     }
   });
 

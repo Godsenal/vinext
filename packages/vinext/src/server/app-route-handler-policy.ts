@@ -106,9 +106,9 @@ export function hasNonStaticAppRouteHandlerMethods(handler: RouteHandlerModule):
 /**
  * Whether a dynamic App Route only admits the params its `generateStaticParams`
  * returns. Next.js enforces `dynamicParams = false` through the route's
- * prerender manifest entry. Dev writes that entry for every such route, but a
- * production build leaves out routes whose generated paths bail out of static
- * generation.
+ * prerender manifest entry. Dev writes that entry from `generateStaticParams`.
+ * A production build leaves out routes that bail out of static generation,
+ * and lists a route without `generateStaticParams` only when it is static.
  * https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/index.ts
  * https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/templates/app-route.ts
  */
@@ -117,12 +117,14 @@ export function shouldEnforceAppRouteHandlerStaticParams(
   isProduction: boolean,
 ): boolean {
   if (handler.dynamicParams !== false) return false;
-  if (!isProduction) return true;
-  return (
-    handler.dynamic !== "force-dynamic" &&
-    handler.revalidate !== 0 &&
-    !hasNonStaticAppRouteHandlerMethods(handler)
-  );
+  const hasGenerateStaticParams = typeof handler.generateStaticParams === "function";
+  if (!isProduction) return hasGenerateStaticParams;
+  if (handler.dynamic === "force-dynamic" || handler.revalidate === 0) return false;
+  // With no generated paths to prerender, no method can bail out.
+  if (!hasGenerateStaticParams) {
+    return handler.dynamic === "force-static" || handler.dynamic === "error";
+  }
+  return !hasNonStaticAppRouteHandlerMethods(handler);
 }
 
 export function resolveAppRouteHandlerMethod(

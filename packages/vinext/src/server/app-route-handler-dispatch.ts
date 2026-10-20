@@ -127,6 +127,16 @@ function isAppRouteHandlerFunction(value: unknown): value is AppRouteHandlerFunc
   return typeof value === "function";
 }
 
+function encodeAppRouteParams(params: AppRouteParams): AppRouteParams {
+  const encoded: AppRouteParams = {};
+  for (const [key, value] of Object.entries(params)) {
+    encoded[key] = Array.isArray(value)
+      ? value.map((item) => encodeURIComponent(item))
+      : encodeURIComponent(value);
+  }
+  return encoded;
+}
+
 function buildRouteHandlerPageCacheTags(
   pathname: string,
   extraTags: string[],
@@ -254,13 +264,22 @@ async function dispatchAppRouteHandlerImpl(
     ) {
       return null;
     }
-    const { validateAppPageDynamicParams } = await import("./app-page-request.js");
+    const {
+      routePatternOptionalCatchAllParamNames,
+      routePatternParamNames,
+      validateAppPageDynamicParams,
+    } = await import("./app-page-request.js");
+    const patternParts = route.pattern.split("/");
     const notFound = await validateAppPageDynamicParams({
       enforceStaticParamsOnly: true,
       generateStaticParams:
         handler.generateStaticParams as ValidateAppPageDynamicParamsOptions["generateStaticParams"],
       isDynamicRoute: true,
-      params: options.params,
+      optionalCatchAllParamNames: routePatternOptionalCatchAllParamNames(patternParts),
+      // Route handlers receive decoded params. Next.js admits the decoded
+      // value, which matches the encoded form pages compare.
+      params: encodeAppRouteParams(options.params),
+      requiredParamNames: routePatternParamNames(patternParts),
     });
     if (!notFound) return null;
     const response = options.renderNotFound

@@ -577,6 +577,124 @@ describe("app route handler dispatch", () => {
   // is observable through tests like `expect(meta.params).toEqual(null)`.
   // Ported from Next.js: test/e2e/app-dir/app-routes/app-custom-routes.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-routes/app-custom-routes.test.ts#L424-L431
+  describe("dynamicParams = false", () => {
+    function dispatchClosedRoute(options: {
+      cached?: boolean;
+      generateStaticParams?: () => Record<string, unknown>[];
+      isProduction?: boolean;
+      params: Record<string, string | string[]>;
+      pathname: string;
+      pattern: string;
+    }) {
+      const handlerCalls: unknown[] = [];
+      const renderNotFound = vi.fn(async () => new Response("not found page", { status: 404 }));
+      const response = dispatchAppRouteHandler({
+        cleanPathname: options.pathname,
+        clearRequestContext() {},
+        draftModeSecret: "test-draft-secret",
+        isDevelopment: options.isProduction === false,
+        isProduction: options.isProduction ?? true,
+        async isrGet() {
+          return options.cached ? buildISRCacheEntry(buildCachedRouteValue("cached")) : null;
+        },
+        isrRouteKey: (pathname) => pathname,
+        async isrSet() {},
+        middlewareContext: { headers: null, status: null },
+        params: options.params,
+        renderNotFound,
+        request: new Request(`https://example.com${options.pathname}`),
+        route: {
+          pattern: options.pattern,
+          routeHandler: {
+            dynamicParams: false,
+            generateStaticParams: options.generateStaticParams,
+            async GET(_request: Request, context: { params: Promise<unknown> }) {
+              handlerCalls.push(await context.params);
+              return new Response("handler");
+            },
+          },
+          routeSegments: options.pattern.split("/").filter(Boolean),
+        },
+        scheduleBackgroundRegeneration() {},
+        searchParams: new URLSearchParams(),
+      });
+      return { handlerCalls, renderNotFound, response };
+    }
+
+    it("compares decoded params as Next.js does", async () => {
+      const generateStaticParams = () => [{ slug: "public post" }];
+      const listed = dispatchClosedRoute({
+        generateStaticParams,
+        params: { slug: "public post" },
+        pathname: "/posts/public%20post",
+        pattern: "/posts/:slug",
+      });
+      expect((await listed.response).status).toBe(200);
+      expect(listed.handlerCalls).toEqual([{ slug: "public post" }]);
+
+      // `/posts/public%2520post` decodes to an unlisted value.
+      const unlisted = dispatchClosedRoute({
+        generateStaticParams,
+        params: { slug: "public%20post" },
+        pathname: "/posts/public%2520post",
+        pattern: "/posts/:slug",
+      });
+      const unlistedResponse = await unlisted.response;
+      expect(unlistedResponse.status).toBe(404);
+      expect(await unlistedResponse.text()).toBe("not found page");
+      expect(unlistedResponse.headers.get("cache-control")).toBe(
+        "private, no-cache, no-store, max-age=0, must-revalidate",
+      );
+      expect(unlisted.handlerCalls).toEqual([]);
+    });
+
+    it("rejects a missing optional catch-all the generated params do not list", async () => {
+      const generateStaticParams = () => [{ slug: ["a"] }];
+      const missing = dispatchClosedRoute({
+        generateStaticParams,
+        params: {},
+        pathname: "/docs",
+        pattern: "/docs/:slug*",
+      });
+      expect((await missing.response).status).toBe(404);
+      expect(missing.handlerCalls).toEqual([]);
+
+      const listed = dispatchClosedRoute({
+        generateStaticParams,
+        params: { slug: ["a"] },
+        pathname: "/docs/a",
+        pattern: "/docs/:slug*",
+      });
+      expect((await listed.response).status).toBe(200);
+    });
+
+    it("serves a cached response without calling generateStaticParams", async () => {
+      const generateStaticParams = vi.fn(() => [{ slug: "listed" }]);
+      const cached = dispatchClosedRoute({
+        cached: true,
+        generateStaticParams,
+        params: { slug: "listed" },
+        pathname: "/posts/listed",
+        pattern: "/posts/:slug",
+      });
+      const response = await cached.response;
+      expect(response.status).toBe(200);
+      expect(await response.text()).toBe("cached");
+      expect(generateStaticParams).not.toHaveBeenCalled();
+    });
+
+    it("admits any param without generateStaticParams in dev, as Next.js does", async () => {
+      const result = dispatchClosedRoute({
+        isProduction: false,
+        params: { slug: "anything" },
+        pathname: "/posts/anything",
+        pattern: "/posts/:slug",
+      });
+      expect((await result.response).status).toBe(200);
+      expect(result.renderNotFound).not.toHaveBeenCalled();
+    });
+  });
+
   it("passes params: null to route handlers on non-dynamic routes", async () => {
     let receivedParams: unknown = "untouched";
     const route = {

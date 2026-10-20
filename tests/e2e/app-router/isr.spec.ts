@@ -495,6 +495,20 @@ test.describe("App Router ISR", () => {
     expect(listed.status()).toBe(200);
     expect(await listed.text()).toBe("route:PUBLIC");
 
+    for (const [segment, body] of [
+      ["public%20post", "route:PUBLIC ENCODED"],
+      ["public%2520post", "route:PUBLIC ESCAPED"],
+      ["public%252Fpost", "route:PUBLIC ESCAPED SLASH"],
+    ]) {
+      const encoded = await request.get(`${baseUrl()}/metadata-static-params/${segment}/data`);
+      expect(encoded.status()).toBe(200);
+      expect(await encoded.text()).toBe(body);
+    }
+    const unlistedEncoding = await request.get(
+      `${baseUrl()}/metadata-static-params/public%252520post/data`,
+    );
+    expect(unlistedEncoding.status()).toBe(404);
+
     const unlisted = await request.get(`${baseUrl()}/metadata-static-params/unlisted-draft/data`);
     const unlistedBody = await unlisted.text();
     expect(unlisted.status()).toBe(404);
