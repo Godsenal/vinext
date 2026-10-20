@@ -571,12 +571,6 @@ describe("app route handler dispatch", () => {
     await expect(response.text()).resolves.toBe("fresh");
   });
 
-  // Matches Next.js behavior: route handlers on non-dynamic routes receive
-  // `context.params` as null (not `{}`). User code typically does
-  // `const resolved = params ? await params : null`, and the resolved value
-  // is observable through tests like `expect(meta.params).toEqual(null)`.
-  // Ported from Next.js: test/e2e/app-dir/app-routes/app-custom-routes.test.ts
-  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-routes/app-custom-routes.test.ts#L424-L431
   describe("dynamicParams = false", () => {
     function dispatchClosedRoute(options: {
       cached?: boolean;
@@ -695,6 +689,12 @@ describe("app route handler dispatch", () => {
     });
   });
 
+  // Matches Next.js behavior: route handlers on non-dynamic routes receive
+  // `context.params` as null (not `{}`). User code typically does
+  // `const resolved = params ? await params : null`, and the resolved value
+  // is observable through tests like `expect(meta.params).toEqual(null)`.
+  // Ported from Next.js: test/e2e/app-dir/app-routes/app-custom-routes.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-routes/app-custom-routes.test.ts#L424-L431
   it("passes params: null to route handlers on non-dynamic routes", async () => {
     let receivedParams: unknown = "untouched";
     const route = {

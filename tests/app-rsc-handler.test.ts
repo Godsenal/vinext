@@ -408,6 +408,26 @@ describe("createAppRscHandler", () => {
       await response.text();
     });
 
+    it("sends a route handler's unlisted-param 404 with the never-cache policy", async () => {
+      const route = createPageRoute({ routeHandler: { GET: () => new Response("route") } });
+      const handler = createHandler({
+        configHeaders: cacheableConfigHeaders,
+        async dispatchMatchedRouteHandler({ renderNotFound }) {
+          const notFound = await renderNotFound();
+          // Dispatch rebuilds the response it returns.
+          return new Response(notFound.body, notFound);
+        },
+        matchRoute: (pathname) => (pathname === "/about" ? { params: {}, route } : null),
+        renderNotFound: async () => new Response("rendered not found", { status: 404 }),
+      });
+
+      const response = await handler(new Request("https://example.test/docs/about"), null);
+
+      expect(response.status).toBe(404);
+      expect(response.headers.get("cache-control")).toBe(NEVER_CACHE);
+      expect(await response.text()).toBe("rendered not found");
+    });
+
     it("sends a staged not-found page with the never-cache policy", async () => {
       const handler = createHandler({
         configHeaders: cacheableConfigHeaders,
