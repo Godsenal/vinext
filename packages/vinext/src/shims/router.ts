@@ -1937,7 +1937,11 @@ function isExternalClientConfigUrl(url: string): boolean {
 /**
  * With i18n, rules match the locale-prefixed pathname, which reaches source
  * shapes the simple matcher does not handle exactly as matchConfigPattern
- * does. Leave those navigations to the full matcher.
+ * does. Leave those navigations to the full matcher. This is an accepted
+ * cost: without a sync rewrite result, `reusesMountedConfigRewritePage` never
+ * applies in i18n apps, so query-only `beforeFiles` rewrite navigations emit
+ * `beforeHistoryChange` when the navigation commits rather than in the click
+ * turn.
  */
 function usesFullClientConfigMatcher(): boolean {
   return Boolean(window.__VINEXT_LOCALES__?.length);
