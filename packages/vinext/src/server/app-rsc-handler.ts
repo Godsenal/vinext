@@ -2866,7 +2866,8 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     setCurrentFetchSoftTags(
       buildPageCacheTags(cleanPathname, [], [...route.routeSegments], "route"),
     );
-    return options.dispatchMatchedRouteHandler({
+    let renderedNotFound = false;
+    const routeHandlerResponse = await options.dispatchMatchedRouteHandler({
       bypassInterceptionContextCache,
       cachePathname,
       cleanPathname,
@@ -2877,6 +2878,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       // an object shape; only the user-facing handler context surfaces null.
       params: route.isDynamic ? renderParams : null,
       renderNotFound() {
+        renderedNotFound = true;
         setFrameworkRequestRoute("/404", isRscRequest);
         return renderUnmatchedRouteNotFound();
       },
@@ -2884,6 +2886,10 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       route,
       searchParams: resolvedSearchParams,
     });
+    // Dispatch may rebuild the response, so mark the one it returns.
+    return renderedNotFound
+      ? withUnmatchedRouteCacheControl(routeHandlerResponse)
+      : routeHandlerResponse;
   }
 
   const failedProgressiveActionResult =
