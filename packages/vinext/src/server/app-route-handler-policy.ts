@@ -109,6 +109,7 @@ export function hasNonStaticAppRouteHandlerMethods(handler: RouteHandlerModule):
  * prerender manifest entry. Dev writes that entry from `generateStaticParams`.
  * A production build leaves out routes that bail out of static generation,
  * and lists a route without `generateStaticParams` only when it is static.
+ * Edge routes never prerender, so they have no entry.
  * https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/index.ts
  * https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/templates/app-route.ts
  */
@@ -119,6 +120,7 @@ export function shouldEnforceAppRouteHandlerStaticParams(
   if (handler.dynamicParams !== false) return false;
   const hasGenerateStaticParams = typeof handler.generateStaticParams === "function";
   if (!isProduction) return hasGenerateStaticParams;
+  if (handler.runtime === "edge" || handler.runtime === "experimental-edge") return false;
   if (handler.dynamic === "force-dynamic" || handler.revalidate === 0) return false;
   // With no generated paths to prerender, no method can bail out.
   if (!hasGenerateStaticParams) {

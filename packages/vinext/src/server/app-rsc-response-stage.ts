@@ -20,6 +20,7 @@ import {
 import type { AppRscHandlerRoute, CreateAppRscHandlerOptions } from "./app-rsc-handler.js";
 import {
   APP_METADATA_RESPONSE_STAGE_NO_MATCH_HEADER,
+  APP_ROUTE_HANDLER_RESPONSE_STAGE_NOT_FOUND_HEADER,
   APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION,
   type AppMatchedWorkerResponseStageProps,
   type AppWorkerResponseStageProps,
@@ -247,16 +248,25 @@ export async function renderAppWorkerResponseStage<TRoute extends AppRscHandlerR
     status: null,
   };
   // The not-found page Next.js serves for an unmatched URL.
-  const renderNotFound = async (): Promise<Response> =>
-    (await traceAppPageRender("/404", "render", () =>
-      options.renderNotFound({
-        isRscRequest: normalized.isRscRequest,
-        middlewareContext,
-        request,
-        route: null,
-        scriptNonce: props.scriptNonce ?? undefined,
-      }),
-    )) ?? new Response("Not Found", { status: 404 });
+  const renderNotFound = async (): Promise<Response> => {
+    options.setNavigationContext({
+      pathname: props.canonicalPathname,
+      searchParams: new URL(props.resolvedUrl, request.url).searchParams,
+      params: {},
+    });
+    setRootParams({});
+    return (
+      (await traceAppPageRender("/404", "render", () =>
+        options.renderNotFound({
+          isRscRequest: normalized.isRscRequest,
+          middlewareContext,
+          request,
+          route: null,
+          scriptNonce: props.scriptNonce ?? undefined,
+        }),
+      )) ?? new Response("Not Found", { status: 404 })
+    );
+  };
 
   const responsePromise = runWithRequestContext(requestContext, () =>
     runWithPrerenderWorkUnit(
@@ -294,12 +304,6 @@ export async function renderAppWorkerResponseStage<TRoute extends AppRscHandlerR
           return response;
         }
         if (props.kind === "app-not-found") {
-          options.setNavigationContext({
-            pathname: props.canonicalPathname,
-            searchParams: new URL(props.resolvedUrl, request.url).searchParams,
-            params: {},
-          });
-          setRootParams({});
           return renderNotFound();
         }
         if (props.kind === "hybrid-pages") {
@@ -392,7 +396,13 @@ export async function renderAppWorkerResponseStage<TRoute extends AppRscHandlerR
             cleanPathname: props.cleanPathname,
             middlewareContext,
             params: route.isDynamic ? renderParams : null,
-            renderNotFound,
+            async renderNotFound() {
+              // The request stage reasserts the never-cache policy after it
+              // applies config headers.
+              const response = await renderNotFound();
+              response.headers.set(APP_ROUTE_HANDLER_RESPONSE_STAGE_NOT_FOUND_HEADER, "1");
+              return response;
+            },
             request: cloneRequestWithUrl(routeHandlerRequest, routeHandlerUrl.toString()),
             route,
             searchParams,

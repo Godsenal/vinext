@@ -13,6 +13,7 @@ import { createTrackedAppRouteRequest } from "../packages/vinext/src/server/app-
 import { readActionFormDataWithLimit } from "../packages/vinext/src/server/app-server-action-execution.js";
 import { getRequestContext } from "../packages/vinext/src/shims/unified-request-context.js";
 import {
+  APP_ROUTE_HANDLER_RESPONSE_STAGE_NOT_FOUND_HEADER,
   APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION,
   type AppWorkerResponseStageProps,
   type DispatchAppWorkerResponseStage,
@@ -408,25 +409,59 @@ describe("createAppRscHandler", () => {
       await response.text();
     });
 
-    it("sends a route handler's unlisted-param 404 with the never-cache policy", async () => {
-      const route = createPageRoute({ routeHandler: { GET: () => new Response("route") } });
-      const handler = createHandler({
-        configHeaders: cacheableConfigHeaders,
-        async dispatchMatchedRouteHandler({ renderNotFound }) {
-          const notFound = await renderNotFound();
-          // Dispatch rebuilds the response it returns.
-          return new Response(notFound.body, notFound);
-        },
-        matchRoute: (pathname) => (pathname === "/about" ? { params: {}, route } : null),
-        renderNotFound: async () => new Response("rendered not found", { status: 404 }),
-      });
+    it.each([
+      { name: "dispatched directly", staged: false },
+      { name: "dispatched through the response stage", staged: true },
+    ])(
+      "sends a route handler's unlisted-param 404 $name like an unmatched route's",
+      async ({ staged }) => {
+        const route = createPageRoute({
+          isDynamic: true,
+          params: ["slug"],
+          pattern: "/:slug",
+          rootParamNames: ["slug"],
+          routeHandler: { GET: () => new Response("route") },
+        });
+        const setNavigationContext = vi.fn();
+        let renderContext: unknown = null;
+        const handler = createHandler({
+          configHeaders: cacheableConfigHeaders,
+          async dispatchMatchedRouteHandler({ renderNotFound }) {
+            const notFound = await renderNotFound();
+            // Dispatch rebuilds the response it returns.
+            return new Response(notFound.body, notFound);
+          },
+          matchRoute: (pathname) =>
+            pathname === "/unlisted" ? { params: { slug: "unlisted" }, route } : null,
+          async renderNotFound() {
+            const { getCurrentRootParams } =
+              await import("../packages/vinext/src/shims/root-params.js");
+            renderContext = {
+              navigationParams: setNavigationContext.mock.lastCall?.[0].params,
+              rootParams: getCurrentRootParams(),
+            };
+            return new Response("rendered not found", { status: 404 });
+          },
+          setNavigationContext,
+        });
 
-      const response = await handler(new Request("https://example.test/docs/about"), null);
+        const response = await handler(
+          new Request("https://example.test/docs/unlisted"),
+          null,
+          false,
+          staged
+            ? (stageRequest: Request, props: AppWorkerResponseStageProps) =>
+                handler.handleResponseStage(stageRequest, null, props)
+            : undefined,
+        );
 
-      expect(response.status).toBe(404);
-      expect(response.headers.get("cache-control")).toBe(NEVER_CACHE);
-      expect(await response.text()).toBe("rendered not found");
-    });
+        expect(response.status).toBe(404);
+        expect(response.headers.get("cache-control")).toBe(NEVER_CACHE);
+        expect(response.headers.has(APP_ROUTE_HANDLER_RESPONSE_STAGE_NOT_FOUND_HEADER)).toBe(false);
+        expect(await response.text()).toBe("rendered not found");
+        expect(renderContext).toEqual({ navigationParams: {}, rootParams: {} });
+      },
+    );
 
     it("sends a staged not-found page with the never-cache policy", async () => {
       const handler = createHandler({

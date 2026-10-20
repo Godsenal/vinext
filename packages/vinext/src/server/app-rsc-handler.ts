@@ -171,6 +171,7 @@ import {
 import { getCdnCacheAdapter } from "vinext/shims/cdn-cache";
 import {
   APP_METADATA_RESPONSE_STAGE_NO_MATCH_HEADER,
+  APP_ROUTE_HANDLER_RESPONSE_STAGE_NOT_FOUND_HEADER,
   APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION,
   createSharedAppPageCacheIdentity,
   isStaticCandidateAppPageDispatch,
@@ -2860,7 +2861,13 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         routePathname: responseStageRoutePathname,
         scriptNonce: scriptNonce ?? null,
       });
-      return composeResponseStageResponse(response);
+      if (response.headers.get(APP_ROUTE_HANDLER_RESPONSE_STAGE_NOT_FOUND_HEADER) !== "1") {
+        return composeResponseStageResponse(response);
+      }
+      setFrameworkRequestRoute("/404", isRscRequest);
+      const unmatchedRouteResponse = await composeResponseStageResponse(response);
+      unmatchedRouteResponse.headers.delete(APP_ROUTE_HANDLER_RESPONSE_STAGE_NOT_FOUND_HEADER);
+      return withUnmatchedRouteCacheControl(unmatchedRouteResponse);
     }
     const { setCurrentFetchSoftTags } = await import("vinext/shims/fetch-cache");
     setCurrentFetchSoftTags(
@@ -2880,6 +2887,13 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       renderNotFound() {
         renderedNotFound = true;
         setFrameworkRequestRoute("/404", isRscRequest);
+        // Render the 404 with the context of an unmatched route.
+        options.setNavigationContext({
+          pathname: canonicalPathname,
+          searchParams: resolvedSearchParams,
+          params: {},
+        });
+        setRootParams({});
         return renderUnmatchedRouteNotFound();
       },
       request: cloneRequestWithUrl(routeHandlerRequest, routeHandlerUrl.toString()),

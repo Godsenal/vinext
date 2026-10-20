@@ -57,6 +57,17 @@ describe("app route handler policy helpers", () => {
       ).toBe(true);
       expect(shouldEnforceAppRouteHandlerStaticParams({ ...noParams, dynamic }, false)).toBe(false);
     }
+
+    // Edge routes never prerender, so production has no entry for them.
+    for (const runtime of ["edge", "experimental-edge"]) {
+      expect(shouldEnforceAppRouteHandlerStaticParams({ ...closed, runtime }, true)).toBe(false);
+      expect(
+        shouldEnforceAppRouteHandlerStaticParams(
+          { ...noParams, dynamic: "force-static", runtime },
+          true,
+        ),
+      ).toBe(false);
+    }
   });
 
   it("preserves revalidate = 0 as a distinct never-cache signal", () => {

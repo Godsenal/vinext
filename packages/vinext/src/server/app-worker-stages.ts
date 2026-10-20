@@ -14,8 +14,11 @@ import type {
 } from "./multi-stage.js";
 import { isTrustedPrerenderState, type TrustedPrerenderState } from "./prerender-route-params.js";
 
-export const APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION = 11;
+export const APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION = 12;
 export const APP_METADATA_RESPONSE_STAGE_NO_MATCH_HEADER = "x-vinext-app-metadata-stage-no-match";
+/** Marks a route handler stage response as the 404 of an unmatched route. */
+export const APP_ROUTE_HANDLER_RESPONSE_STAGE_NOT_FOUND_HEADER =
+  "x-vinext-app-route-handler-stage-not-found";
 const STATIC_FILE_SIGNAL_TOKEN_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
