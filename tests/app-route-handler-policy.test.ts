@@ -8,11 +8,40 @@ import {
   resolveAppRouteHandlerSpecialError,
   shouldApplyAppRouteHandlerRevalidateHeader,
   shouldCompleteAppRouteHandlerResponse,
+  shouldEnforceAppRouteHandlerStaticParams,
   shouldReadAppRouteHandlerCache,
   shouldWriteAppRouteHandlerCache,
 } from "../packages/vinext/src/server/app-route-handler-policy.js";
 
 describe("app route handler policy helpers", () => {
+  // Next.js v16.2.7 enforces dynamicParams = false through the prerender
+  // manifest, which a production build fills only for statically generated
+  // routes: packages/next/src/build/index.ts
+  it("enforces dynamicParams = false where Next.js lists the route as prerendered", () => {
+    const GET = () => new Response("ok");
+    expect(shouldEnforceAppRouteHandlerStaticParams({ GET }, false)).toBe(false);
+    expect(shouldEnforceAppRouteHandlerStaticParams({ GET, dynamicParams: true }, true)).toBe(
+      false,
+    );
+
+    const closed = { GET, dynamicParams: false };
+    expect(shouldEnforceAppRouteHandlerStaticParams(closed, true)).toBe(true);
+    expect(shouldEnforceAppRouteHandlerStaticParams({ ...closed, revalidate: 60 }, true)).toBe(
+      true,
+    );
+
+    for (const bailout of [
+      { dynamic: "force-dynamic" },
+      { revalidate: 0 },
+      { POST: GET },
+      { OPTIONS: GET },
+    ]) {
+      expect(shouldEnforceAppRouteHandlerStaticParams({ ...closed, ...bailout }, true)).toBe(false);
+      // Dev checks every dynamicParams = false route.
+      expect(shouldEnforceAppRouteHandlerStaticParams({ ...closed, ...bailout }, false)).toBe(true);
+    }
+  });
+
   it("preserves revalidate = 0 as a distinct never-cache signal", () => {
     // revalidate = 0 must not collapse to null. Downstream header and cache
     // gates rely on 0 being observable to emit a no-store Cache-Control and

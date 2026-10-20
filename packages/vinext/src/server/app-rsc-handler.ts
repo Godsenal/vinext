@@ -522,6 +522,8 @@ type DispatchMatchedRouteHandlerOptions<TRoute> = {
    * matched params object.
    */
   params: AppPageParams | null;
+  /** Render the not-found page Next.js serves for an unmatched URL. */
+  renderNotFound: () => Promise<Response>;
   request: Request;
   route: TRoute;
   searchParams: URLSearchParams;
@@ -2662,6 +2664,26 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     }
   }
 
+  const renderUnmatchedRouteNotFound = async (): Promise<Response> => {
+    const renderedNotFoundResponse = await traceAppPageRender("/404", "render", () =>
+      options.renderNotFound({
+        isRscRequest,
+        middlewareContext,
+        request,
+        route: null,
+        scriptNonce,
+      }),
+    );
+    if (renderedNotFoundResponse) {
+      return withUnmatchedRouteCacheControl(renderedNotFoundResponse);
+    }
+
+    options.clearRequestContext();
+    const headers = new Headers();
+    mergeMiddlewareResponseHeaders(headers, middlewareContext.headers);
+    return withUnmatchedRouteCacheControl(notFoundResponse({ headers }));
+  };
+
   if (!match) {
     // Dev-only favicon short-circuit: browsers auto-request /favicon.ico on
     // every page load. Don't compile/render the not-found page for it.
@@ -2698,23 +2720,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       return withUnmatchedRouteCacheControl(await composeResponseStageResponse(response));
     }
 
-    const renderedNotFoundResponse = await traceAppPageRender("/404", "render", () =>
-      options.renderNotFound({
-        isRscRequest,
-        middlewareContext,
-        request,
-        route: null,
-        scriptNonce,
-      }),
-    );
-    if (renderedNotFoundResponse) {
-      return withUnmatchedRouteCacheControl(renderedNotFoundResponse);
-    }
-
-    options.clearRequestContext();
-    const headers = new Headers();
-    mergeMiddlewareResponseHeaders(headers, middlewareContext.headers);
-    return withUnmatchedRouteCacheControl(notFoundResponse({ headers }));
+    return renderUnmatchedRouteNotFound();
   }
 
   match = renderedRouteMatch(match);
@@ -2870,6 +2876,10 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       // object (always `{}` for non-dynamic) so `useParams()` etc. still see
       // an object shape; only the user-facing handler context surfaces null.
       params: route.isDynamic ? renderParams : null,
+      renderNotFound() {
+        setFrameworkRequestRoute("/404", isRscRequest);
+        return renderUnmatchedRouteNotFound();
+      },
       request: cloneRequestWithUrl(routeHandlerRequest, routeHandlerUrl.toString()),
       route,
       searchParams: resolvedSearchParams,

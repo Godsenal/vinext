@@ -33,9 +33,11 @@ import {
   hasAppRouteHandlerDefaultExport,
   hasNonStaticAppRouteHandlerMethods,
   resolveAppRouteHandlerMethod,
+  shouldEnforceAppRouteHandlerStaticParams,
   shouldReadAppRouteHandlerCache,
   type AppRouteHandlerModule,
 } from "./app-route-handler-policy.js";
+import type { ValidateAppPageDynamicParamsOptions } from "./app-page-request.js";
 import { readAppRouteHandlerCacheResponse } from "./app-route-handler-cache.js";
 import {
   applyDraftModeCachePolicy,
@@ -60,7 +62,11 @@ import { createStaticGenerationHeadersContext } from "./app-static-generation.js
 import { buildPageCacheTags } from "./implicit-tags.js";
 import { makeThenableParams } from "vinext/shims/thenable-params";
 import { reportRequestError } from "./instrumentation.js";
-import { applyCdnResponseBuildIdentityHeaders } from "./cache-control.js";
+import {
+  applyCdnResponseBuildIdentityHeaders,
+  applyCdnResponseHeaders,
+  NEVER_CACHE_CONTROL,
+} from "./cache-control.js";
 import {
   isOnDemandRevalidateRequest,
   PRERENDER_REVALIDATE_HEADER,
@@ -109,6 +115,8 @@ type DispatchAppRouteHandlerOptions = {
    * (`params ? await params : null`) resolves to `null`.
    */
   params: AppRouteParams | null;
+  /** Render the not-found page Next.js serves for an unmatched URL. */
+  renderNotFound?: () => Promise<Response>;
   request: Request;
   route: AppRouteHandlerDispatchRoute;
   scheduleBackgroundRegeneration: RouteHandlerBackgroundRegenerator;
@@ -234,6 +242,35 @@ async function dispatchAppRouteHandlerImpl(
     );
   };
 
+  // Next.js rejects params outside generateStaticParams before it resolves
+  // the method, and falls through to the unmatched-URL 404. Draft mode
+  // bypasses the check. Only admitted params are ever cached, so a cache read
+  // runs first and spares a hit the generateStaticParams call.
+  const rejectUnlistedParams = async (): Promise<Response | null> => {
+    if (
+      options.params === null ||
+      isDraftMode ||
+      !shouldEnforceAppRouteHandlerStaticParams(handler, isProduction)
+    ) {
+      return null;
+    }
+    const { validateAppPageDynamicParams } = await import("./app-page-request.js");
+    const notFound = await validateAppPageDynamicParams({
+      enforceStaticParamsOnly: true,
+      generateStaticParams:
+        handler.generateStaticParams as ValidateAppPageDynamicParamsOptions["generateStaticParams"],
+      isDynamicRoute: true,
+      params: options.params,
+    });
+    if (!notFound) return null;
+    const response = options.renderNotFound
+      ? await options.renderNotFound()
+      : finalizeFrameworkResponse(notFound);
+    // As in Next.js, this 404 is never cached.
+    applyCdnResponseHeaders(response.headers, { cacheControl: NEVER_CACHE_CONTROL });
+    return response;
+  };
+
   if (hasAppRouteHandlerDefaultExport(handler) && isDevelopment) {
     console.error(
       "[vinext] Detected default export in route handler " +
@@ -246,18 +283,24 @@ async function dispatchAppRouteHandlerImpl(
   // Next.js returns 400 for invalid methods; vinext mirrors that behavior.
   // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/route-modules/app-route/module.ts#L390-L392
   if (!isValidHTTPMethod(method)) {
-    return finalizeFrameworkResponse(new Response(null, { status: 400 }));
+    return (
+      (await rejectUnlistedParams()) ??
+      finalizeFrameworkResponse(new Response(null, { status: 400 }))
+    );
   }
 
   const { allowHeaderForOptions, handlerFn, isAutoHead, shouldAutoRespondToOptions } =
     resolveAppRouteHandlerMethod(handler, method);
 
   if (shouldAutoRespondToOptions) {
-    return finalizeFrameworkResponse(
-      new Response(null, {
-        status: 204,
-        headers: { Allow: allowHeaderForOptions },
-      }),
+    return (
+      (await rejectUnlistedParams()) ??
+      finalizeFrameworkResponse(
+        new Response(null, {
+          status: 204,
+          headers: { Allow: allowHeaderForOptions },
+        }),
+      )
     );
   }
 
@@ -358,6 +401,9 @@ async function dispatchAppRouteHandlerImpl(
       return applyCdnResponseBuildIdentityHeaders(cachedRouteResponse);
     }
   }
+
+  const unlistedParamsResponse = await rejectUnlistedParams();
+  if (unlistedParamsResponse) return unlistedParamsResponse;
 
   if (resolvedHandlerFn) {
     const response = await executeAppRouteHandler({
