@@ -182,7 +182,13 @@ export type HasCondition = {
 export type NextRedirect = {
   source: string;
   destination: string;
-  permanent: boolean;
+  /** `true` answers 308, `false` 307. Ignored when `statusCode` is set. */
+  permanent?: boolean;
+  /**
+   * Explicit redirect status, taking precedence over `permanent` as in Next.js
+   * `getRedirectStatus` (lib/redirect-status.ts).
+   */
+  statusCode?: 301 | 302 | 303 | 307 | 308;
   has?: HasCondition[];
   missing?: HasCondition[];
   /**
