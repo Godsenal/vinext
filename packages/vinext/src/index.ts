@@ -196,6 +196,11 @@ import {
   type NitroPublicFilesOptions,
 } from "./build/nitro-public-files.js";
 import {
+  mergeNitroTraceDeps,
+  resolveAlwaysTracedPackageNames,
+  type NitroTraceDep,
+} from "./build/nitro-trace-deps.js";
+import {
   emitNextClientRuntimeManifests,
   getPagesManifestPage,
 } from "./build/next-client-runtime-manifests.js";
@@ -1754,8 +1759,9 @@ type NitroSetupContext = {
   options: NitroPublicFilesOptions & {
     buildDir?: string;
     exportConditions?: string[];
-    traceDeps?: string[];
+    traceDeps?: NitroTraceDep[];
   };
+  hooks: { afterEach(callback: (event: { name: string }) => void): () => void };
 };
 
 function createServerEnvironmentFileNameResolver(
@@ -8517,9 +8523,22 @@ export const loadServerActionClient = ${
           );
 
           if (resolvedServerExternalPackages.length > 0) {
-            nitro.options.traceDeps = [
-              ...new Set([...(nitro.options.traceDeps ?? []), ...resolvedServerExternalPackages]),
-            ];
+            const serverExternalPackages = resolvedServerExternalPackages;
+            const alwaysTraced = resolveAlwaysTracedPackageNames(
+              root,
+              nextConfig.serverExternalPackages,
+            );
+            // Nitro reads `traceDeps` right after `build:before`. Merging once
+            // every handler of that hook has run (hookable's `afterEach`) sees
+            // an `!name` opt-out from any Nitro module, whatever its order.
+            nitro.hooks.afterEach((event) => {
+              if (event.name !== "build:before") return;
+              nitro.options.traceDeps = mergeNitroTraceDeps(
+                nitro.options.traceDeps,
+                serverExternalPackages,
+                alwaysTraced,
+              );
+            });
           }
         },
       },

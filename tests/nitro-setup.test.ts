@@ -17,7 +17,11 @@ type NitroSetupTarget = {
     virtual?: Record<string, string | (() => string)>;
     output?: { publicDir?: string };
     routeRules?: Record<string, Record<string, unknown>>;
-    traceDeps?: string[];
+    traceDeps?: (string | RegExp)[];
+  };
+  hooks?: {
+    hook(name: "build:before", handler: () => void): unknown;
+    afterEach(callback: (event: { name: string }) => void): () => void;
   };
 };
 
@@ -26,6 +30,40 @@ type NitroSetupPlugin = {
     setup?: (nitro: NitroSetupTarget) => Promise<void> | void;
   };
 } & Plugin;
+
+// Runs vinext's Nitro module the way Nitro does: every module's `setup` first
+// (`otherModules` stands in for modules installed after vinext), then the
+// `build:before` handlers followed by hookable's `afterEach` callbacks, right
+// before Nitro reads its options to bundle.
+async function runNitroSetup(
+  nitroPlugin: NitroSetupPlugin,
+  nitro: NitroSetupTarget,
+  otherModules?: (nitro: NitroSetupTarget) => void,
+): Promise<{ callBuildBefore: () => void }> {
+  const buildBefore: (() => void)[] = [];
+  const afterEach: ((event: { name: string }) => void)[] = [];
+  nitro.hooks = {
+    hook: (_name, handler) => buildBefore.push(handler),
+    afterEach: (callback) => {
+      afterEach.push(callback);
+      return () => {};
+    },
+  };
+  await nitroPlugin.nitro!.setup!(nitro);
+  otherModules?.(nitro);
+  // Nitro calls other hooks before `build:before`; vinext only merges on it.
+  const beforeOtherHook = nitro.options.traceDeps;
+  for (const callback of afterEach) callback({ name: "rollup:reload" });
+  expect(nitro.options.traceDeps).toBe(beforeOtherHook);
+  // Nitro's Vite builder calls `build:before` once; its other builders call
+  // it for each build.
+  const callBuildBefore = () => {
+    for (const handler of buildBefore) handler();
+    for (const callback of afterEach) callback({ name: "build:before" });
+  };
+  callBuildBefore();
+  return { callBuildBefore };
+}
 
 afterEach(() => {
   for (const dir of tempDirs.splice(0)) {
@@ -55,6 +93,31 @@ function writeProjectFile(root: string, relativePath: string, content: string): 
   const filePath = path.join(root, relativePath);
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, content);
+}
+
+// Whether these `traceDeps` make Nitro's externals plugin treat a resolved
+// module as a traced external (Nitro's builtin native package list is not
+// modelled), mirroring how `resolveTraceDeps` builds its include pattern:
+// string names are escaped (a `name*` full-trace entry contributes `name`), a
+// `!name` string removes that name, and RegExp entries contribute their source.
+// https://github.com/nitrojs/nitro/blob/main/src/build/plugins/externals.ts
+function isTracedByNitro(traceDeps: readonly (string | RegExp)[], resolvedId: string): boolean {
+  const negated = new Set(
+    traceDeps
+      .filter((dep): dep is string => typeof dep === "string" && dep.startsWith("!"))
+      .map((dep) => dep.slice(1)),
+  );
+  const sources = traceDeps
+    .filter((dep) => typeof dep !== "string" || !dep.startsWith("!"))
+    .map((dep) => (typeof dep === "string" ? dep.replace(/\*$/, "") : dep))
+    .filter((dep) => typeof dep !== "string" || !negated.has(dep))
+    .map((dep) =>
+      typeof dep === "string" ? dep.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") : dep.source,
+    );
+  if (sources.length === 0) return false;
+  return new RegExp(`(?:^|[/\\\\]node_modules[/\\\\])(?:${sources.join("|")})(?:[/\\\\]|$)`).test(
+    resolvedId,
+  );
 }
 
 function createAppProject(): string {
@@ -145,7 +208,11 @@ async function initializeNitroSetupPlugin(root: string): Promise<NitroSetupPlugi
 }
 
 describe("vinext Nitro setup integration", () => {
-  it("propagates server externals to Nitro traceDeps", async () => {
+  // Nitro copies every string `traceDeps` entry into `.output/server/node_modules`
+  // whether the server imports it or not (nitrojs/nitro#4391), which shipped
+  // every installed default external (`typescript`, `webpack`, `playwright`,
+  // ...) in every build. Next.js only ships the externals the server imports.
+  it("propagates server externals to Nitro traceDeps without force-copying unused defaults", async () => {
     const root = createAppProject();
     writeProjectFile(
       root,
@@ -153,7 +220,7 @@ describe("vinext Nitro setup integration", () => {
       `export default { serverExternalPackages: ["custom-apm", "@scope/traced"] };\n`,
     );
     const nitroPlugin = await initializeNitroSetupPlugin(root);
-    const nitro = {
+    const nitro: NitroSetupTarget = {
       options: {
         dev: false,
         routeRules: {},
@@ -161,14 +228,148 @@ describe("vinext Nitro setup integration", () => {
       },
     };
 
-    await nitroPlugin.nitro!.setup!(nitro);
+    await runNitroSetup(nitroPlugin, nitro);
 
-    expect(nitro.options.traceDeps?.slice(0, 2)).toEqual(["existing-trace", "pg"]);
-    expect(nitro.options.traceDeps).toContain("pg");
-    expect(nitro.options.traceDeps).toContain("mongodb");
-    expect(nitro.options.traceDeps).toContain("custom-apm");
-    expect(nitro.options.traceDeps).toContain("@scope/traced");
-    expect(new Set(nitro.options.traceDeps).size).toBe(nitro.options.traceDeps?.length);
+    const traceDeps = nitro.options.traceDeps ?? [];
+    // Only the user's own `traceDeps` and `serverExternalPackages` are
+    // force-copied.
+    expect(traceDeps.filter((dep) => typeof dep === "string")).toEqual([
+      "existing-trace",
+      "pg",
+      "custom-apm",
+      "@scope/traced",
+    ]);
+
+    // Default externals are still traced when the server imports them.
+    for (const name of ["mongodb", "typescript", "webpack", "custom-apm", "@scope/traced"]) {
+      expect(isTracedByNitro(traceDeps, `/app/node_modules/${name}/index.js`)).toBe(true);
+    }
+    expect(isTracedByNitro(traceDeps, "/app/node_modules/webpack-sources/index.js")).toBe(false);
+    expect(isTracedByNitro(traceDeps, "/app/node_modules/@scope/traced-extra/index.js")).toBe(
+      false,
+    );
+    expect(isTracedByNitro(traceDeps, "/app/node_modules/xmongodb/index.js")).toBe(false);
+
+    const patterns = traceDeps.filter((dep) => dep instanceof RegExp).map((dep) => dep.source);
+    expect(new Set(patterns).size).toBe(patterns.length);
+    // `pg` is already a user entry.
+    expect(patterns.filter((source) => new RegExp(`^(?:${source})$`).test("pg"))).toEqual([]);
+  });
+
+  // Nitro only sees ES imports, so a server external the app depends on may
+  // be loaded without one: `require()` from bundled CommonJS, or an APM agent
+  // preloaded with `node --import`.
+  it("force-copies default server externals the app depends on at runtime", async () => {
+    const root = createAppProject();
+    writeProjectFile(
+      root,
+      "package.json",
+      JSON.stringify({
+        name: "test-project",
+        private: true,
+        dependencies: { pg: "^8.0.0", react: "^19.0.0" },
+        optionalDependencies: { sharp: "^0.34.0" },
+        devDependencies: { typescript: "^5.0.0", playwright: "^1.0.0" },
+      }),
+    );
+    const nitroPlugin = await initializeNitroSetupPlugin(root);
+    const nitro: NitroSetupTarget = { options: { dev: false, routeRules: {} } };
+
+    await runNitroSetup(nitroPlugin, nitro);
+
+    const traceDeps = nitro.options.traceDeps ?? [];
+    expect(traceDeps.filter((dep) => typeof dep === "string").sort()).toEqual(["pg", "sharp"]);
+    expect(isTracedByNitro(traceDeps, "/app/node_modules/typescript/lib/typescript.js")).toBe(true);
+    expect(isTracedByNitro(traceDeps, "/app/node_modules/playwright/index.js")).toBe(true);
+  });
+
+  it("keeps a user traceDeps opt-out for a server external", async () => {
+    const root = createAppProject();
+    const nitroPlugin = await initializeNitroSetupPlugin(root);
+    const nitro: NitroSetupTarget = {
+      options: { dev: false, routeRules: {}, traceDeps: ["!pg"] },
+    };
+
+    await runNitroSetup(nitroPlugin, nitro);
+
+    const traceDeps = nitro.options.traceDeps ?? [];
+    expect(isTracedByNitro(traceDeps, "/app/node_modules/pg/lib/index.js")).toBe(false);
+    expect(isTracedByNitro(traceDeps, "/app/node_modules/mongodb/lib/index.js")).toBe(true);
+  });
+
+  it("keeps a traceDeps opt-out added by a Nitro module set up after vinext", async () => {
+    const root = createAppProject();
+    const nitroPlugin = await initializeNitroSetupPlugin(root);
+    const nitro: NitroSetupTarget = { options: { dev: false, routeRules: {} } };
+
+    await runNitroSetup(nitroPlugin, nitro, (later) => {
+      (later.options.traceDeps ??= []).push("!mongodb");
+    });
+
+    const traceDeps = nitro.options.traceDeps ?? [];
+    expect(isTracedByNitro(traceDeps, "/app/node_modules/mongodb/lib/index.js")).toBe(false);
+    expect(isTracedByNitro(traceDeps, "/app/node_modules/pg/lib/index.js")).toBe(true);
+  });
+
+  it("keeps a traceDeps opt-out a later Nitro module adds in build:before", async () => {
+    const root = createAppProject();
+    const nitroPlugin = await initializeNitroSetupPlugin(root);
+    const nitro: NitroSetupTarget = { options: { dev: false, routeRules: {} } };
+
+    await runNitroSetup(nitroPlugin, nitro, (later) => {
+      later.hooks!.hook("build:before", () => {
+        (later.options.traceDeps ??= []).push("!mongodb");
+      });
+    });
+
+    const traceDeps = nitro.options.traceDeps ?? [];
+    expect(isTracedByNitro(traceDeps, "/app/node_modules/mongodb/lib/index.js")).toBe(false);
+    expect(isTracedByNitro(traceDeps, "/app/node_modules/pg/lib/index.js")).toBe(true);
+  });
+
+  it("does not add server externals twice when Nitro calls build:before again", async () => {
+    const root = createAppProject();
+    const nitroPlugin = await initializeNitroSetupPlugin(root);
+    const nitro: NitroSetupTarget = {
+      options: { dev: false, routeRules: {}, traceDeps: [/mongodb/] },
+    };
+
+    const { callBuildBefore } = await runNitroSetup(nitroPlugin, nitro);
+    const once = (nitro.options.traceDeps ?? []).map(String);
+    callBuildBefore();
+
+    expect((nitro.options.traceDeps ?? []).map(String)).toEqual(once);
+    // The user's own RegExp for a server external isn't duplicated either.
+    expect(once.filter((dep) => dep === "/mongodb/")).toHaveLength(1);
+  });
+
+  it("keeps a traceDeps opt-out added before Nitro calls build:before again", async () => {
+    const root = createAppProject();
+    const nitroPlugin = await initializeNitroSetupPlugin(root);
+    const nitro: NitroSetupTarget = { options: { dev: false, routeRules: {} } };
+
+    const { callBuildBefore } = await runNitroSetup(nitroPlugin, nitro);
+    nitro.options.traceDeps!.push("!mongodb");
+    callBuildBefore();
+
+    const traceDeps = nitro.options.traceDeps ?? [];
+    expect(isTracedByNitro(traceDeps, "/app/node_modules/mongodb/lib/index.js")).toBe(false);
+    expect(isTracedByNitro(traceDeps, "/app/node_modules/pg/lib/index.js")).toBe(true);
+  });
+
+  // Nitro reads `!` before `*`, so `!pg*` negates the literal selector `pg*`.
+  it("still traces a server external whose name only appears in a `!name*` selector", async () => {
+    const root = createAppProject();
+    const nitroPlugin = await initializeNitroSetupPlugin(root);
+    const nitro: NitroSetupTarget = {
+      options: { dev: false, routeRules: {}, traceDeps: ["!pg*"] },
+    };
+
+    await runNitroSetup(nitroPlugin, nitro);
+
+    expect(
+      isTracedByNitro(nitro.options.traceDeps ?? [], "/app/node_modules/pg/lib/index.js"),
+    ).toBe(true);
   });
 
   // A path-keyed Nitro response cache cannot see request-time dynamic usage,
@@ -187,7 +388,7 @@ describe("vinext Nitro setup integration", () => {
       },
     };
 
-    await nitroPlugin.nitro!.setup!(nitro);
+    await runNitroSetup(nitroPlugin, nitro);
 
     expect(nitro.options.routeRules).toEqual({
       "/blog/*": { headers: { "x-test": "1" } },
@@ -199,7 +400,7 @@ describe("vinext Nitro setup integration", () => {
     const nitroPlugin = await initializeNitroSetupPlugin(root);
     const nitro = { options: { dev: false, routeRules: {} } };
 
-    await nitroPlugin.nitro!.setup!(nitro);
+    await runNitroSetup(nitroPlugin, nitro);
 
     expect(nitro.options.routeRules).toEqual({});
   });
@@ -223,8 +424,8 @@ describe("vinext Nitro setup integration", () => {
       },
     };
 
-    await nitroPlugin.nitro!.setup!(nitro);
-    await nitroPlugin.nitro!.setup!(nitro);
+    await runNitroSetup(nitroPlugin, nitro);
+    await runNitroSetup(nitroPlugin, nitro);
     // Nitro copies the public files, and `compressPublicAssets` writes its
     // compressed copies, after setup and before it bundles the server.
     for (const file of ["a%20b.txt", "%2Fsecret.txt", "data.json", "data.json.gz"]) {
@@ -261,7 +462,7 @@ describe("vinext Nitro setup integration", () => {
     (nitroPlugin.configResolved as (config: { publicDir: string }) => void)({
       publicDir: path.join(root, "static"),
     });
-    await nitroPlugin.nitro!.setup!(nitro);
+    await runNitroSetup(nitroPlugin, nitro);
 
     const template = nitro.options.virtual?.["#vinext/nitro-public-files"] as () => string;
     expect(template()).toContain('publicAssets: ["/custom.txt"]');
@@ -279,7 +480,7 @@ describe("vinext Nitro setup integration", () => {
     const nitroPlugin = await initializeNitroSetupPlugin(createAppProject());
     const nitro: NitroSetupTarget = { options };
 
-    await nitroPlugin.nitro!.setup!(nitro);
+    await runNitroSetup(nitroPlugin, nitro);
 
     expect(nitro.options.plugins).toBeUndefined();
     expect(nitro.options.virtual).toBeUndefined();
@@ -288,7 +489,7 @@ describe("vinext Nitro setup integration", () => {
   it("propagates server externals during Nitro dev", async () => {
     const root = createAppProject();
     const nitroPlugin = await initializeNitroSetupPlugin(root);
-    const nitro = {
+    const nitro: NitroSetupTarget = {
       options: {
         dev: true,
         routeRules: {},
@@ -296,11 +497,12 @@ describe("vinext Nitro setup integration", () => {
       },
     };
 
-    await nitroPlugin.nitro!.setup!(nitro);
+    await runNitroSetup(nitroPlugin, nitro);
 
     expect(nitro.options.routeRules).toEqual({});
-    expect(nitro.options.traceDeps?.slice(0, 1)).toEqual(["existing-trace"]);
-    expect(nitro.options.traceDeps).toContain("pg");
-    expect(nitro.options.traceDeps).toContain("mongodb");
+    const traceDeps = nitro.options.traceDeps ?? [];
+    expect(traceDeps.filter((dep) => typeof dep === "string")).toEqual(["existing-trace"]);
+    expect(isTracedByNitro(traceDeps, "/app/node_modules/pg/lib/index.js")).toBe(true);
+    expect(isTracedByNitro(traceDeps, "/app/node_modules/mongodb/lib/index.js")).toBe(true);
   });
 });
