@@ -10,7 +10,7 @@ import type {
   CacheHandlerValue,
   CacheControlMetadata,
 } from "vinext/shims/cache-handler";
-import { applyCdnResponseHeaders } from "./cache-control.js";
+import { applyCdnResponseHeaders, NEVER_CACHE_CONTROL } from "./cache-control.js";
 import { buildMissIsrCacheControl, decideIsr } from "./isr-decision.js";
 import { buildCacheStateHeaders } from "./cache-headers.js";
 import { isrCacheControl, type ISRCacheEntry, type IsrWritePolicy } from "./isr-cache.js";
@@ -1378,6 +1378,12 @@ export async function resolvePagesPageData(
     }
 
     if (result?.redirect) {
+      const redirectHeaders = getPagesGsspResponseHeaders(res);
+      // Next.js pages-handler.ts gives a getServerSideProps result `revalidate: 0`,
+      // so the redirect is answered private/no-store unless the handler set its own.
+      if (!redirectHeaders.has("Cache-Control")) {
+        redirectHeaders.set("Cache-Control", NEVER_CACHE_CONTROL);
+      }
       return {
         kind: "response",
         response: buildPagesRedirectResponse(
@@ -1385,7 +1391,7 @@ export async function resolvePagesPageData(
           options,
           renderProps,
           "getServerSideProps",
-          getPagesGsspResponseHeaders(res),
+          redirectHeaders,
         ),
       };
     }

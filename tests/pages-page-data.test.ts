@@ -6,6 +6,7 @@ import {
   resolvePagesPageData,
   type ResolvePagesPageDataOptions,
 } from "../packages/vinext/src/server/pages-page-data.js";
+import { NEVER_CACHE_CONTROL } from "../packages/vinext/src/server/cache-control.js";
 import type { IncrementalCacheValue } from "../packages/vinext/src/shims/cache-handler.js";
 import { registerFrameworkTracingIntegration } from "../packages/vinext/src/server/tracer.js";
 import type { ResolvedFrameworkSpanDescriptor } from "../packages/vinext/src/server/framework-tracer.js";
@@ -2480,6 +2481,52 @@ describe("pages page data", () => {
         expect(result.response.headers.get("location")).toBe("/new-page");
       }
       expect(result.response.headers.get("surrogate-control")).toBe("no-store, delta=noop");
+    },
+  );
+
+  // Next.js pages-handler.ts gives a getServerSideProps result `revalidate: 0`
+  // and sets `getCacheControlHeader` (private, no-store) unless the handler
+  // already set Cache-Control, before it answers the redirect.
+  it.each([
+    { isDataReq: false, userCacheControl: undefined, expected: NEVER_CACHE_CONTROL },
+    { isDataReq: true, userCacheControl: undefined, expected: NEVER_CACHE_CONTROL },
+    { isDataReq: false, userCacheControl: "public, s-maxage=60", expected: "public, s-maxage=60" },
+  ])(
+    "sets Cache-Control on getServerSideProps redirects (data: $isDataReq, user: $userCacheControl)",
+    async ({ isDataReq, userCacheControl, expected }) => {
+      const responseHeaders: Record<string, string | number | boolean | string[]> = {};
+      const response = {
+        headersSent: false,
+        statusCode: 200,
+        getHeaders() {
+          return responseHeaders;
+        },
+        setHeader(name: string, value: string) {
+          responseHeaders[name.toLowerCase()] = value;
+        },
+      };
+      const result = await resolvePagesPageData(
+        createOptions({
+          isDataReq,
+          createGsspReqRes() {
+            return {
+              req: {},
+              res: response,
+              responsePromise: Promise.resolve(new Response("short-circuit", { status: 202 })),
+            };
+          },
+          pageModule: {
+            async getServerSideProps() {
+              if (userCacheControl) response.setHeader("Cache-Control", userCacheControl);
+              return { redirect: { destination: "/new-page", permanent: true } };
+            },
+          },
+        }),
+      );
+
+      expect(result.kind).toBe("response");
+      if (result.kind !== "response") throw new Error("expected response");
+      expect(result.response.headers.get("cache-control")).toBe(expected);
     },
   );
 
