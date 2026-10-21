@@ -787,13 +787,32 @@ function substituteAndSanitizeDestination(
   return sanitizeDestination(substituteDestinationParams(destination, params, kind));
 }
 
+/**
+ * Percent-encode the characters a `Location` header cannot carry as-is.
+ *
+ * Next.js parses a redirect destination with WHATWG URL (`parseRelativeUrl` in
+ * prepare-destination.ts), which percent-encodes non-ASCII characters and
+ * spaces, so `destination: "/blog/한글"` is sent as `/blog/%ED%95%9C%EA%B8%80`.
+ * Left raw, a character above U+00FF makes the Headers constructor throw
+ * 'Cannot convert argument to a ByteString' and the redirect becomes a 500.
+ * Printable ASCII is left alone so existing `%xx` escapes, substituted raw
+ * captures, and the query/hash delimiters are not re-encoded. The `u` flag
+ * keeps astral code points (emoji) whole. Refs cloudflare/vinext#1979, which
+ * fixed the same throw for trailing-slash redirects.
+ */
+function encodeRedirectDestination(destination: string): string {
+  return destination.replace(/[^\x21-\x7E]/gu, encodeURIComponent);
+}
+
 function resolveRedirectMatch(
   redirect: NextRedirect,
   params: Record<string, string>,
 ): RedirectMatch {
   return {
     // Collapse protocol-relative URLs (e.g. //evil.com from decoded %2F in catch-all params).
-    destination: substituteAndSanitizeDestination(redirect.destination, params, "redirect"),
+    destination: encodeRedirectDestination(
+      substituteAndSanitizeDestination(redirect.destination, params, "redirect"),
+    ),
     permanent: redirect.permanent,
     destinationQuery: substituteRedirectDestinationQuery(redirect.destination, params),
   };

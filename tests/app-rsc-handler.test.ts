@@ -8894,6 +8894,22 @@ describe("createAppRscHandler", () => {
     expect(dispatchMatchedPage).not.toHaveBeenCalled();
   });
 
+  it("percent-encodes non-ASCII characters in a config redirect destination", async () => {
+    const dispatchMatchedPage = vi.fn(async () => new Response("page", { status: 200 }));
+    const handler = createHandler({
+      configRedirects: [
+        { source: "/dental-cost", destination: "/medical-cost/치과", permanent: true },
+      ],
+      dispatchMatchedPage,
+    });
+
+    const response = await handler(new Request("https://example.test/docs/dental-cost"), null);
+
+    expect(response.status).toBe(308);
+    expect(response.headers.get("location")).toBe("/docs/medical-cost/%EC%B9%98%EA%B3%BC");
+    expect(dispatchMatchedPage).not.toHaveBeenCalled();
+  });
+
   it("does not match config redirects through percent-encoded literal aliases", async () => {
     const dispatchMatchedPage = vi.fn(async () => new Response("page", { status: 200 }));
     const handler = createHandler({

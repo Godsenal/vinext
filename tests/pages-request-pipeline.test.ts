@@ -283,6 +283,61 @@ describe("config redirects", () => {
     expect(result.response.headers.get("Location")).toBe("/new");
   });
 
+  // Next.js parses the destination with WHATWG URL (parseRelativeUrl), which
+  // percent-encodes non-ASCII characters before it reaches the Location header.
+  it("percent-encodes non-ASCII characters in a literal destination", async () => {
+    const result = await runPagesRequest(
+      makeRequest("/dental-cost"),
+      baseDeps({
+        configRedirects: [
+          { source: "/dental-cost", destination: "/medical-cost/치과", permanent: true },
+        ],
+      }),
+    );
+    expect(result.type).toBe("response");
+    if (result.type !== "response") return;
+    expect(result.response.status).toBe(308);
+    expect(result.response.headers.get("Location")).toBe("/medical-cost/%EC%B9%98%EA%B3%BC");
+  });
+
+  it("percent-encodes a non-ASCII destination around substituted params without re-encoding them", async () => {
+    const result = await runPagesRequest(
+      makeRequest("/dental-cost/%EC%84%9C%EC%9A%B8"),
+      baseDeps({
+        configRedirects: [
+          {
+            source: "/dental-cost/:path*",
+            destination: "/medical-cost/치과/:path*",
+            permanent: true,
+          },
+        ],
+      }),
+    );
+    expect(result.type).toBe("response");
+    if (result.type !== "response") return;
+    expect(result.response.headers.get("Location")).toBe(
+      "/medical-cost/%EC%B9%98%EA%B3%BC/%EC%84%9C%EC%9A%B8",
+    );
+  });
+
+  it("leaves an already percent-encoded destination unchanged", async () => {
+    const result = await runPagesRequest(
+      makeRequest("/dental-cost"),
+      baseDeps({
+        configRedirects: [
+          {
+            source: "/dental-cost",
+            destination: "/medical-cost/%EC%B9%98%EA%B3%BC",
+            permanent: true,
+          },
+        ],
+      }),
+    );
+    expect(result.type).toBe("response");
+    if (result.type !== "response") return;
+    expect(result.response.headers.get("Location")).toBe("/medical-cost/%EC%B9%98%EA%B3%BC");
+  });
+
   // 3. Config redirect: non-permanent → status 307
   it("non-permanent redirect returns 307", async () => {
     const req = makeRequest("/old");
