@@ -1009,6 +1009,9 @@ const LOCATION_QUERY_ENCODE_RE = /[\u0000-\u001F\u007F]|[^\u0000-\u007F]/gu;
 // ASCII tab and newlines anywhere.
 // oxlint-disable-next-line no-control-regex -- C0 controls are what it trims
 const LOCATION_STRIPPED_RE = /^[\u0000- ]+|[\u0000- ]+$|[\t\n\r]/g;
+// The parser serializes a lone UTF-16 surrogate as U+FFFD, where
+// encodeURIComponent would throw.
+const LONE_SURROGATE_RE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
 
 /**
  * Percent-encode a config-redirect `Location` the way Next.js sends it.
@@ -1029,7 +1032,7 @@ const LOCATION_STRIPPED_RE = /^[\u0000- ]+|[\u0000- ]+$|[\t\n\r]/g;
  * 500 instead.
  */
 export function encodeRedirectLocation(location: string): string {
-  location = location.replace(LOCATION_STRIPPED_RE, "");
+  location = location.replace(LOCATION_STRIPPED_RE, "").replace(LONE_SURROGATE_RE, "\uFFFD");
   const hashIndex = location.indexOf("#");
   const beforeHash = hashIndex === -1 ? location : location.slice(0, hashIndex);
   const hash = hashIndex === -1 ? "" : location.slice(hashIndex);
@@ -1037,10 +1040,20 @@ export function encodeRedirectLocation(location: string): string {
   const query = queryIndex === -1 ? "" : beforeHash.slice(queryIndex);
   const path = queryIndex === -1 ? beforeHash : beforeHash.slice(0, queryIndex);
 
+  let prefix: string;
+  if (path.startsWith("/")) {
+    prefix = path.replace(LOCATION_PATH_ENCODE_RE, encodeURIComponent);
+  } else {
+    // Parse the whole destination so the parser sees the original component
+    // boundaries, then keep the query and hash handling below.
+    const url = new URL(location);
+    url.search = "";
+    url.hash = "";
+    prefix = url.href;
+  }
+
   return (
-    (path.startsWith("/")
-      ? path.replace(LOCATION_PATH_ENCODE_RE, encodeURIComponent)
-      : new URL(path).href) +
+    prefix +
     query.replace(LOCATION_QUERY_ENCODE_RE, encodeURIComponent) +
     hash.replace(LOCATION_FRAGMENT_ENCODE_RE, encodeURIComponent)
   );
