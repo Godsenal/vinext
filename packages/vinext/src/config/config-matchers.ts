@@ -621,10 +621,14 @@ export function matchRedirect(
             : _emptyParams();
         if (!conditionParams) continue;
         // Locale was omitted (the `?` made it optional) — param value is "".
-        localeMatch = resolveRedirectMatch(redirect, {
-          [entry.paramName]: "",
-          ...conditionParams,
-        });
+        localeMatch = resolveRedirectMatch(
+          redirect,
+          {
+            [entry.paramName]: "",
+            ...conditionParams,
+          },
+          basePathState,
+        );
         localeMatchIndex = entry.originalIndex;
         break; // bucket entries are in insertion order = original order
       }
@@ -651,10 +655,14 @@ export function matchRedirect(
               ? collectConditionParams(redirect.has, redirect.missing, ctx)
               : _emptyParams();
           if (!conditionParams) continue;
-          localeMatch = resolveRedirectMatch(redirect, {
-            [entry.paramName]: localePart,
-            ...conditionParams,
-          });
+          localeMatch = resolveRedirectMatch(
+            redirect,
+            {
+              [entry.paramName]: localePart,
+              ...conditionParams,
+            },
+            basePathState,
+          );
           localeMatchIndex = entry.originalIndex;
           break; // bucket entries are in insertion order = original order
         }
@@ -681,10 +689,14 @@ export function matchRedirect(
           ? collectConditionParams(redirect.has, redirect.missing, ctx)
           : _emptyParams();
       if (!conditionParams) continue;
-      return resolveRedirectMatch(redirect, {
-        ...params,
-        ...conditionParams,
-      });
+      return resolveRedirectMatch(
+        redirect,
+        {
+          ...params,
+          ...conditionParams,
+        },
+        basePathState,
+      );
     }
   }
 
@@ -788,29 +800,62 @@ function substituteAndSanitizeDestination(
 }
 
 /**
- * Parse a redirect destination template with the URL parser before params are
- * substituted, as Next.js's `parseDestination` does (`parseRelativeUrl` in
- * prepare-destination.ts). This trims surrounding whitespace, resolves dot
- * segments and backslashes, and drops an empty query or hash. The query text
- * is kept verbatim, as preserveRedirectDestinationQuery emits it. An absolute
- * destination is parsed whole by encodeRedirectLocation.
+ * Prepare a redirect destination template as Next.js does before substituting
+ * params. processRoutes (load-custom-routes.ts) prefixes a local destination
+ * with the basePath, then parseDestination (prepare-destination.ts) parses it
+ * with the URL parser, its param tokens escaped so they survive. This trims
+ * whitespace, resolves dot segments and backslashes, percent-encodes the path
+ * and hash, punycodes the host, drops an empty query or hash, and throws (a
+ * 500) on an invalid absolute URL. Captures are substituted afterwards, so the
+ * parser never sees them. The query text is kept verbatim, as
+ * preserveRedirectDestinationQuery emits it.
  */
-function parseRedirectDestinationTemplate(destination: string): string {
-  destination = destination.replace(LOCATION_STRIPPED_RE, "");
-  if (!destination.startsWith("/")) return destination;
-  const url = new URL(`http://n${destination}`);
-  const hashIndex = destination.indexOf("#");
-  const beforeHash = hashIndex === -1 ? destination : destination.slice(0, hashIndex);
+function parseRedirectDestinationTemplate(
+  template: string,
+  params: Record<string, string>,
+  { basePath, hadBasePath }: BasePathMatchState,
+): string {
+  const isLocal = template.startsWith("/");
+  if (isLocal && basePath && hadBasePath) {
+    template = template === "/" ? basePath : basePath + template;
+  }
+  template = template.replace(LOCATION_STRIPPED_RE, "");
+
+  const keys = Object.keys(params).sort((a, b) => b.length - a.length);
+  const escaped =
+    keys.length === 0
+      ? template
+      : template.replace(
+          new RegExp(
+            `:(${keys.map((key) => key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})(?![A-Za-z0-9_])`,
+            "g",
+          ),
+          `${ESCAPED_PARAM_COLON}$1`,
+        );
+  const url = isLocal ? new URL(`http://n${escaped}`) : new URL(escaped);
+  const hash = url.hash;
+  url.search = "";
+  url.hash = "";
+
+  const hashIndex = template.indexOf("#");
+  const beforeHash = hashIndex === -1 ? template : template.slice(0, hashIndex);
   const queryIndex = beforeHash.indexOf("?");
   const query = queryIndex === -1 ? "" : beforeHash.slice(queryIndex);
-  return `${url.pathname}${/^\?&*$/.test(query) ? "" : query}${url.hash}`;
+  const unescape = (value: string) => value.replace(ESCAPED_PARAM_COLON_RE, ":");
+  return `${unescape(isLocal ? url.pathname : url.href)}${/^\?&*$/.test(query) ? "" : query}${unescape(hash)}`;
 }
+
+// Next.js's param escape marker. The host parser lowercases it, so it is
+// restored case-insensitively, as Next.js does.
+const ESCAPED_PARAM_COLON = "__ESC_COLON_";
+const ESCAPED_PARAM_COLON_RE = /__ESC_COLON_/gi;
 
 function resolveRedirectMatch(
   redirect: NextRedirect,
   params: Record<string, string>,
+  basePathState: BasePathMatchState,
 ): RedirectMatch {
-  const destination = parseRedirectDestinationTemplate(redirect.destination);
+  const destination = parseRedirectDestinationTemplate(redirect.destination, params, basePathState);
   return {
     // Collapse protocol-relative URLs (e.g. //evil.com from decoded %2F in catch-all params).
     destination: substituteAndSanitizeDestination(destination, params, "redirect"),
@@ -1018,70 +1063,33 @@ export function preserveRedirectDestinationQuery(
   return mergedQuery === "" ? `${pathPart}${hash}` : `${pathPart}?${mergedQuery}${hash}`;
 }
 
-// The URL parser's path and fragment percent-encode sets, plus every non-ASCII
-// code point (the `u` flag keeps astral characters such as emoji whole).
-// oxlint-disable-next-line no-control-regex -- C0 controls are in both sets
-const LOCATION_PATH_ENCODE_RE = /[\u0000- "<>^`{}\u007F]|[^\u0000-\u007F]/gu;
-// oxlint-disable-next-line no-control-regex -- C0 controls are in both sets
-const LOCATION_FRAGMENT_ENCODE_RE = /[\u0000- "<>`\u007F]|[^\u0000-\u007F]/gu;
-// oxlint-disable-next-line no-control-regex -- C0 controls cannot go in a header raw
-const LOCATION_QUERY_ENCODE_RE = /[\u0000-\u001F\u007F]|[^\u0000-\u007F]/gu;
 // The URL parser trims leading and trailing C0 controls and spaces, and removes
 // ASCII tab and newlines anywhere.
 // oxlint-disable-next-line no-control-regex -- C0 controls are what it trims
 const LOCATION_STRIPPED_RE = /^[\u0000- ]+|[\u0000- ]+$|[\t\n\r]/g;
-// The parser serializes a lone UTF-16 surrogate as U+FFFD, where
-// encodeURIComponent would throw.
+// Characters a header value cannot carry as text: C0 controls other than tab,
+// DEL, and every non-ASCII code point (the `u` flag keeps astral characters
+// such as emoji whole).
+// oxlint-disable-next-line no-control-regex -- C0 controls are the point
+const LOCATION_UNSAFE_RE = /[\u0000-\u0008\u000A-\u001F\u007F]|[^\u0000-\u007F]/gu;
+// encodeURIComponent throws on a lone UTF-16 surrogate; the URL parser
+// serializes it as U+FFFD.
 const LONE_SURROGATE_RE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
 
 /**
- * Percent-encode a config-redirect `Location` the way Next.js sends it.
+ * Percent-encode what a config-redirect `Location` header cannot carry.
  *
- * Next.js parses the destination with the WHATWG URL parser (`parseUrl` in
- * prepare-destination.ts) before formatting it into the header, so the path
- * and hash arrive percent-encoded (`/치과` → `/%EC%B9%98%EA%B3%BC`) and an
- * internationalized host in its punycode form. Left raw, a character above
- * U+00FF makes the Headers constructor throw and the redirect becomes a 500.
- *
- * Like Next.js, a destination that does not start with `/` goes through
- * `new URL`, which also throws (a 500) on an invalid one. A path keeps the
- * parser's whitespace handling and percent-encode sets. `%` is never encoded,
- * so existing `%XX` escapes and raw request captures are not encoded twice.
- * The query is otherwise emitted verbatim (see
- * preserveRedirectDestinationQuery), so only its control and non-ASCII
- * characters are encoded. Next.js sends those raw, like non-ASCII text from a
- * decoded `has` capture anywhere in the destination, and its Node server
- * answers 500 instead.
+ * The destination template was already parsed like a URL by matchRedirect, so
+ * its literal path, hash and host are encoded as Next.js sends them. Captures
+ * and the destination query are inserted verbatim, like Next.js, so they can
+ * still hold control or non-ASCII characters. Next.js writes those raw and its
+ * Node server answers 500 for a character above U+00FF (the Headers
+ * constructor throws the same way); vinext percent-encodes them instead.
  */
 export function encodeRedirectLocation(location: string): string {
-  location = location.replace(LOCATION_STRIPPED_RE, "").replace(LONE_SURROGATE_RE, "\uFFFD");
-  const hashIndex = location.indexOf("#");
-  const beforeHash = hashIndex === -1 ? location : location.slice(0, hashIndex);
-  // Like the parsed template, an empty query or hash is dropped.
-  const hash =
-    hashIndex === -1 || hashIndex === location.length - 1 ? "" : location.slice(hashIndex);
-  const queryIndex = beforeHash.indexOf("?");
-  const rawQuery = queryIndex === -1 ? "" : beforeHash.slice(queryIndex);
-  const query = /^\?&*$/.test(rawQuery) ? "" : rawQuery;
-  const path = queryIndex === -1 ? beforeHash : beforeHash.slice(0, queryIndex);
-
-  let prefix: string;
-  if (path.startsWith("/")) {
-    prefix = path.replace(LOCATION_PATH_ENCODE_RE, encodeURIComponent);
-  } else {
-    // Parse the whole destination so the parser sees the original component
-    // boundaries, then keep the query and hash handling below.
-    const url = new URL(location);
-    url.search = "";
-    url.hash = "";
-    prefix = url.href;
-  }
-
-  return (
-    prefix +
-    query.replace(LOCATION_QUERY_ENCODE_RE, encodeURIComponent) +
-    hash.replace(LOCATION_FRAGMENT_ENCODE_RE, encodeURIComponent)
-  );
+  return location
+    .replace(LONE_SURROGATE_RE, "\uFFFD")
+    .replace(LOCATION_UNSAFE_RE, encodeURIComponent);
 }
 
 function parseExternalRewriteUrl(externalUrl: string): URL | null {

@@ -1846,15 +1846,9 @@ async function resolveClientConfigRedirect(href: string): Promise<string | null>
   );
   if (!redirect) return null;
 
-  const destination =
-    __basePath &&
-    routeContext.basePathState.hadBasePath &&
-    !isExternalUrl(redirect.destination) &&
-    !hasBasePath(redirect.destination, __basePath)
-      ? __basePath + redirect.destination
-      : redirect.destination;
+  // matchClientRedirect has already prefixed a local destination with basePath.
   return preserveRedirectDestinationQuery(
-    destination,
+    redirect.destination,
     routeContext.search,
     redirect.destinationQuery,
   );

@@ -158,6 +158,14 @@ const nextConfig: NextConfig = {
         destination: "/nextjs-compat/rsc-query-routing/redirect/dest",
         permanent: true,
       },
+      // Used by E2E: app-router-encoded-basepath-i18n/config-redirect.spec.ts —
+      // the basePath and locale prefix the destination template before it is
+      // parsed, so dot segments resolve against them.
+      {
+        source: "/basepath-dot-redirect",
+        destination: "/../outside",
+        permanent: false,
+      },
     ];
   },
 

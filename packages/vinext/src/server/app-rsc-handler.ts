@@ -741,22 +741,6 @@ function createMissingServerActionResponse(
   return createServerActionNotFoundResponse();
 }
 
-function redirectDestinationWithBasePath(
-  destination: string,
-  basePath: string,
-  hadBasePath: boolean,
-): string {
-  if (
-    !basePath ||
-    !hadBasePath ||
-    isExternalUrl(destination) ||
-    hasBasePath(destination, basePath)
-  ) {
-    return destination;
-  }
-  return basePath + destination;
-}
-
 async function applyRewrite(
   options: {
     basePathState: BasePathMatchState;
@@ -1191,9 +1175,8 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       )
     : null;
   if (configMatchers && redirect) {
-    const destination = configMatchers.sanitizeDestination(
-      redirectDestinationWithBasePath(redirect.destination, options.basePath, hadBasePath),
-    );
+    // matchRedirect has already prefixed a local destination with basePath.
+    const destination = redirect.destination;
     // For RSC navigations `createRscRedirectLocation` recomputes the
     // cache-busting `_rsc` param onto the Location. For plain (document)
     // requests, carry the original request query onto the Location so it
