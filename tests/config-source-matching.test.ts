@@ -569,6 +569,35 @@ describe("matchRedirect destinations agree with Next.js", () => {
     }
   });
 
+  it("leaves slashes captured into the host alone", () => {
+    const { normalizeRepeatedSlashes } = require("next/dist/shared/lib/utils") as {
+      normalizeRepeatedSlashes: (url: string) => string;
+    };
+    const destination = "https://:host.example/a//b";
+    const { parsedDestination } = prepareDestination({
+      appendParamsToQuery: false,
+      destination,
+      params: { host: "foo//bar" },
+      query: {},
+    });
+    parsedDestination.pathname = normalizeRepeatedSlashes(parsedDestination.pathname as string);
+    const expected = formatUrl({ ...parsedDestination, query: undefined, search: "" });
+    expect(
+      matchRedirect(
+        "/r",
+        [
+          {
+            source: "/r",
+            destination,
+            permanent: false,
+            has: [{ type: "query", key: "host", value: "(?<host>.*)" }],
+          },
+        ],
+        requestContextFromRequest(new Request("http://localhost/r?host=foo//bar")),
+      )?.destination,
+    ).toBe(expected);
+  });
+
   it("keeps literal text that looks like Next.js's param escape marker", () => {
     // Next.js 16.2.7 throws on this destination; vinext redirects to it as written.
     expect(

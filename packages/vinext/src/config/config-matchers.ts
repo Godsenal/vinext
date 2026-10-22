@@ -858,20 +858,18 @@ function parseRedirectDestinationTemplate(
   return `${unescape(base)}${/^\?&*$/.test(query) ? "" : query}${unescape(hash)}`;
 }
 
-// The pathname of a local or `scheme://authority` destination.
-const REDIRECT_PATHNAME_RE = /^((?:[A-Za-z][A-Za-z0-9+.-]*:\/\/[^/?#]*)?)([^?#]*)/;
+// The `scheme://authority` of an absolute destination template.
+const REDIRECT_ORIGIN_RE = /^[A-Za-z][A-Za-z0-9+.-]*:\/\/[^/?#]*/;
 
 /**
  * Next.js resolve-routes.ts runs normalizeRepeatedSlashes on the prepared
  * destination's pathname, after params are substituted: backslashes become
  * `/` and runs of slashes collapse, so a basePath-prefixed `//target`
- * becomes `/docs/target`.
+ * becomes `/docs/target`. `destination` starts at the pathname.
  */
 function normalizeRedirectPathnameSlashes(destination: string): string {
-  return destination.replace(
-    REDIRECT_PATHNAME_RE,
-    (_, origin: string, pathname: string) =>
-      origin + pathname.replace(/\\/g, "/").replace(/\/\/+/g, "/"),
+  return destination.replace(/^[^?#]*/, (pathname) =>
+    pathname.replace(/\\/g, "/").replace(/\/\/+/g, "/"),
   );
 }
 
@@ -881,11 +879,19 @@ function resolveRedirectMatch(
   basePathState: BasePathMatchState,
 ): RedirectMatch {
   const destination = parseRedirectDestinationTemplate(redirect, params, basePathState);
+  // The authority is split off before substitution, so captures in the host
+  // are never mistaken for pathname slashes.
+  const origin = REDIRECT_ORIGIN_RE.exec(destination)?.[0] ?? "";
   return {
-    // Collapse protocol-relative URLs (e.g. //evil.com from decoded %2F in catch-all params).
-    destination: normalizeRedirectPathnameSlashes(
-      substituteAndSanitizeDestination(destination, params, "redirect"),
-    ),
+    destination: origin
+      ? substituteDestinationParams(origin, params, "redirect") +
+        normalizeRedirectPathnameSlashes(
+          substituteDestinationParams(destination.slice(origin.length), params, "redirect"),
+        )
+      : // Collapse protocol-relative URLs (e.g. //evil.com from decoded %2F in catch-all params).
+        normalizeRedirectPathnameSlashes(
+          substituteAndSanitizeDestination(destination, params, "redirect"),
+        ),
     // Next.js getRedirectStatus (lib/redirect-status.ts).
     statusCode: redirect.statusCode || (redirect.permanent ? 308 : 307),
     destinationQuery: substituteRedirectDestinationQuery(destination, params),
