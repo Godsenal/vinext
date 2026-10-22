@@ -213,7 +213,7 @@ function writeGsspRedirect(
   });
   // Next.js pages-handler.ts gives a getServerSideProps result `revalidate: 0`,
   // so its redirect is answered private/no-store unless the handler set its own.
-  if (options.method === "getServerSideProps" && !res.hasHeader("Cache-Control")) {
+  if (options.method === "getServerSideProps" && !res.getHeader("Cache-Control")) {
     res.setHeader("Cache-Control", ISR_NEVER_CACHE_CONTROL);
   }
   // `getServerSideProps` may set response headers before returning a redirect.
@@ -1247,7 +1247,7 @@ export function createSSRHandler(
                 res.setHeader("Content-Type", "application/json");
               }
               // Same getServerSideProps `revalidate: 0` default as the redirect.
-              if (!res.hasHeader("Cache-Control")) {
+              if (!res.getHeader("Cache-Control")) {
                 res.setHeader("Cache-Control", ISR_NEVER_CACHE_CONTROL);
               }
               if (deploymentId && !res.hasHeader(NEXTJS_DEPLOYMENT_ID_HEADER)) {

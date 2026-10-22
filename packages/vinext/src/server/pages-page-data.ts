@@ -823,7 +823,7 @@ function buildPagesRedirectResponse(
  * handler set its own Cache-Control.
  */
 function applyPagesGsspCacheControlDefault(headers: Headers): void {
-  if (!headers.has("Cache-Control")) headers.set("Cache-Control", NEVER_CACHE_CONTROL);
+  if (!headers.get("Cache-Control")) headers.set("Cache-Control", NEVER_CACHE_CONTROL);
 }
 
 function getPagesGsspResponseHeaders(res: PagesGsspResponse): Headers {
