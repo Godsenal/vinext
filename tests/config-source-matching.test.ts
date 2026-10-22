@@ -534,6 +534,21 @@ describe("matchRedirect locale-static index agrees with the compiled source", ()
     expect(matchRedirect("/fr/blog", redirects, ctx)).toBeNull();
   });
 
+  it("does not resolve a locale-static rule an earlier linear rule shadows", () => {
+    // Resolving parses the destination, which throws on an invalid URL; the
+    // first rule wins in Next.js, so the second destination is never parsed.
+    const redirects = [
+      { source: "/:path*", destination: "/ok", permanent: false },
+      {
+        source: "/:locale(en|fr)?/foo",
+        destination: "https://example.com:99999/a",
+        permanent: false,
+      },
+    ];
+    expect(matchRedirect("/en/foo", redirects, ctx)?.destination).toBe("/ok");
+    expect(matchRedirect("/foo", redirects, ctx)?.destination).toBe("/ok");
+  });
+
   it("leaves slash-ending sources to the linear scan", () => {
     const redirects = [
       { source: "/:locale(en|fr)?/about/", destination: "/team/", permanent: false },

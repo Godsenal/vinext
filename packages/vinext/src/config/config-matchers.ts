@@ -598,7 +598,9 @@ export function matchRedirect(
   // second slash, which is O(n) on the path length but far cheaper than
   // running 63 compiled regexes.
 
-  let localeMatch: RedirectMatch | null = null;
+  // Resolved only once the linear scan below has confirmed no earlier rule
+  // wins: resolving parses the destination, which can throw.
+  let localeMatch: { redirect: NextRedirect; params: Record<string, string> } | null = null;
   let localeMatchIndex = Infinity;
 
   if (index.localeStatic.size > 0) {
@@ -621,14 +623,7 @@ export function matchRedirect(
             : _emptyParams();
         if (!conditionParams) continue;
         // Locale was omitted (the `?` made it optional) — param value is "".
-        localeMatch = resolveRedirectMatch(
-          redirect,
-          {
-            [entry.paramName]: "",
-            ...conditionParams,
-          },
-          basePathState,
-        );
+        localeMatch = { redirect, params: { [entry.paramName]: "", ...conditionParams } };
         localeMatchIndex = entry.originalIndex;
         break; // bucket entries are in insertion order = original order
       }
@@ -655,14 +650,10 @@ export function matchRedirect(
               ? collectConditionParams(redirect.has, redirect.missing, ctx)
               : _emptyParams();
           if (!conditionParams) continue;
-          localeMatch = resolveRedirectMatch(
+          localeMatch = {
             redirect,
-            {
-              [entry.paramName]: localePart,
-              ...conditionParams,
-            },
-            basePathState,
-          );
+            params: { [entry.paramName]: localePart, ...conditionParams },
+          };
           localeMatchIndex = entry.originalIndex;
           break; // bucket entries are in insertion order = original order
         }
@@ -701,7 +692,9 @@ export function matchRedirect(
   }
 
   // Return the locale-static match if found (no earlier linear rule matched).
-  return localeMatch;
+  return (
+    localeMatch && resolveRedirectMatch(localeMatch.redirect, localeMatch.params, basePathState)
+  );
 }
 
 /**
