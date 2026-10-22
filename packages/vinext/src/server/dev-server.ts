@@ -211,6 +211,11 @@ function writeGsspRedirect(
     ...props,
     pageProps: props.pageProps,
   });
+  // Next.js pages-handler.ts gives a getServerSideProps result `revalidate: 0`,
+  // so its redirect is answered private/no-store unless the handler set its own.
+  if (options.method === "getServerSideProps" && !res.hasHeader("Cache-Control")) {
+    res.setHeader("Cache-Control", ISR_NEVER_CACHE_CONTROL);
+  }
   // `getServerSideProps` may set response headers before returning a redirect.
   // Pass them explicitly to writeHead: unlike the normal render path, redirects
   // return before the later gSSP-header capture/forwarding step runs.
@@ -1240,6 +1245,10 @@ export function createSSRHandler(
               stripDevPagesNotFoundFramingHeaders(res);
               if (!res.hasHeader("Content-Type")) {
                 res.setHeader("Content-Type", "application/json");
+              }
+              // Same getServerSideProps `revalidate: 0` default as the redirect.
+              if (!res.hasHeader("Cache-Control")) {
+                res.setHeader("Cache-Control", ISR_NEVER_CACHE_CONTROL);
               }
               if (deploymentId && !res.hasHeader(NEXTJS_DEPLOYMENT_ID_HEADER)) {
                 res.setHeader(NEXTJS_DEPLOYMENT_ID_HEADER, deploymentId);

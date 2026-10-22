@@ -1157,6 +1157,50 @@ describe("Pages Router integration", () => {
     expect(body.pageProps?.__N_REDIRECT).toBe("https://example.com/landing");
   });
 
+  // Next.js pages-handler.ts gives every getServerSideProps exit
+  // `revalidate: 0` before it answers the redirect or notFound, so a shared
+  // cache never stores the per-request result. Dev sends the same header.
+  it("sends the getServerSideProps Cache-Control default on redirect and notFound exits", async () => {
+    const dataHeaders = { Accept: "application/json", "x-nextjs-data": "1" };
+    const document = await fetch(`${baseUrl}/gssp-redirect`, { redirect: "manual" });
+    expect(document.status).toBe(307);
+    expect(document.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
+
+    const data = await fetch(`${baseUrl}/_next/data/test-build-id/gssp-redirect.json`, {
+      headers: dataHeaders,
+    });
+    expect(data.status).toBe(200);
+    expect(data.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
+
+    const notFoundData = await fetch(
+      `${baseUrl}/_next/data/test-build-id/gssp-not-found.json?hiding=true`,
+      { headers: dataHeaders },
+    );
+    expect(notFoundData.status).toBe(404);
+    expect(notFoundData.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
+  });
+
+  it("keeps a getServerSideProps Cache-Control on redirects", async () => {
+    const document = await fetch(`${baseUrl}/gssp-redirect-cache-control`, { redirect: "manual" });
+    expect(document.status).toBe(308);
+    expect(document.headers.get("cache-control")).toBe("public, s-maxage=60");
+
+    const data = await fetch(
+      `${baseUrl}/_next/data/test-build-id/gssp-redirect-cache-control.json`,
+      {
+        headers: { Accept: "application/json", "x-nextjs-data": "1" },
+      },
+    );
+    expect(data.status).toBe(200);
+    expect(data.headers.get("cache-control")).toBe("public, s-maxage=60");
+  });
+
   // Ported from Next.js: test/e2e/getserversideprops/test/index.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/getserversideprops/test/index.test.ts
   it("skips the custom 500 page for getServerSideProps errors in dev", async () => {
@@ -8721,6 +8765,45 @@ describe("Production server middleware (Pages Router)", () => {
       expect(res.status).toBe(404);
       expect(res.headers.get("content-type")).toContain("application/json");
       expect(await res.json()).toEqual({});
+    });
+
+    // Next.js pages-handler.ts gives every getServerSideProps exit
+    // `revalidate: 0` before it answers the redirect or notFound, so a shared
+    // cache never stores the per-request result.
+    it("sends the getServerSideProps Cache-Control default on redirect and notFound exits", async () => {
+      const document = await fetch(`${prodUrl}/gssp-redirect`, { redirect: "manual" });
+      expect(document.status).toBe(307);
+      expect(document.headers.get("cache-control")).toBe(
+        "private, no-cache, no-store, max-age=0, must-revalidate",
+      );
+
+      const data = await fetch(`${prodUrl}/_next/data/${BUILD_ID}/gssp-redirect.json`);
+      expect(data.status).toBe(200);
+      expect(data.headers.get("cache-control")).toBe(
+        "private, no-cache, no-store, max-age=0, must-revalidate",
+      );
+
+      const notFoundData = await fetch(
+        `${prodUrl}/_next/data/${BUILD_ID}/gssp-not-found.json?hiding=true`,
+      );
+      expect(notFoundData.status).toBe(404);
+      expect(notFoundData.headers.get("cache-control")).toBe(
+        "private, no-cache, no-store, max-age=0, must-revalidate",
+      );
+    });
+
+    it("keeps a getServerSideProps Cache-Control on redirects", async () => {
+      const document = await fetch(`${prodUrl}/gssp-redirect-cache-control`, {
+        redirect: "manual",
+      });
+      expect(document.status).toBe(308);
+      expect(document.headers.get("cache-control")).toBe("public, s-maxage=60");
+
+      const data = await fetch(
+        `${prodUrl}/_next/data/${BUILD_ID}/gssp-redirect-cache-control.json`,
+      );
+      expect(data.status).toBe(200);
+      expect(data.headers.get("cache-control")).toBe("public, s-maxage=60");
     });
   });
 });

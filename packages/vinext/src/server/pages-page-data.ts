@@ -817,6 +817,15 @@ function buildPagesRedirectResponse(
   );
 }
 
+/**
+ * Next.js pages-handler.ts gives a getServerSideProps result `revalidate: 0`,
+ * so its redirect and notFound exits are answered private/no-store unless the
+ * handler set its own Cache-Control.
+ */
+function applyPagesGsspCacheControlDefault(headers: Headers): void {
+  if (!headers.has("Cache-Control")) headers.set("Cache-Control", NEVER_CACHE_CONTROL);
+}
+
 function getPagesGsspResponseHeaders(res: PagesGsspResponse): Headers {
   const headers = new Headers();
   for (const [name, value] of Object.entries(res.getHeaders())) {
@@ -1378,12 +1387,8 @@ export async function resolvePagesPageData(
     }
 
     if (result?.redirect) {
-      const redirectHeaders = getPagesGsspResponseHeaders(res);
-      // Next.js pages-handler.ts gives a getServerSideProps result `revalidate: 0`,
-      // so the redirect is answered private/no-store unless the handler set its own.
-      if (!redirectHeaders.has("Cache-Control")) {
-        redirectHeaders.set("Cache-Control", NEVER_CACHE_CONTROL);
-      }
+      const responseHeaders = getPagesGsspResponseHeaders(res);
+      applyPagesGsspCacheControlDefault(responseHeaders);
       return {
         kind: "response",
         response: buildPagesRedirectResponse(
@@ -1391,20 +1396,25 @@ export async function resolvePagesPageData(
           options,
           renderProps,
           "getServerSideProps",
-          redirectHeaders,
+          responseHeaders,
         ),
       };
     }
 
     if (result?.notFound) {
       const responseHeaders = res.getHeaders();
-      return buildPagesNotFoundResult(
+      const notFoundResult = buildPagesNotFoundResult(
         options,
         undefined,
         undefined,
         undefined,
         Object.keys(responseHeaders).length > 0 ? responseHeaders : undefined,
       );
+      // The document 404 takes this default from the not-found render instead.
+      if (notFoundResult.kind === "response") {
+        applyPagesGsspCacheControlDefault(notFoundResult.response.headers);
+      }
+      return notFoundResult;
     }
 
     // Mirrors Next.js render.tsx's `isSerializableProps(pathname, "getServerSideProps", data.props)`
