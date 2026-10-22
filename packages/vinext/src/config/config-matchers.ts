@@ -836,8 +836,20 @@ function parseRedirectDestinationTemplate(
   const beforeHash = hashIndex === -1 ? template : template.slice(0, hashIndex);
   const queryIndex = beforeHash.indexOf("?");
   const query = queryIndex === -1 ? "" : beforeHash.slice(queryIndex);
+  let base = isLocal ? url.pathname : url.href;
+  if (!isLocal && (url.username || url.password)) {
+    // Next.js formatUrl re-encodes the parsed credentials with
+    // encodeURIComponent, restoring only the first `:`, and drops a password
+    // without a username.
+    const auth = url.username
+      ? `${encodeURIComponent(url.password ? `${url.username}:${url.password}` : url.username).replace(/%3A/i, ":")}@`
+      : "";
+    url.username = "";
+    url.password = "";
+    base = url.href.replace("//", `//${auth}`);
+  }
   const unescape = (value: string) => value.replace(ESCAPED_PARAM_COLON_RE, ":");
-  return `${unescape(isLocal ? url.pathname : url.href)}${/^\?&*$/.test(query) ? "" : query}${unescape(hash)}`;
+  return `${unescape(base)}${/^\?&*$/.test(query) ? "" : query}${unescape(hash)}`;
 }
 
 // Next.js's param escape marker. The host parser lowercases it, so it is

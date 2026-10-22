@@ -505,6 +505,40 @@ describe("config source matching regressions", () => {
   });
 });
 
+describe("matchRedirect absolute destinations agree with Next.js", () => {
+  const ctx = requestContextFromRequest(new Request("http://localhost/"));
+  const { prepareDestination } =
+    require("next/dist/shared/lib/router/utils/prepare-destination") as {
+      prepareDestination: (args: object) => { parsedDestination: Record<string, unknown> };
+    };
+  const { formatUrl } = require("next/dist/shared/lib/router/utils/format-url") as {
+    formatUrl: (url: object) => string;
+  };
+
+  it("formats credentials as Next.js formatUrl does", () => {
+    for (const destination of [
+      "https://u%20:p%20@example.com/a",
+      "https://u:p@example.com/a",
+      "https://:p@example.com/a",
+      "https://u:@example.com/a",
+      "https://u:p:q@example.com/a",
+      "https://ü:ß@example.com/a",
+    ]) {
+      const { parsedDestination } = prepareDestination({
+        appendParamsToQuery: false,
+        destination,
+        params: {},
+        query: {},
+      });
+      const expected = formatUrl({ ...parsedDestination, query: undefined, search: "" });
+      expect(
+        matchRedirect("/r", [{ source: "/r", destination, permanent: false }], ctx)?.destination,
+        destination,
+      ).toBe(expected);
+    }
+  });
+});
+
 describe("matchRedirect locale-static index agrees with the compiled source", () => {
   const ctx = requestContextFromRequest(new Request("http://localhost/"));
 
