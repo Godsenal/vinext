@@ -3797,6 +3797,12 @@ export default function Page(props) {
           expect.stringMatching(/^__prerender_bypass=; Expires=/),
           expect.stringMatching(/^__next_preview_data=; Expires=/),
         ]);
+        if (page === "gssp-not-found") {
+          // A shared cache must not replay the cookie cleanup.
+          expect(response.headers.get("cache-control")).toBe(
+            "private, no-cache, no-store, max-age=0, must-revalidate",
+          );
+        }
       }
     }
   });

@@ -1278,8 +1278,13 @@ export function createSSRHandler(
                 ...errorPageContext,
                 notFoundSrcPage: patternToNextFormat(route.pattern),
                 // Next.js dev answers the rendered 404 with its development
-                // page Cache-Control, over any value user code set.
-                ...(requestPreview.data === false ? { cacheControl: DEV_PAGES_CACHE_CONTROL } : {}),
+                // page Cache-Control, over any value user code set. Preview
+                // and preview-cookie cleanup responses stay private, as in
+                // production's finalizePagesPreviewResponse.
+                cacheControl:
+                  requestPreview.data === false && !requestPreview.shouldClear
+                    ? DEV_PAGES_CACHE_CONTROL
+                    : PAGES_PREVIEW_CACHE_CONTROL,
               },
             );
             return;
