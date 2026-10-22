@@ -83,6 +83,30 @@ test.describe("Config destination query params (Pages Router production)", () =>
   });
 });
 
+test.describe("Config redirect captured control characters (Pages Router production)", () => {
+  // The server percent-encodes the captured LF in its Location; a soft
+  // navigation must follow the redirect to the same path.
+  test("client navigation and the server agree on the redirect path", async ({ page, request }) => {
+    const res = await request.get(`${BASE}/control-capture-redirect?x=a%0Afoo`, {
+      maxRedirects: 0,
+    });
+    expect(res.status()).toBe(307);
+    expect(new URL(res.headers()["location"], BASE).pathname).toBe("/target/a%0Afoo");
+
+    await page.goto(`${BASE}/`);
+    await waitForHydration(page);
+    const documentRequest = page.waitForRequest(
+      (req) => req.isNavigationRequest() && new URL(req.url()).pathname.startsWith("/target/"),
+    );
+    await page.evaluate(() => {
+      void (
+        window as unknown as { next: { router: { push(url: string): Promise<boolean> } } }
+      ).next.router.push("/control-capture-redirect?x=a%0Afoo");
+    });
+    expect(new URL((await documentRequest).url()).pathname).toBe("/target/a%0Afoo");
+  });
+});
+
 test.describe("Config redirect non-ASCII destinations (Pages Router production)", () => {
   // Next.js 16.2.7 sends the same Locations for the path, hash, host and the
   // parsed template. It answers 500 for a non-ASCII destination query.

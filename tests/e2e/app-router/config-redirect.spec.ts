@@ -136,6 +136,22 @@ test.describe("Config Redirects (OpenNext compat)", () => {
     }
   });
 
+  // A captured control character is percent-encoded in the Location; an RSC
+  // navigation must be redirected to the same path as a document request.
+  test("RSC and document redirects agree on a captured control character", async ({ request }) => {
+    const document = await request.get(`${BASE}/control-capture-redirect?x=a%0Afoo`, {
+      maxRedirects: 0,
+    });
+    const rsc = await request.get(`${BASE}/control-capture-redirect.rsc?x=a%0Afoo`, {
+      maxRedirects: 0,
+      headers: { RSC: "1" },
+    });
+    expect(document.status()).toBe(307);
+    expect(rsc.status()).toBe(307);
+    expect(new URL(document.headers()["location"], BASE).pathname).toBe("/target/a%0Afoo");
+    expect(new URL(rsc.headers()["location"], BASE).pathname).toBe("/target/a%0Afoo");
+  });
+
   // Next.js 16.2.7 sends the same Locations for the path, hash, host and the
   // parsed template. It answers 500 for a non-ASCII destination query.
   test("percent-encodes non-ASCII destination characters in the Location", async ({

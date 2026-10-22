@@ -1846,10 +1846,11 @@ async function resolveClientConfigRedirect(href: string): Promise<string | null>
   const routeContext = getClientConfigRouteContext(href);
   if (!routeContext) return null;
 
-  const [{ matchClientRedirect }, { preserveRedirectDestinationQuery }] = await Promise.all([
-    import("../client/client-redirect-matcher.js"),
-    import("../config/config-matchers.js"),
-  ]);
+  const [{ matchClientRedirect }, { encodeRedirectLocation, preserveRedirectDestinationQuery }] =
+    await Promise.all([
+      import("../client/client-redirect-matcher.js"),
+      import("../config/config-matchers.js"),
+    ]);
   const redirect = matchClientRedirect(
     routeContext.pathname,
     redirects,
@@ -1859,10 +1860,14 @@ async function resolveClientConfigRedirect(href: string): Promise<string | null>
   if (!redirect) return null;
 
   // matchClientRedirect has already prefixed a local destination with basePath.
-  return preserveRedirectDestinationQuery(
-    redirect.destination,
-    routeContext.search,
-    redirect.destinationQuery,
+  // Encoded like the server's Location, so the URL parser cannot strip captured
+  // control characters and land somewhere else.
+  return encodeRedirectLocation(
+    preserveRedirectDestinationQuery(
+      redirect.destination,
+      routeContext.search,
+      redirect.destinationQuery,
+    ),
   );
 }
 

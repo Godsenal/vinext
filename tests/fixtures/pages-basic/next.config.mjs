@@ -60,6 +60,14 @@ const nextConfig = {
         permanent: false,
         has: [{ type: "query", key: "to", value: "(?<to>.*)" }],
       },
+      // Used by E2E: pages-router-prod/config-query-params.spec.ts — a captured control character is
+      // percent-encoded the same way in every request mode.
+      {
+        source: "/control-capture-redirect",
+        destination: "/target/:x",
+        permanent: false,
+        has: [{ type: "query", key: "x", value: "(?<x>[\\s\\S]*)" }],
+      },
       // Used by E2E: pages-router-prod/config-query-params.spec.ts — non-ASCII
       // destination characters are percent-encoded and the template is parsed
       // like a URL in the Location header.

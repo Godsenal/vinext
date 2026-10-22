@@ -853,10 +853,19 @@ function parseRedirectDestinationTemplate(
     url.password = "";
     base = url.href.replace("//", `//${auth}`);
   }
+  // Next.js then compiles the pathname and hash with path-to-regexp, which
+  // consumes a `\` as an escape. A special-scheme pathname has none left: the
+  // URL parser turned them into `/`.
+  if (!isLocal && !SPECIAL_SCHEME_RE.test(url.protocol)) {
+    base = base.slice(0, base.length - url.pathname.length) + consumeEscapes(url.pathname);
+  }
   const markerRe = new RegExp(marker, "gi");
   const unescape = (value: string) => value.replace(markerRe, ":");
-  return `${unescape(base)}${/^\?&*$/.test(query) ? "" : query}${unescape(hash)}`;
+  return `${unescape(base)}${/^\?&*$/.test(query) ? "" : query}${unescape(consumeEscapes(hash))}`;
 }
+
+const SPECIAL_SCHEME_RE = /^(?:https?|wss?|ftp|file):$/;
+const consumeEscapes = (value: string) => value.replace(/\\(.)/gs, "$1");
 
 // The `scheme://authority` of an absolute destination template.
 const REDIRECT_ORIGIN_RE = /^[A-Za-z][A-Za-z0-9+.-]*:\/\/[^/?#]*/;

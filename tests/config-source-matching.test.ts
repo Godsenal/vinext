@@ -598,6 +598,36 @@ describe("matchRedirect destinations agree with Next.js", () => {
     ).toBe(expected);
   });
 
+  it("consumes template backslash escapes in non-special pathnames and hashes", () => {
+    const { normalizeRepeatedSlashes } = require("next/dist/shared/lib/utils") as {
+      normalizeRepeatedSlashes: (url: string) => string;
+    };
+    for (const [destination, slug] of [
+      ["myapp://example.com/a\\b", "s"],
+      ["myapp://example.com/a\\\\b", "s"],
+      ["mailto:a\\b", "s"],
+      ["/a#x\\y", "s"],
+      ["https://e.com/a#x\\y", "s"],
+    ]) {
+      const { parsedDestination } = prepareDestination({
+        appendParamsToQuery: false,
+        destination,
+        params: { slug },
+        query: {},
+      });
+      parsedDestination.pathname = normalizeRepeatedSlashes(parsedDestination.pathname as string);
+      const expected = formatUrl({ ...parsedDestination, query: undefined, search: "" });
+      expect(
+        matchRedirect(
+          `/r/${encodeURIComponent(slug)}`,
+          [{ source: "/r/:slug", destination, permanent: false }],
+          ctx,
+        )?.destination,
+        destination,
+      ).toBe(expected);
+    }
+  });
+
   it("keeps literal text that looks like Next.js's param escape marker", () => {
     // Next.js 16.2.7 throws on this destination; vinext redirects to it as written.
     expect(

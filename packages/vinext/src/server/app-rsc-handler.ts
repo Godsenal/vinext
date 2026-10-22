@@ -1183,7 +1183,12 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     // survives the redirect, mirroring Next.js resolve-routes.ts (issue #1529).
     const location =
       isRscRequest && request.headers.get(RSC_HEADER) === "1"
-        ? await createRscRedirectLocation(destination, request)
+        ? // Encoded first, so the URL parser cannot strip captured control
+          // characters and send an RSC navigation somewhere else.
+          await createRscRedirectLocation(
+            configMatchers.encodeRedirectLocation(destination),
+            request,
+          )
         : configMatchers.encodeRedirectLocation(
             configMatchers.preserveRedirectDestinationQuery(
               destination,
