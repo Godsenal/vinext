@@ -484,7 +484,7 @@ export async function runPagesRequest(
       return {
         type: "response",
         response: new Response(null, {
-          status: redirect.permanent ? 308 : 307,
+          status: redirect.statusCode,
           headers: { Location: location },
         }),
       };

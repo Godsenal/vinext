@@ -1209,7 +1209,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
             ),
           );
     return new Response(null, {
-      status: redirect.permanent ? 308 : 307,
+      status: redirect.statusCode,
       headers: { Location: location },
     });
   }

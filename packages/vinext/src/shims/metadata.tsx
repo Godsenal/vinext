@@ -206,9 +206,13 @@ export type Metadata = {
     url?: string | URL;
     siteName?: string;
     images?: string | URL | SocialImageDescriptor | Array<string | URL | SocialImageDescriptor>;
-    videos?: Array<{ url: string | URL; width?: number; height?: number }>;
-    audio?: Array<{ url: string | URL }>;
+    videos?: OGVideo | OGVideo[];
+    audio?: OGAudio | OGAudio[];
+    emails?: string | string[];
+    phoneNumbers?: string | string[];
+    faxNumbers?: string | string[];
     locale?: string;
+    alternateLocale?: string | string[];
     type?: string;
     publishedTime?: string;
     modifiedTime?: string;
@@ -315,6 +319,24 @@ type TwitterAppDescriptor = {
   };
   name?: string;
 };
+
+type OGVideoDescriptor = {
+  url: string | URL;
+  secureUrl?: string | URL;
+  type?: string;
+  width?: string | number;
+  height?: string | number;
+};
+
+type OGVideo = string | URL | OGVideoDescriptor;
+
+type OGAudioDescriptor = {
+  url: string | URL;
+  secureUrl?: string | URL;
+  type?: string;
+};
+
+type OGAudio = string | URL | OGAudioDescriptor;
 
 type SocialImageDescriptor = {
   url: string | URL;
@@ -1122,9 +1144,26 @@ export function MetadataHead({
         }
       }
     }
+    // Next.js accepts a single value or an array, and each entry may be a
+    // plain URL or a descriptor. Unlike images, video and audio URLs are
+    // rendered as written, without resolving them against metadataBase.
     if (og.videos) {
-      for (const video of og.videos) {
-        elements.push(<meta key={key++} property="og:video" content={resolveUrl(video.url)} />);
+      const videos = normalizeUrlDescriptorEntries(og.videos, (url): OGVideoDescriptor => ({
+        url,
+      }));
+      for (const video of videos) {
+        if (video.url)
+          elements.push(<meta key={key++} property="og:video" content={stringifyUrl(video.url)} />);
+        if (video.secureUrl)
+          elements.push(
+            <meta
+              key={key++}
+              property="og:video:secure_url"
+              content={stringifyUrl(video.secureUrl)}
+            />,
+          );
+        if (video.type)
+          elements.push(<meta key={key++} property="og:video:type" content={video.type} />);
         if (video.width)
           elements.push(
             <meta key={key++} property="og:video:width" content={String(video.width)} />,
@@ -1136,8 +1175,32 @@ export function MetadataHead({
       }
     }
     if (og.audio) {
-      for (const audio of og.audio) {
-        elements.push(<meta key={key++} property="og:audio" content={resolveUrl(audio.url)} />);
+      const audios = normalizeUrlDescriptorEntries(og.audio, (url): OGAudioDescriptor => ({ url }));
+      for (const audio of audios) {
+        if (audio.url)
+          elements.push(<meta key={key++} property="og:audio" content={stringifyUrl(audio.url)} />);
+        if (audio.secureUrl)
+          elements.push(
+            <meta
+              key={key++}
+              property="og:audio:secure_url"
+              content={stringifyUrl(audio.secureUrl)}
+            />,
+          );
+        if (audio.type)
+          elements.push(<meta key={key++} property="og:audio:type" content={audio.type} />);
+      }
+    }
+    const ogListTags = [
+      ["og:email", og.emails],
+      ["og:phone_number", og.phoneNumbers],
+      ["og:fax_number", og.faxNumbers],
+      ["og:locale:alternate", og.alternateLocale],
+    ] as const;
+    for (const [property, value] of ogListTags) {
+      if (!value) continue;
+      for (const content of Array.isArray(value) ? value : [value]) {
+        elements.push(<meta key={key++} property={property} content={content} />);
       }
     }
   }
