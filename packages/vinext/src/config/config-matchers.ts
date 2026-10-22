@@ -787,14 +787,30 @@ function substituteAndSanitizeDestination(
   return sanitizeDestination(substituteDestinationParams(destination, params, kind));
 }
 
+/**
+ * Parse a redirect destination template with the URL parser before params are
+ * substituted, as Next.js's `parseDestination` does (`parseRelativeUrl` in
+ * prepare-destination.ts). This trims surrounding whitespace, resolves dot
+ * segments and backslashes, and drops an empty query or hash. The query text
+ * is kept verbatim, as preserveRedirectDestinationQuery emits it. An absolute
+ * destination is parsed whole by encodeRedirectLocation.
+ */
+function parseRedirectDestinationTemplate(destination: string): string {
+  destination = destination.replace(LOCATION_STRIPPED_RE, "");
+  if (!destination.startsWith("/")) return destination;
+  const url = new URL(`http://n${destination}`);
+  const hashIndex = destination.indexOf("#");
+  const beforeHash = hashIndex === -1 ? destination : destination.slice(0, hashIndex);
+  const queryIndex = beforeHash.indexOf("?");
+  const query = queryIndex === -1 ? "" : beforeHash.slice(queryIndex);
+  return `${url.pathname}${/^\?&*$/.test(query) ? "" : query}${url.hash}`;
+}
+
 function resolveRedirectMatch(
   redirect: NextRedirect,
   params: Record<string, string>,
 ): RedirectMatch {
-  // Next.js parses the destination template with the URL parser, which trims
-  // its leading and trailing whitespace, before substituting params and
-  // merging the request query.
-  const destination = redirect.destination.replace(LOCATION_STRIPPED_RE, "");
+  const destination = parseRedirectDestinationTemplate(redirect.destination);
   return {
     // Collapse protocol-relative URLs (e.g. //evil.com from decoded %2F in catch-all params).
     destination: substituteAndSanitizeDestination(destination, params, "redirect"),

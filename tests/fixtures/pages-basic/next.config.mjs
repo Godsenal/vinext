@@ -61,7 +61,8 @@ const nextConfig = {
         has: [{ type: "query", key: "to", value: "(?<to>.*)" }],
       },
       // Used by E2E: pages-router-prod/config-query-params.spec.ts — non-ASCII
-      // destination characters are percent-encoded in the Location header.
+      // destination characters are percent-encoded and the template is parsed
+      // like a URL in the Location header.
       {
         source: "/non-ascii-redirect/:slug",
         destination: "/docs/치과/:slug#섹션",
@@ -70,6 +71,11 @@ const nextConfig = {
       {
         source: "/non-ascii-query-redirect",
         destination: "/about?from=서울",
+        permanent: false,
+      },
+      {
+        source: "/normalized-redirect/:slug",
+        destination: "/x/./y/../../docs/:slug?",
         permanent: false,
       },
       {
