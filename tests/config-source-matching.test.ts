@@ -632,7 +632,7 @@ describe("matchRedirect destinations agree with Next.js", () => {
     }
   });
 
-  it("keeps literal text that looks like Next.js's param escape marker", () => {
+  it("keeps literal text and captures that look like escape markers", () => {
     // Next.js 16.2.7 throws on this destination; vinext redirects to it as written.
     expect(
       matchRedirect(
@@ -641,6 +641,14 @@ describe("matchRedirect destinations agree with Next.js", () => {
         ctx,
       )?.destination,
     ).toBe("/__ESC_COLON_/s");
+    // Next.js 16.2.7 inserts the capture verbatim.
+    expect(
+      matchRedirect(
+        "/r/__ESC_LITERAL_COLON_",
+        [{ source: "/r/:slug", destination: "/a/:slug", permanent: false }],
+        ctx,
+      )?.destination,
+    ).toBe("/a/__ESC_LITERAL_COLON_");
   });
 });
 

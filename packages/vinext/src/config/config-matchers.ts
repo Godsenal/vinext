@@ -821,9 +821,16 @@ function parseRedirectDestinationTemplate(
   // restored case-insensitively, as Next.js does.
   let marker = "__ESC_COLON_";
   while (template.toLowerCase().includes(marker.toLowerCase())) marker = `_${marker}`;
-  // Stands in for a `\:` escaped colon until params have been substituted.
+  // Stands in for a `\:` escaped colon until params have been substituted, so
+  // it must not occur in the template or in any param value.
+  const paramValues = Object.values(params);
   let literalColon = "__ESC_LITERAL_COLON_";
-  while (template.includes(literalColon)) literalColon = `_${literalColon}`;
+  while (
+    template.includes(literalColon) ||
+    paramValues.some((value) => value.includes(literalColon))
+  ) {
+    literalColon = `_${literalColon}`;
+  }
   const keys = Object.keys(params).sort((a, b) => b.length - a.length);
   // A `\`-escaped character is skipped, so `\:name` stays literal.
   const escaped =
