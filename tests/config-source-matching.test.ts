@@ -505,7 +505,7 @@ describe("config source matching regressions", () => {
   });
 });
 
-describe("matchRedirect absolute destinations agree with Next.js", () => {
+describe("matchRedirect destinations agree with Next.js", () => {
   const ctx = requestContextFromRequest(new Request("http://localhost/"));
   const { prepareDestination } =
     require("next/dist/shared/lib/router/utils/prepare-destination") as {
@@ -536,6 +536,48 @@ describe("matchRedirect absolute destinations agree with Next.js", () => {
         destination,
       ).toBe(expected);
     }
+  });
+
+  it("collapses repeated slashes in the substituted pathname, after the basePath prefix", () => {
+    const { normalizeRepeatedSlashes } = require("next/dist/shared/lib/utils") as {
+      normalizeRepeatedSlashes: (url: string) => string;
+    };
+    for (const [destination, basePath] of [
+      ["//target/x", "/docs"],
+      ["//target/x", ""],
+      ["/a//b\\c/:slug", ""],
+      ["/:slug//z", "/docs"],
+      ["https://example.com//a//:slug", "/docs"],
+    ]) {
+      // processRoutes prefixes the basePath on a local template.
+      const template = destination.startsWith("/") ? basePath + destination : destination;
+      const { parsedDestination } = prepareDestination({
+        appendParamsToQuery: false,
+        destination: template,
+        params: { slug: "s" },
+        query: {},
+      });
+      parsedDestination.pathname = normalizeRepeatedSlashes(parsedDestination.pathname as string);
+      const expected = formatUrl({ ...parsedDestination, query: undefined, search: "" });
+      expect(
+        matchRedirect("/r/s", [{ source: "/r/:slug", destination, permanent: false }], ctx, {
+          basePath,
+          hadBasePath: true,
+        })?.destination,
+        `${basePath} ${destination}`,
+      ).toBe(expected);
+    }
+  });
+
+  it("keeps literal text that looks like Next.js's param escape marker", () => {
+    // Next.js 16.2.7 throws on this destination; vinext redirects to it as written.
+    expect(
+      matchRedirect(
+        "/r/s",
+        [{ source: "/r/:slug", destination: "/__ESC_COLON_/:slug", permanent: false }],
+        ctx,
+      )?.destination,
+    ).toBe("/__ESC_COLON_/s");
   });
 });
 

@@ -816,6 +816,11 @@ function parseRedirectDestinationTemplate(
   }
   template = template.replace(LOCATION_STRIPPED_RE, "");
 
+  // Next.js's param escape marker, lengthened until it cannot collide with
+  // literal destination text. The host parser lowercases it, so it is
+  // restored case-insensitively, as Next.js does.
+  let marker = "__ESC_COLON_";
+  while (template.toLowerCase().includes(marker.toLowerCase())) marker = `_${marker}`;
   const keys = Object.keys(params).sort((a, b) => b.length - a.length);
   const escaped =
     keys.length === 0
@@ -825,7 +830,7 @@ function parseRedirectDestinationTemplate(
             `:(${keys.map((key) => key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})(?![A-Za-z0-9_])`,
             "g",
           ),
-          `${ESCAPED_PARAM_COLON}$1`,
+          `${marker}$1`,
         );
   const url = isLocal ? new URL(`http://n${escaped}`) : new URL(escaped);
   const hash = url.hash;
@@ -848,14 +853,27 @@ function parseRedirectDestinationTemplate(
     url.password = "";
     base = url.href.replace("//", `//${auth}`);
   }
-  const unescape = (value: string) => value.replace(ESCAPED_PARAM_COLON_RE, ":");
+  const markerRe = new RegExp(marker, "gi");
+  const unescape = (value: string) => value.replace(markerRe, ":");
   return `${unescape(base)}${/^\?&*$/.test(query) ? "" : query}${unescape(hash)}`;
 }
 
-// Next.js's param escape marker. The host parser lowercases it, so it is
-// restored case-insensitively, as Next.js does.
-const ESCAPED_PARAM_COLON = "__ESC_COLON_";
-const ESCAPED_PARAM_COLON_RE = /__ESC_COLON_/gi;
+// The pathname of a local or `scheme://authority` destination.
+const REDIRECT_PATHNAME_RE = /^((?:[A-Za-z][A-Za-z0-9+.-]*:\/\/[^/?#]*)?)([^?#]*)/;
+
+/**
+ * Next.js resolve-routes.ts runs normalizeRepeatedSlashes on the prepared
+ * destination's pathname, after params are substituted: backslashes become
+ * `/` and runs of slashes collapse, so a basePath-prefixed `//target`
+ * becomes `/docs/target`.
+ */
+function normalizeRedirectPathnameSlashes(destination: string): string {
+  return destination.replace(
+    REDIRECT_PATHNAME_RE,
+    (_, origin: string, pathname: string) =>
+      origin + pathname.replace(/\\/g, "/").replace(/\/\/+/g, "/"),
+  );
+}
 
 function resolveRedirectMatch(
   redirect: NextRedirect,
@@ -865,7 +883,9 @@ function resolveRedirectMatch(
   const destination = parseRedirectDestinationTemplate(redirect, params, basePathState);
   return {
     // Collapse protocol-relative URLs (e.g. //evil.com from decoded %2F in catch-all params).
-    destination: substituteAndSanitizeDestination(destination, params, "redirect"),
+    destination: normalizeRedirectPathnameSlashes(
+      substituteAndSanitizeDestination(destination, params, "redirect"),
+    ),
     // Next.js getRedirectStatus (lib/redirect-status.ts).
     statusCode: redirect.statusCode || (redirect.permanent ? 308 : 307),
     destinationQuery: substituteRedirectDestinationQuery(destination, params),
