@@ -54,6 +54,23 @@ const nextConfig = {
         permanent: false,
         has: [{ type: "query", key: "to", value: "(?<to>.*)" }],
       },
+      // Used by E2E: pages-router-prod/config-query-params.spec.ts — non-ASCII
+      // destination characters are percent-encoded in the Location header.
+      {
+        source: "/non-ascii-redirect/:slug",
+        destination: "/docs/치과/:slug#섹션",
+        permanent: true,
+      },
+      {
+        source: "/non-ascii-query-redirect",
+        destination: "/about?from=서울",
+        permanent: false,
+      },
+      {
+        source: "/non-ascii-external-redirect",
+        destination: "https://한국.example/치과",
+        permanent: false,
+      },
       // Used by E2E: pages-router-prod/redirect-conditions.spec.ts — header and
       // cookie condition values are server-only and must stay out of the
       // public client bundle.

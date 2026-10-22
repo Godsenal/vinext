@@ -787,32 +787,13 @@ function substituteAndSanitizeDestination(
   return sanitizeDestination(substituteDestinationParams(destination, params, kind));
 }
 
-/**
- * Percent-encode the characters a `Location` header cannot carry as-is.
- *
- * Next.js parses a redirect destination with WHATWG URL (`parseRelativeUrl` in
- * prepare-destination.ts), which percent-encodes non-ASCII characters and
- * spaces, so `destination: "/blog/한글"` is sent as `/blog/%ED%95%9C%EA%B8%80`.
- * Left raw, a character above U+00FF makes the Headers constructor throw
- * 'Cannot convert argument to a ByteString' and the redirect becomes a 500.
- * Printable ASCII is left alone so existing `%xx` escapes, substituted raw
- * captures, and the query/hash delimiters are not re-encoded. The `u` flag
- * keeps astral code points (emoji) whole. Refs cloudflare/vinext#1979, which
- * fixed the same throw for trailing-slash redirects.
- */
-function encodeRedirectDestination(destination: string): string {
-  return destination.replace(/[^\x21-\x7E]/gu, encodeURIComponent);
-}
-
 function resolveRedirectMatch(
   redirect: NextRedirect,
   params: Record<string, string>,
 ): RedirectMatch {
   return {
     // Collapse protocol-relative URLs (e.g. //evil.com from decoded %2F in catch-all params).
-    destination: encodeRedirectDestination(
-      substituteAndSanitizeDestination(redirect.destination, params, "redirect"),
-    ),
+    destination: substituteAndSanitizeDestination(redirect.destination, params, "redirect"),
     permanent: redirect.permanent,
     destinationQuery: substituteRedirectDestinationQuery(redirect.destination, params),
   };
@@ -1014,6 +995,56 @@ export function preserveRedirectDestinationQuery(
     .flat()
     .join("&");
   return mergedQuery === "" ? `${pathPart}${hash}` : `${pathPart}?${mergedQuery}${hash}`;
+}
+
+// The URL parser's path and fragment percent-encode sets, plus every non-ASCII
+// code point (the `u` flag keeps astral characters such as emoji whole).
+// oxlint-disable-next-line no-control-regex -- C0 controls are in both sets
+const LOCATION_PATH_ENCODE_RE = /[\u0000- "<>^`{}\u007F]|[^\u0000-\u007F]/gu;
+// oxlint-disable-next-line no-control-regex -- C0 controls are in both sets
+const LOCATION_FRAGMENT_ENCODE_RE = /[\u0000- "<>`\u007F]|[^\u0000-\u007F]/gu;
+// oxlint-disable-next-line no-control-regex -- C0 controls cannot go in a header raw
+const LOCATION_QUERY_ENCODE_RE = /[\u0000-\u001F\u007F]|[^\u0000-\u007F]/gu;
+
+/**
+ * Percent-encode a config-redirect `Location` the way Next.js sends it.
+ *
+ * Next.js parses the destination with the WHATWG URL parser (`parseUrl` in
+ * prepare-destination.ts) before formatting it into the header, so the path
+ * and hash arrive percent-encoded (`/치과` → `/%EC%B9%98%EA%B3%BC`) and an
+ * internationalized host in its punycode form. Left raw, a character above
+ * U+00FF makes the Headers constructor throw and the redirect becomes a 500.
+ *
+ * Path and hash use the parser's percent-encode sets. `%` is never encoded, so
+ * existing `%XX` escapes and raw request captures are not encoded twice. The
+ * query is otherwise emitted verbatim (see preserveRedirectDestinationQuery),
+ * so only its control and non-ASCII characters are encoded. Next.js sends
+ * those raw and its Node server answers 500 instead.
+ */
+export function encodeRedirectLocation(location: string): string {
+  const hashIndex = location.indexOf("#");
+  const beforeHash = hashIndex === -1 ? location : location.slice(0, hashIndex);
+  const hash = hashIndex === -1 ? "" : location.slice(hashIndex);
+  const queryIndex = beforeHash.indexOf("?");
+  const query = queryIndex === -1 ? "" : beforeHash.slice(queryIndex);
+  let path = queryIndex === -1 ? beforeHash : beforeHash.slice(0, queryIndex);
+
+  let origin = /^https?:\/\/[^/\\]*/i.exec(path)?.[0] ?? "";
+  path = path.slice(origin.length);
+  if (/[\u0080-\u{10FFFF}]/u.test(origin)) {
+    try {
+      origin = new URL(`${origin}/`).href.slice(0, -1);
+    } catch {
+      origin = origin.replace(LOCATION_QUERY_ENCODE_RE, encodeURIComponent);
+    }
+  }
+
+  return (
+    origin +
+    path.replace(LOCATION_PATH_ENCODE_RE, encodeURIComponent) +
+    query.replace(LOCATION_QUERY_ENCODE_RE, encodeURIComponent) +
+    hash.replace(LOCATION_FRAGMENT_ENCODE_RE, encodeURIComponent)
+  );
 }
 
 function parseExternalRewriteUrl(externalUrl: string): URL | null {
