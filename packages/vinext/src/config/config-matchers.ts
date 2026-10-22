@@ -802,7 +802,8 @@ function substituteAndSanitizeDestination(
 /**
  * Prepare a redirect destination template as Next.js does before substituting
  * params. processRoutes (load-custom-routes.ts) prefixes a local destination
- * with the basePath, then parseDestination (prepare-destination.ts) parses it
+ * with the basePath (a bare `/` becomes the basePath, except on the
+ * default-locale variant), then parseDestination (prepare-destination.ts) parses it
  * with the URL parser, its param tokens escaped so they survive. This trims
  * whitespace, resolves dot segments and backslashes, percent-encodes the path
  * and hash, punycodes the host, drops an empty query or hash, and throws (a
@@ -811,13 +812,14 @@ function substituteAndSanitizeDestination(
  * preserveRedirectDestinationQuery emits it.
  */
 function parseRedirectDestinationTemplate(
-  template: string,
+  redirect: NextRedirect,
   params: Record<string, string>,
   { basePath, hadBasePath }: BasePathMatchState,
 ): string {
+  let template = redirect.destination;
   const isLocal = template.startsWith("/");
   if (isLocal && basePath && hadBasePath) {
-    template = template === "/" ? basePath : basePath + template;
+    template = template === "/" && !redirect.defaultLocaleVariant ? basePath : basePath + template;
   }
   template = template.replace(LOCATION_STRIPPED_RE, "");
 
@@ -855,7 +857,7 @@ function resolveRedirectMatch(
   params: Record<string, string>,
   basePathState: BasePathMatchState,
 ): RedirectMatch {
-  const destination = parseRedirectDestinationTemplate(redirect.destination, params, basePathState);
+  const destination = parseRedirectDestinationTemplate(redirect, params, basePathState);
   return {
     // Collapse protocol-relative URLs (e.g. //evil.com from decoded %2F in catch-all params).
     destination: substituteAndSanitizeDestination(destination, params, "redirect"),
@@ -1492,6 +1494,9 @@ export function applyLocaleToRoutes<T extends NextRedirect | NextRewrite | NextH
         out.push({
           ...r,
           source: localizedSource,
+          // Next.js prefixes this variant's destination with the basePath
+          // without collapsing a bare `/`, so it redirects to `/docs/`.
+          ...(type === "redirect" ? { defaultLocaleVariant: true } : {}),
         });
       }
     }

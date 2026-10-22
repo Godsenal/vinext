@@ -166,6 +166,11 @@ const nextConfig: NextConfig = {
         destination: "/../outside",
         permanent: false,
       },
+      {
+        source: "/basepath-root-redirect",
+        destination: "/",
+        permanent: false,
+      },
     ];
   },
 
