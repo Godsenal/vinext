@@ -820,10 +820,11 @@ function buildPagesRedirectResponse(
 /**
  * Next.js pages-handler.ts gives a getServerSideProps result `revalidate: 0`,
  * so its redirect and notFound exits are answered private/no-store unless the
- * handler set its own Cache-Control.
+ * handler set its own Cache-Control. Like Next's `!res.getHeader(...)`, this
+ * reads the raw value, so `""` and `0` count as unset.
  */
-function applyPagesGsspCacheControlDefault(headers: Headers): void {
-  if (!headers.get("Cache-Control")) headers.set("Cache-Control", NEVER_CACHE_CONTROL);
+function applyPagesGsspCacheControlDefault(headers: Headers, res: PagesGsspResponse): void {
+  if (!res.getHeaders()["cache-control"]) headers.set("Cache-Control", NEVER_CACHE_CONTROL);
 }
 
 function getPagesGsspResponseHeaders(res: PagesGsspResponse): Headers {
@@ -1388,7 +1389,7 @@ export async function resolvePagesPageData(
 
     if (result?.redirect) {
       const responseHeaders = getPagesGsspResponseHeaders(res);
-      applyPagesGsspCacheControlDefault(responseHeaders);
+      applyPagesGsspCacheControlDefault(responseHeaders, res);
       return {
         kind: "response",
         response: buildPagesRedirectResponse(
@@ -1412,7 +1413,7 @@ export async function resolvePagesPageData(
       );
       // The document 404 takes this default from the not-found render instead.
       if (notFoundResult.kind === "response") {
-        applyPagesGsspCacheControlDefault(notFoundResult.response.headers);
+        applyPagesGsspCacheControlDefault(notFoundResult.response.headers, res);
       }
       return notFoundResult;
     }

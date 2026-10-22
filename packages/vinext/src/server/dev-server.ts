@@ -1257,6 +1257,11 @@ export function createSSRHandler(
               res.end('{"notFound":true}');
               return;
             }
+            // Next.js dev answers the rendered 404 with its development page
+            // Cache-Control, over any value the handler set.
+            if (requestPreview.data === false) {
+              res.setHeader("Cache-Control", DEV_PAGES_CACHE_CONTROL);
+            }
             await renderErrorPage(
               server,
               runner,
