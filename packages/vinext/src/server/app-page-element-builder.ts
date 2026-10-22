@@ -1,10 +1,11 @@
-import { Suspense, cache, createElement } from "react";
+import { Fragment, Suspense, cache, createElement } from "react";
 import { makeThenableParams } from "vinext/shims/thenable-params";
 import {
   withUseCachePageMarker,
   withUseCacheLayoutMarker,
 } from "vinext/shims/internal/app-page-props-cache-key";
 import { ClientPageRoot } from "vinext/shims/client-page-root";
+import { NotFoundBoundary } from "vinext/shims/error-boundary";
 import {
   collectAppPageSearchParams,
   hasAppPageDynamicMetadata,
@@ -42,7 +43,7 @@ import {
 } from "./app-page-tracing.js";
 import { AppElementsWire, type AppElements } from "./app-elements.js";
 import { resolveAppPageParentHttpAccessBoundary, type AppPageParams } from "./app-page-boundary.js";
-import { resolveAppPageSpecialError } from "./app-page-execution.js";
+import { resolveAppPageSpecialError, tagAppPageSlotError } from "./app-page-execution.js";
 import { sanitizeErrorForClient } from "./app-rsc-errors.js";
 import { DEFAULT_GLOBAL_ERROR_MODULE } from "./default-global-error-module.js";
 import { matchRoutePattern } from "../routing/route-pattern.js";
@@ -579,6 +580,7 @@ export async function buildPageElements<
     PageComponent: AppPageComponent,
     props: Readonly<Record<string, unknown>>,
     renderDependency?: AppPageRenderDependency | null,
+    slotLayoutIndex?: number,
   ) => {
     if (searchParams && isAppClientReference(PageComponent)) {
       // Like Next.js's ClientPageRoot, a client page gets `searchParams` where
@@ -623,6 +625,9 @@ export async function buildPageElements<
         const result = invokeAppComponent(
           PageComponent,
           withUseCachePageMarker(PageComponent, invocationProps),
+          slotLayoutIndex === undefined
+            ? undefined
+            : (error) => tagAppPageSlotError(error, slotLayoutIndex),
         );
         if (isPromiseLike(result)) {
           if (renderDependency) {
@@ -633,13 +638,19 @@ export async function buildPageElements<
             // an ancestor Suspense boundary into a blocking render.
             void Promise.resolve().then(() => renderDependency.release());
           }
-          return Promise.resolve(result).then((resolvedResult) =>
-            renderDependency
-              ? renderAfterAppDependencies(
-                  resolvedResult as React.ReactNode,
-                  renderDependency.resultDependencies,
-                )
-              : (resolvedResult as React.ReactNode),
+          return Promise.resolve(result).then(
+            (resolvedResult) =>
+              renderDependency
+                ? renderAfterAppDependencies(
+                    resolvedResult as React.ReactNode,
+                    renderDependency.resultDependencies,
+                  )
+                : (resolvedResult as React.ReactNode),
+            slotLayoutIndex === undefined
+              ? undefined
+              : (error: unknown) => {
+                  throw tagAppPageSlotError(error, slotLayoutIndex);
+                },
           );
         }
         renderDependency?.release();
@@ -663,7 +674,7 @@ export async function buildPageElements<
           throw error;
         }
         renderDependency?.release();
-        throw error;
+        throw slotLayoutIndex === undefined ? error : tagAppPageSlotError(error, slotLayoutIndex);
       }
     };
     return createElement(PageInvoker as unknown as AppPageComponent);
@@ -679,12 +690,19 @@ export async function buildPageElements<
   // slot-based path handles this inside buildSlotOverrides/app-page-route-wiring,
   // but sibling intercepts bypass that path entirely. We apply the wrapping here
   // so a layout.tsx adjacent to the (.) / (..) / (...) marker dir is respected.
-  const createSiblingInterceptElement = (): ReturnType<typeof createElement> | null => {
-    let element: ReturnType<typeof createElement> | null =
-      isSiblingIntercept && EffectivePageComponent
-        ? createPageElement(EffectivePageComponent, pageProps, pageRenderDependency)
-        : null;
-    if (!isSiblingIntercept || element === null) return element;
+  // The head's error outlet renders beside the intercepting page, as Next.js's
+  // MetadataOutlet does in the page segment, so the intercepting route's own
+  // boundaries catch its generateMetadata() errors too.
+  const createSiblingInterceptElement = (
+    metadataOutlet: React.ReactNode,
+  ): ReturnType<typeof createElement> | null => {
+    if (!isSiblingIntercept || !EffectivePageComponent) return null;
+    let element: ReturnType<typeof createElement> = createElement(
+      Fragment,
+      null,
+      createPageElement(EffectivePageComponent, pageProps, pageRenderDependency),
+      metadataOutlet,
+    );
 
     const layoutIndexesByTreePosition = new Map<number, number[]>();
     for (const [index, layoutModule] of (opts?.interceptLayouts ?? []).entries()) {
@@ -700,8 +718,19 @@ export async function buildPageElements<
       const treePosition = opts?.interceptLoadingTreePositions?.[index];
       if (treePosition !== undefined) loadingIndexesByTreePosition.set(treePosition, index);
     }
+    // The intercepting route's nearest not-found.tsx belongs to its own
+    // segment, as in Next.js, so it catches the intercepting page's notFound()
+    // inside that segment's layout, before the source route's boundaries.
+    const NotFoundComponent = opts?.interceptNotFound?.default;
+    const notFoundTreePosition = NotFoundComponent
+      ? (opts?.interceptNotFoundTreePosition ?? null)
+      : null;
     const treePositions = Array.from(
-      new Set([...layoutIndexesByTreePosition.keys(), ...loadingIndexesByTreePosition.keys()]),
+      new Set([
+        ...layoutIndexesByTreePosition.keys(),
+        ...loadingIndexesByTreePosition.keys(),
+        ...(notFoundTreePosition === null ? [] : [notFoundTreePosition]),
+      ]),
     ).sort((left, right) => left - right);
 
     for (let index = treePositions.length - 1; index >= 0; index--) {
@@ -711,6 +740,13 @@ export async function buildPageElements<
         loadingIndex === undefined ? null : opts?.interceptLoadings?.[loadingIndex]?.default;
       if (LoadingComponent) {
         element = createElement(Suspense, { fallback: createElement(LoadingComponent) }, element);
+      }
+      if (NotFoundComponent && treePosition === notFoundTreePosition) {
+        element = createElement(NotFoundBoundary, {
+          fallback: createElement(NotFoundComponent),
+          // oxlint-disable-next-line react/no-children-prop
+          children: element,
+        });
       }
 
       const layoutIndexes = layoutIndexesByTreePosition.get(treePosition) ?? [];
@@ -748,14 +784,16 @@ export async function buildPageElements<
     if (effectivePageModule) {
       traceGetLayoutOrPageModule(APP_PAGE_SEGMENT_KEY, () => effectivePageModule);
     }
-    const siblingInterceptElement = createSiblingInterceptElement();
     return buildAppPageElements({
-      element: isSiblingIntercept
-        ? siblingInterceptElement
-        : EffectivePageComponent
+      element:
+        !isSiblingIntercept && EffectivePageComponent
           ? createPageElement(EffectivePageComponent, pageProps, pageRenderDependency)
           : null,
-      createPageElement,
+      renderElementWithMetadataOutlet:
+        isSiblingIntercept && EffectivePageComponent ? createSiblingInterceptElement : null,
+      createPageElement(component, props, slotLayoutIndex) {
+        return createPageElement(component, props, null, slotLayoutIndex);
+      },
       // Fall back to vinext's built-in default global error module so that
       // uncaught client render errors are caught by the route-level
       // <ErrorBoundary> wrapper in app-page-route-wiring.tsx, mirroring

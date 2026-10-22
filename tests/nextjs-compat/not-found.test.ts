@@ -277,6 +277,95 @@ describe("Next.js compat: not-found", () => {
     expect(res.status).toBe(404);
   });
 
+  // Issue #4045. Ported from the behavior of Next.js'
+  // create-component-tree.tsx: every segment wraps its children in its
+  // not-found boundary, with or without a layout, and the boundary replaces
+  // the layouts below it.
+  it("notFound() from layout is caught by a segment boundary without a layout", async () => {
+    const valid = await fetchHtml(baseUrl, "/nextjs-compat/not-found-layout-segment/en/shop/hello");
+    expect(valid.res.status).toBe(200);
+    expect(valid.html).toContain("not-found-layout-segment-page");
+
+    const { res, html } = await fetchHtml(
+      baseUrl,
+      "/nextjs-compat/not-found-layout-segment/en/shop/invalid",
+    );
+    expect(res.status).toBe(404);
+    expect(html).toContain("Not Found (segment without layout)");
+    // The head comes from the route's deepest not-found (shop/[id]), which has
+    // no metadata, so the layouts' title applies.
+    expect(html).toContain("<title>App Basic</title>");
+    expect(html).toContain('<meta name="description" content="Shop layout description"/>');
+    // Match rendered markup: like Next.js, the flight may name skipped layouts.
+    expect(html).not.toContain("<h1>404 - Page Not Found</h1>");
+    expect(html).not.toContain("Not Found (id boundary)");
+    expect(html).not.toContain('id="not-found-layout-segment-shop"');
+    expect(html).not.toContain("not-found-layout-segment-wrapper");
+  });
+
+  // The 404's metadata comes from the route's deepest not-found, here the
+  // catching boundary, with that segment's params.
+  it("notFound() from layout uses the segment boundary's metadata", async () => {
+    const { res, html } = await fetchHtml(
+      baseUrl,
+      "/nextjs-compat/not-found-layout-segment/en/blog/invalid",
+    );
+    expect(res.status).toBe(404);
+    expect(html).toContain("Not Found (segment without layout)");
+    expect(html).toContain("<title>Not found (en)</title>");
+    expect(html).not.toContain('id="not-found-layout-segment-blog"');
+  });
+
+  // Issue #4092: a page's notFound() is caught by its nearest not-found file,
+  // here in a segment without a layout, which replaces the layouts below it.
+  it("notFound() from page is caught by an ancestor segment boundary without a layout", async () => {
+    const { res, html } = await fetchHtml(
+      baseUrl,
+      "/nextjs-compat/not-found-layout-segment/en/shop/gone",
+    );
+    expect(res.status).toBe(404);
+    expect(html).toContain("Not Found (segment without layout)");
+    expect(html).toContain('id="not-found-layout-segment-layout"');
+    // Every layout on the route still contributes metadata.
+    expect(html).toContain('<meta name="description" content="Shop layout description"/>');
+    expect(html).not.toContain('id="not-found-layout-segment-shop"');
+  });
+
+  // Next.js attaches not-found boundaries only to each segment's `children`,
+  // so a parallel slot's notFound() is caught by the boundary above the
+  // layout rendering the slot, not by the route's deepest one (team/), as it
+  // is on client navigation. Observed in Next.js 16.2.7, webpack and Turbopack.
+  it.each([
+    ["page", "/nextjs-compat/not-found-layout-segment/en/team"],
+    ["default", "/nextjs-compat/not-found-layout-segment/en/team/roster"],
+  ])(
+    "notFound() from a parallel slot's %s is caught above the slot's layout",
+    async (_, pathname) => {
+      const { res, html } = await fetchHtml(baseUrl, pathname);
+      expect(res.status).toBe(404);
+      expect(html).toContain("Not Found (segment without layout)");
+      expect(html).toContain('id="not-found-layout-segment-layout"');
+      expect(html).not.toContain("Not Found (team boundary)");
+      expect(html).not.toContain('id="not-found-layout-segment-team"');
+    },
+  );
+
+  // A slot's own layout is no different: the slot's not-found.tsx and the
+  // segment's sit inside the layout rendering the slot, so neither catches it.
+  // Observed in Next.js 16.2.7, webpack and Turbopack.
+  it("notFound() from a parallel slot's layout is caught above the slot's layout", async () => {
+    const { res, html } = await fetchHtml(
+      baseUrl,
+      "/nextjs-compat/not-found-layout-segment/en/crew",
+    );
+    expect(res.status).toBe(404);
+    expect(html).toContain("Not Found (segment without layout)");
+    expect(html).toContain('id="not-found-layout-segment-layout"');
+    expect(html).not.toContain("Not Found (crew boundary)");
+    expect(html).not.toContain("Not Found (roles slot)");
+    expect(html).not.toContain('id="not-found-layout-segment-crew"');
+  });
+
   // ── notFound() from both layout AND page ─────────────────────
   // When both the layout and the page call notFound() for invalid params,
   // the layout's notFound() should take precedence (layouts render before
@@ -315,6 +404,24 @@ describe("Next.js compat: not-found", () => {
     expect(body.length).toBeGreaterThan(0);
     // Should contain the parent boundary's not-found content
     expect(body).toContain("layout-page parent boundary");
+  });
+
+  // ── notFound() from a page below a child layout ─────────────
+  // An ancestor segment's not-found.tsx is the boundary of that segment's
+  // children, so it replaces every layout below it, not just the page. The
+  // server's not-found render already did; this keeps it matching the client
+  // tree that #4092 fixed, which the e2e spec covers.
+  // https://github.com/cloudflare/vinext/issues/4092
+
+  it("page notFound(): ancestor not-found replaces the child layout", async () => {
+    const { res, html } = await fetchHtml(
+      baseUrl,
+      "/nextjs-compat/not-found-ancestor-boundary/section/missing",
+    );
+    expect(res.status).toBe(404);
+    expect(html).toContain("not-found-ancestor-boundary-layout");
+    expect(html).toContain("Not Found (ancestor boundary)");
+    expect(html).not.toContain("not-found-ancestor-boundary-section");
   });
 
   // ── RSC (client-side navigation) not-found ──────────────────

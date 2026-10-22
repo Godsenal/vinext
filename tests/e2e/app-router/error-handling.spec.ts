@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { waitForAppRouterHydration } from "../helpers";
 
 const BASE = "http://localhost:4174";
 
@@ -125,6 +126,277 @@ test.describe("Not Found", () => {
     const response = await page.goto(`${BASE}/notfound-test`);
     expect(response?.status()).toBe(404);
     await expect(page.locator("h1")).toContainText("404");
+  });
+
+  // https://github.com/cloudflare/vinext/issues/4092
+  test("client-side notFound() renders an ancestor not-found in place of the layouts below it", async ({
+    page,
+  }) => {
+    await page.goto(`${BASE}/nextjs-compat/not-found-ancestor-boundary`);
+    await waitForAppRouterHydration(page);
+    // A full page load would render the document fallback instead.
+    await page.evaluate(() => {
+      (window as Window & { __clientNavMarker?: boolean }).__clientNavMarker = true;
+    });
+
+    await page.getByRole("link", { name: "Missing" }).click();
+    await expect(page.locator("#not-found-ancestor-boundary-nf")).toBeVisible();
+    await expect(page.locator("#not-found-ancestor-boundary-layout")).toBeVisible();
+    await expect(page.locator("#not-found-ancestor-boundary-section")).toHaveCount(0);
+
+    // A sibling under the same child layout clears the fallback.
+    await page.getByRole("link", { name: "Present" }).click();
+    await expect(page.locator("#not-found-ancestor-boundary-page")).toHaveText(
+      "Section page: present",
+    );
+    await expect(page.locator("#not-found-ancestor-boundary-section")).toBeVisible();
+    await expect(page.locator("#not-found-ancestor-boundary-nf")).toHaveCount(0);
+
+    // The section layout owns no boundary, and its state survives siblings
+    // whose nearest not-found file differs while the owner's reset key changes.
+    const counter = page.locator("#not-found-ancestor-boundary-counter");
+    await counter.click();
+    await counter.click();
+    await expect(counter).toHaveText("count:2");
+    await page.getByRole("link", { name: "Own" }).click();
+    await expect(page.locator("#not-found-ancestor-boundary-own")).toBeVisible();
+    await expect(counter).toHaveText("count:2");
+    await page.getByRole("link", { name: "Present" }).click();
+    await expect(page.locator("#not-found-ancestor-boundary-page")).toBeVisible();
+    await expect(counter).toHaveText("count:2");
+
+    expect(
+      await page.evaluate(
+        () => (window as Window & { __clientNavMarker?: boolean }).__clientNavMarker,
+      ),
+    ).toBe(true);
+  });
+
+  test("a notFound() streamed after the shell renders the ancestor not-found in place of the layouts below it", async ({
+    page,
+  }) => {
+    const response = await page.goto(
+      `${BASE}/nextjs-compat/not-found-ancestor-boundary/section/slow`,
+      { waitUntil: "commit" },
+    );
+    // The document streamed the loading shell, so the server's not-found
+    // render never ran and the client boundary placed the fallback.
+    expect(response?.status()).toBe(200);
+    expect(await response?.text()).toContain("not-found-ancestor-boundary-loading");
+    await expect(page.locator("#not-found-ancestor-boundary-nf")).toBeVisible();
+    await expect(page.locator("#not-found-ancestor-boundary-layout")).toBeVisible();
+    await expect(page.locator("#not-found-ancestor-boundary-section")).toHaveCount(0);
+  });
+
+  test("a slot navigation keeps the preserved children page mounted", async ({ page }) => {
+    // /slots owns its not-found.tsx beside the page; the /slots/settings slot
+    // route sees it as an ancestor layout's file. The page-level boundary
+    // above the preserved children page must keep its type across the two.
+    await page.goto(`${BASE}/nextjs-compat/not-found-ancestor-boundary/slots`);
+    await waitForAppRouterHydration(page);
+    await expect(page.locator("#not-found-ancestor-boundary-team")).toBeVisible();
+    const counter = page.locator("#not-found-ancestor-boundary-slots-counter");
+    await counter.click();
+    await counter.click();
+    await expect(counter).toHaveText("count:2");
+
+    await page.getByRole("link", { name: "Slot settings" }).click();
+    await expect(page.locator("#not-found-ancestor-boundary-team-settings")).toBeVisible();
+    await expect(counter).toHaveText("count:2");
+
+    await page.getByRole("link", { name: "Slots home" }).click();
+    await expect(page.locator("#not-found-ancestor-boundary-team")).toBeVisible();
+    await expect(counter).toHaveText("count:2");
+  });
+
+  // https://github.com/cloudflare/vinext/issues/4092
+  test("client-side notFound() renders a not-found from a segment without a layout", async ({
+    page,
+  }) => {
+    await page.goto(`${BASE}/nextjs-compat/not-found-layout-segment/en/shop/hello`);
+    await waitForAppRouterHydration(page);
+    await page.evaluate(() => {
+      (window as Window & { __clientNavMarker?: boolean }).__clientNavMarker = true;
+    });
+    const counter = page.locator("#not-found-layout-segment-counter");
+    await counter.click();
+    await counter.click();
+    await expect(counter).toHaveText("count:2");
+
+    // [lang]/not-found.tsx replaces the shop layout, inside the layout above.
+    await page.getByRole("link", { name: "Gone" }).click();
+    await expect(page.locator("#not-found-layout-segment-nf")).toBeVisible();
+    await expect(page.locator("#not-found-layout-segment-shop")).toHaveCount(0);
+    await expect(counter).toHaveText("count:2");
+
+    // A sibling whose nearest not-found file differs clears the fallback.
+    await page.getByRole("link", { name: "Item", exact: true }).click();
+    await expect(page.locator("#not-found-layout-segment-page")).toHaveText("Item: hello");
+    await expect(page.locator("#not-found-layout-segment-nf")).toHaveCount(0);
+    await expect(counter).toHaveText("count:2");
+
+    expect(
+      await page.evaluate(
+        () => (window as Window & { __clientNavMarker?: boolean }).__clientNavMarker,
+      ),
+    ).toBe(true);
+  });
+
+  // https://github.com/cloudflare/vinext/issues/4045
+  test("a layout's notFound() below a loading.tsx renders the segment boundary above it", async ({
+    page,
+  }) => {
+    const response = await page.goto(
+      `${BASE}/nextjs-compat/not-found-layout-segment/en/slow/invalid`,
+      { waitUntil: "commit" },
+    );
+    // Layouts below a loading.tsx are not probed, so the document streamed the
+    // loading shell and the [lang] boundary in the tree caught the signal.
+    expect(response?.status()).toBe(200);
+    expect(await response?.text()).toContain("not-found-layout-segment-loading");
+    await expect(page.locator("#not-found-layout-segment-nf")).toBeVisible();
+    await expect(page.locator("#not-found-layout-segment-layout")).toBeVisible();
+    await expect(page.locator("#not-found-layout-segment-slow")).toHaveCount(0);
+
+    // The same signal on a client navigation lands on the same boundary.
+    await waitForAppRouterHydration(page);
+    await page.getByRole("link", { name: "Item", exact: true }).click();
+    await expect(page.locator("#not-found-layout-segment-page")).toHaveText("Item: hello");
+    await page.getByRole("link", { name: "Slow", exact: true }).click();
+    await expect(page.locator("#not-found-layout-segment-nf")).toBeVisible();
+    await expect(page.locator("#not-found-layout-segment-slow")).toHaveCount(0);
+
+    // Like Next.js, the boundary clears when the pathname changes, even when
+    // only the throwing layout's own param does.
+    await page.getByRole("link", { name: "Slow item" }).click();
+    await expect(page.locator("#not-found-layout-segment-slow")).toBeVisible();
+    await expect(page.locator("#not-found-layout-segment-nf")).toHaveCount(0);
+  });
+
+  test("an intercepted modal's notFound() clears when the modal navigates to another photo", async ({
+    page,
+  }) => {
+    await page.goto(`${BASE}/nextjs-compat/not-found-intercept-reset/feed`);
+    await waitForAppRouterHydration(page);
+    await page.evaluate(() => {
+      (window as Window & { __clientNavMarker?: boolean }).__clientNavMarker = true;
+    });
+
+    // The modal's signal leaves the feed layout, so the segment's not-found
+    // replaces it.
+    await page.getByRole("link", { name: "Missing photo" }).click();
+    await expect(page.locator("#not-found-intercept-reset-nf")).toBeVisible();
+    await expect(page.locator("#not-found-intercept-reset-feed")).toHaveCount(0);
+
+    // Still intercepted from the feed, the next photo keeps the source route.
+    // Like Next.js, the boundary clears because the visible pathname changed.
+    await page.getByRole("link", { name: "Photo 1" }).click();
+    await expect(page).toHaveURL(/\/not-found-intercept-reset\/feed\/photo\/1$/);
+    await expect(page.locator("#not-found-intercept-reset-modal")).toHaveText("Photo modal: 1");
+    await expect(page.locator("#not-found-intercept-reset-feed-page")).toBeVisible();
+    await expect(page.locator("#not-found-intercept-reset-nf")).toHaveCount(0);
+
+    expect(
+      await page.evaluate(
+        () => (window as Window & { __clientNavMarker?: boolean }).__clientNavMarker,
+      ),
+    ).toBe(true);
+  });
+
+  test("a sibling intercepting page's notFound() renders the not-found beside it", async ({
+    page,
+  }) => {
+    await page.goto(`${BASE}/nextjs-compat/not-found-sibling-intercept`);
+    await waitForAppRouterHydration(page);
+    await page.evaluate(() => {
+      (window as Window & { __clientNavMarker?: boolean }).__clientNavMarker = true;
+    });
+
+    // Like Next.js, the intercepting route's own not-found catches the signal
+    // inside its layout, ahead of the source segment's not-found.
+    await page.getByRole("link", { name: "Missing item" }).click();
+    await expect(page).toHaveURL(/\/not-found-sibling-intercept\/item\/missing$/);
+    await expect(page.locator("#not-found-sibling-intercept-intercept-nf")).toBeVisible();
+    await expect(
+      page.locator(
+        "#not-found-sibling-intercept-intercept-layout #not-found-sibling-intercept-intercept-nf",
+      ),
+    ).toBeVisible();
+    await expect(page.locator("#not-found-sibling-intercept-source-nf")).toHaveCount(0);
+
+    // It clears when the intercepted navigation moves on to another item.
+    await page.getByRole("link", { name: "Item 1" }).click();
+    await expect(page.locator("#not-found-sibling-intercept-intercepted")).toHaveText(
+      "Intercepted item: 1",
+    );
+    await expect(page.locator("#not-found-sibling-intercept-intercept-nf")).toHaveCount(0);
+
+    expect(
+      await page.evaluate(
+        () => (window as Window & { __clientNavMarker?: boolean }).__clientNavMarker,
+      ),
+    ).toBe(true);
+  });
+
+  test("a sibling intercepting page's generateMetadata() notFound() renders the not-found beside it", async ({
+    page,
+  }) => {
+    await page.goto(`${BASE}/nextjs-compat/not-found-sibling-intercept`);
+    await waitForAppRouterHydration(page);
+
+    // Next.js renders the page's metadata outlet inside the page segment, so
+    // the intercepting route's own not-found catches its generateMetadata().
+    await page.getByRole("link", { name: "Metadata not found" }).click();
+    await expect(page).toHaveURL(/\/not-found-sibling-intercept\/item\/metadata-missing$/);
+    await expect(
+      page.locator(
+        "#not-found-sibling-intercept-intercept-layout #not-found-sibling-intercept-intercept-nf",
+      ),
+    ).toBeVisible();
+    await expect(page.locator("#not-found-sibling-intercept-source-nf")).toHaveCount(0);
+  });
+
+  test("a parallel slot's notFound() renders the same boundary in the document and on navigation", async ({
+    page,
+  }) => {
+    // Next.js attaches not-found boundaries only to each segment's `children`,
+    // so the [lang] boundary above the team layout catches the @members slot's
+    // signal, not the route's deepest boundary (team/not-found.tsx).
+    const response = await page.goto(`${BASE}/nextjs-compat/not-found-layout-segment/en/team`);
+    expect(response?.status()).toBe(404);
+    await expect(page.locator("#not-found-layout-segment-nf")).toBeVisible();
+    await expect(page.locator("#not-found-layout-segment-layout")).toBeVisible();
+    await expect(page.locator("#not-found-layout-segment-team")).toHaveCount(0);
+    await expect(page.locator("#not-found-layout-segment-team-nf")).toHaveCount(0);
+
+    await page.goto(`${BASE}/nextjs-compat/not-found-layout-segment/en/shop/hello`);
+    await waitForAppRouterHydration(page);
+    await page.getByRole("link", { name: "Team", exact: true }).click();
+    await expect(page.locator("#not-found-layout-segment-nf")).toBeVisible();
+    await expect(page.locator("#not-found-layout-segment-team")).toHaveCount(0);
+    await expect(page.locator("#not-found-layout-segment-team-nf")).toHaveCount(0);
+  });
+
+  test("a parallel slot's layout notFound() renders the same boundary in the document and on navigation", async ({
+    page,
+  }) => {
+    // The slot's layout throws above its own not-found.tsx and inside the crew
+    // layout, so the [lang] boundary above the crew layout catches it.
+    const response = await page.goto(`${BASE}/nextjs-compat/not-found-layout-segment/en/crew`);
+    expect(response?.status()).toBe(404);
+    await expect(page.locator("#not-found-layout-segment-nf")).toBeVisible();
+    await expect(page.locator("#not-found-layout-segment-layout")).toBeVisible();
+    await expect(page.locator("#not-found-layout-segment-crew")).toHaveCount(0);
+    await expect(page.locator("#not-found-layout-segment-crew-nf")).toHaveCount(0);
+    await expect(page.locator("#not-found-layout-segment-roles-nf")).toHaveCount(0);
+
+    await page.goto(`${BASE}/nextjs-compat/not-found-layout-segment/en/shop/hello`);
+    await waitForAppRouterHydration(page);
+    await page.getByRole("link", { name: "Crew", exact: true }).click();
+    await expect(page.locator("#not-found-layout-segment-nf")).toBeVisible();
+    await expect(page.locator("#not-found-layout-segment-crew")).toHaveCount(0);
+    await expect(page.locator("#not-found-layout-segment-crew-nf")).toHaveCount(0);
+    await expect(page.locator("#not-found-layout-segment-roles-nf")).toHaveCount(0);
   });
 });
 
