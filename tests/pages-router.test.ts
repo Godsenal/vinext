@@ -10898,6 +10898,15 @@ describe("custom App optional pageProps envelope parity", () => {
     expect(response.status).toBe(404);
     expect(response.headers.get("cache-control")).toBe("no-cache, must-revalidate");
     await response.body?.cancel();
+
+    // The getServerSideProps default is set before the 404 render, so a
+    // custom App that ends that render early still sends it.
+    const ended = await fetch(`${devUrl}/gssp-not-found?end=true`);
+    expect(ended.status).toBe(404);
+    expect(await ended.text()).toBe("ended by App.getInitialProps");
+    expect(ended.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
   });
 });
 

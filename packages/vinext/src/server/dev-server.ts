@@ -1257,6 +1257,11 @@ export function createSSRHandler(
               res.end('{"notFound":true}');
               return;
             }
+            // Next.js sets the gSSP `revalidate: 0` default before render404(),
+            // so a 404 render that ends early or throws still carries it.
+            if (!res.getHeader("Cache-Control")) {
+              res.setHeader("Cache-Control", ISR_NEVER_CACHE_CONTROL);
+            }
             await renderErrorPage(
               server,
               runner,
