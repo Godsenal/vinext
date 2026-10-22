@@ -791,11 +791,15 @@ function resolveRedirectMatch(
   redirect: NextRedirect,
   params: Record<string, string>,
 ): RedirectMatch {
+  // Next.js parses the destination template with the URL parser, which trims
+  // its leading and trailing whitespace, before substituting params and
+  // merging the request query.
+  const destination = redirect.destination.replace(LOCATION_STRIPPED_RE, "");
   return {
     // Collapse protocol-relative URLs (e.g. //evil.com from decoded %2F in catch-all params).
-    destination: substituteAndSanitizeDestination(redirect.destination, params, "redirect"),
+    destination: substituteAndSanitizeDestination(destination, params, "redirect"),
     permanent: redirect.permanent,
-    destinationQuery: substituteRedirectDestinationQuery(redirect.destination, params),
+    destinationQuery: substituteRedirectDestinationQuery(destination, params),
   };
 }
 
@@ -1028,8 +1032,9 @@ const LONE_SURROGATE_RE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF
  * so existing `%XX` escapes and raw request captures are not encoded twice.
  * The query is otherwise emitted verbatim (see
  * preserveRedirectDestinationQuery), so only its control and non-ASCII
- * characters are encoded. Next.js sends those raw and its Node server answers
- * 500 instead.
+ * characters are encoded. Next.js sends those raw, like non-ASCII text from a
+ * decoded `has` capture anywhere in the destination, and its Node server
+ * answers 500 instead.
  */
 export function encodeRedirectLocation(location: string): string {
   location = location.replace(LOCATION_STRIPPED_RE, "").replace(LONE_SURROGATE_RE, "\uFFFD");
