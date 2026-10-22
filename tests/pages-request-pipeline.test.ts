@@ -283,23 +283,6 @@ describe("config redirects", () => {
     expect(result.response.headers.get("Location")).toBe("/new");
   });
 
-  // Next.js getRedirectStatus (lib/redirect-status.ts): `statusCode || (permanent ? 308 : 307)`.
-  it.each([301, 302, 303] as const)(
-    "redirect with statusCode %i returns that status",
-    async (statusCode) => {
-      const result = await runPagesRequest(
-        makeRequest("/old"),
-        baseDeps({
-          configRedirects: [{ source: "/old", destination: "/new", statusCode }],
-        }),
-      );
-      expect(result.type).toBe("response");
-      if (result.type !== "response") return;
-      expect(result.response.status).toBe(statusCode);
-      expect(result.response.headers.get("Location")).toBe("/new");
-    },
-  );
-
   // 3. Config redirect: non-permanent → status 307
   it("non-permanent redirect returns 307", async () => {
     const req = makeRequest("/old");

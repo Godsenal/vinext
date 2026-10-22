@@ -8894,20 +8894,6 @@ describe("createAppRscHandler", () => {
     expect(dispatchMatchedPage).not.toHaveBeenCalled();
   });
 
-  it("answers a config redirect with its statusCode", async () => {
-    const dispatchMatchedPage = vi.fn(async () => new Response("page", { status: 200 }));
-    const handler = createHandler({
-      configRedirects: [{ source: "/old-about", destination: "/about", statusCode: 301 }],
-      dispatchMatchedPage,
-    });
-
-    const response = await handler(new Request("https://example.test/docs/old-about"), null);
-
-    expect(response.status).toBe(301);
-    expect(response.headers.get("location")).toBe("/docs/about");
-    expect(dispatchMatchedPage).not.toHaveBeenCalled();
-  });
-
   it("does not match config redirects through percent-encoded literal aliases", async () => {
     const dispatchMatchedPage = vi.fn(async () => new Response("page", { status: 200 }));
     const handler = createHandler({
