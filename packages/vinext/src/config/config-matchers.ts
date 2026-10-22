@@ -1057,9 +1057,12 @@ export function encodeRedirectLocation(location: string): string {
   location = location.replace(LOCATION_STRIPPED_RE, "").replace(LONE_SURROGATE_RE, "\uFFFD");
   const hashIndex = location.indexOf("#");
   const beforeHash = hashIndex === -1 ? location : location.slice(0, hashIndex);
-  const hash = hashIndex === -1 ? "" : location.slice(hashIndex);
+  // Like the parsed template, an empty query or hash is dropped.
+  const hash =
+    hashIndex === -1 || hashIndex === location.length - 1 ? "" : location.slice(hashIndex);
   const queryIndex = beforeHash.indexOf("?");
-  const query = queryIndex === -1 ? "" : beforeHash.slice(queryIndex);
+  const rawQuery = queryIndex === -1 ? "" : beforeHash.slice(queryIndex);
+  const query = /^\?&*$/.test(rawQuery) ? "" : rawQuery;
   const path = queryIndex === -1 ? beforeHash : beforeHash.slice(0, queryIndex);
 
   let prefix: string;
