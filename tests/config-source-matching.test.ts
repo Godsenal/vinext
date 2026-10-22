@@ -608,6 +608,10 @@ describe("matchRedirect destinations agree with Next.js", () => {
       ["mailto:a\\b", "s"],
       ["/a#x\\y", "s"],
       ["https://e.com/a#x\\y", "s"],
+      ["/a#b\\:slug", "Q"],
+      ["myapp://example.com/a\\:slug", "Q"],
+      ["myapp://example.com/a\\\\:slug", "Q"],
+      ["/a\\:slug", "Q"],
     ]) {
       const { parsedDestination } = prepareDestination({
         appendParamsToQuery: false,

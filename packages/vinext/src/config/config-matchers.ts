@@ -808,7 +808,7 @@ function parseRedirectDestinationTemplate(
   redirect: NextRedirect,
   params: Record<string, string>,
   { basePath, hadBasePath }: BasePathMatchState,
-): string {
+): { template: string; literalColon: string } {
   let template = redirect.destination;
   const isLocal = template.startsWith("/");
   if (isLocal && basePath && hadBasePath) {
@@ -821,17 +821,25 @@ function parseRedirectDestinationTemplate(
   // restored case-insensitively, as Next.js does.
   let marker = "__ESC_COLON_";
   while (template.toLowerCase().includes(marker.toLowerCase())) marker = `_${marker}`;
+  // Stands in for a `\:` escaped colon until params have been substituted.
+  let literalColon = "__ESC_LITERAL_COLON_";
+  while (template.includes(literalColon)) literalColon = `_${literalColon}`;
   const keys = Object.keys(params).sort((a, b) => b.length - a.length);
+  // A `\`-escaped character is skipped, so `\:name` stays literal.
   const escaped =
     keys.length === 0
       ? template
       : template.replace(
           new RegExp(
-            `:(${keys.map((key) => key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})(?![A-Za-z0-9_])`,
-            "g",
+            `\\\\.|:(${keys.map((key) => key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})(?![A-Za-z0-9_])`,
+            "gs",
           ),
-          `${marker}$1`,
+          (match, key: string | undefined) => (key ? `${marker}${key}` : match),
         );
+  // path-to-regexp's compile consumes a `\` as an escape; an escaped `:` must
+  // also survive substitution.
+  const consumeEscapes = (value: string) =>
+    value.replace(/\\(.)/gs, (_, char: string) => (char === ":" ? literalColon : char));
   const url = isLocal ? new URL(`http://n${escaped}`) : new URL(escaped);
   const hash = url.hash;
   url.search = "";
@@ -861,11 +869,13 @@ function parseRedirectDestinationTemplate(
   }
   const markerRe = new RegExp(marker, "gi");
   const unescape = (value: string) => value.replace(markerRe, ":");
-  return `${unescape(base)}${/^\?&*$/.test(query) ? "" : query}${unescape(consumeEscapes(hash))}`;
+  return {
+    template: `${unescape(base)}${/^\?&*$/.test(query) ? "" : query}${unescape(consumeEscapes(hash))}`,
+    literalColon,
+  };
 }
 
 const SPECIAL_SCHEME_RE = /^(?:https?|wss?|ftp|file):$/;
-const consumeEscapes = (value: string) => value.replace(/\\(.)/gs, "$1");
 
 // The `scheme://authority` of an absolute destination template.
 const REDIRECT_ORIGIN_RE = /^[A-Za-z][A-Za-z0-9+.-]*:\/\/[^/?#]*/;
@@ -887,12 +897,16 @@ function resolveRedirectMatch(
   params: Record<string, string>,
   basePathState: BasePathMatchState,
 ): RedirectMatch {
-  const destination = parseRedirectDestinationTemplate(redirect, params, basePathState);
+  const { template: destination, literalColon } = parseRedirectDestinationTemplate(
+    redirect,
+    params,
+    basePathState,
+  );
   // The authority is split off before substitution, so captures in the host
   // are never mistaken for pathname slashes.
   const origin = REDIRECT_ORIGIN_RE.exec(destination)?.[0] ?? "";
   return {
-    destination: origin
+    destination: (origin
       ? substituteDestinationParams(origin, params, "redirect") +
         normalizeRedirectPathnameSlashes(
           substituteDestinationParams(destination.slice(origin.length), params, "redirect"),
@@ -900,7 +914,8 @@ function resolveRedirectMatch(
       : // Collapse protocol-relative URLs (e.g. //evil.com from decoded %2F in catch-all params).
         normalizeRedirectPathnameSlashes(
           substituteAndSanitizeDestination(destination, params, "redirect"),
-        ),
+        )
+    ).replaceAll(literalColon, ":"),
     // Next.js getRedirectStatus (lib/redirect-status.ts).
     statusCode: redirect.statusCode || (redirect.permanent ? 308 : 307),
     destinationQuery: substituteRedirectDestinationQuery(destination, params),
