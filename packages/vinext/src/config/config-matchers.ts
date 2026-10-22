@@ -1005,8 +1005,10 @@ const LOCATION_PATH_ENCODE_RE = /[\u0000- "<>^`{}\u007F]|[^\u0000-\u007F]/gu;
 const LOCATION_FRAGMENT_ENCODE_RE = /[\u0000- "<>`\u007F]|[^\u0000-\u007F]/gu;
 // oxlint-disable-next-line no-control-regex -- C0 controls cannot go in a header raw
 const LOCATION_QUERY_ENCODE_RE = /[\u0000-\u001F\u007F]|[^\u0000-\u007F]/gu;
-// The URL parser removes ASCII tab and newlines before parsing.
-const LOCATION_STRIPPED_RE = /[\t\n\r]/g;
+// The URL parser trims leading and trailing C0 controls and spaces, and removes
+// ASCII tab and newlines anywhere.
+// oxlint-disable-next-line no-control-regex -- C0 controls are what it trims
+const LOCATION_STRIPPED_RE = /^[\u0000- ]+|[\u0000- ]+$|[\t\n\r]/g;
 
 /**
  * Percent-encode a config-redirect `Location` the way Next.js sends it.
@@ -1017,12 +1019,14 @@ const LOCATION_STRIPPED_RE = /[\t\n\r]/g;
  * internationalized host in its punycode form. Left raw, a character above
  * U+00FF makes the Headers constructor throw and the redirect becomes a 500.
  *
- * Tab and newlines are removed, as the parser does. Path and hash use the
- * parser's percent-encode sets. `%` is never encoded, so
- * existing `%XX` escapes and raw request captures are not encoded twice. The
- * query is otherwise emitted verbatim (see preserveRedirectDestinationQuery),
- * so only its control and non-ASCII characters are encoded. Next.js sends
- * those raw and its Node server answers 500 instead.
+ * Like Next.js, a destination that does not start with `/` goes through
+ * `new URL`, which also throws (a 500) on an invalid one. A path keeps the
+ * parser's whitespace handling and percent-encode sets. `%` is never encoded,
+ * so existing `%XX` escapes and raw request captures are not encoded twice.
+ * The query is otherwise emitted verbatim (see
+ * preserveRedirectDestinationQuery), so only its control and non-ASCII
+ * characters are encoded. Next.js sends those raw and its Node server answers
+ * 500 instead.
  */
 export function encodeRedirectLocation(location: string): string {
   location = location.replace(LOCATION_STRIPPED_RE, "");
@@ -1031,17 +1035,12 @@ export function encodeRedirectLocation(location: string): string {
   const hash = hashIndex === -1 ? "" : location.slice(hashIndex);
   const queryIndex = beforeHash.indexOf("?");
   const query = queryIndex === -1 ? "" : beforeHash.slice(queryIndex);
-  let path = queryIndex === -1 ? beforeHash : beforeHash.slice(0, queryIndex);
-
-  let origin = /^[a-z][a-z0-9+.-]*:\/\/[^/\\]*/i.exec(path)?.[0] ?? "";
-  path = path.slice(origin.length);
-  // Like Next.js's `new URL`, an invalid authority throws (a 500) rather than
-  // becoming a malformed Location.
-  if (/[\u0080-\u{10FFFF}]/u.test(origin)) origin = new URL(`${origin}/`).href.slice(0, -1);
+  const path = queryIndex === -1 ? beforeHash : beforeHash.slice(0, queryIndex);
 
   return (
-    origin +
-    path.replace(LOCATION_PATH_ENCODE_RE, encodeURIComponent) +
+    (path.startsWith("/")
+      ? path.replace(LOCATION_PATH_ENCODE_RE, encodeURIComponent)
+      : new URL(path).href) +
     query.replace(LOCATION_QUERY_ENCODE_RE, encodeURIComponent) +
     hash.replace(LOCATION_FRAGMENT_ENCODE_RE, encodeURIComponent)
   );
