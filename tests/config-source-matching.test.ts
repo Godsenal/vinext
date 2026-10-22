@@ -632,6 +632,23 @@ describe("matchRedirect destinations agree with Next.js", () => {
     }
   });
 
+  it("substitutes destinations Next.js throws on instead of failing the request", () => {
+    // Next.js 16.2.7 throws on each of these; vinext substitutes the params.
+    for (const [destination, pathname, expected] of [
+      // The host parser lowercases a param name in the host.
+      ["https://:tenantId.example.com/x", "/r/acme", "https://acme.example.com/x"],
+      ["http://localhost::slug/x", "/r/3000", "http://localhost:3000/x"],
+      [":slug://example.com/", "/r/https", "https://example.com/"],
+      ["about", "/r/s", "about"],
+    ]) {
+      const source = destination.includes("tenantId") ? "/r/:tenantId" : "/r/:slug";
+      expect(
+        matchRedirect(pathname, [{ source, destination, permanent: false }], ctx)?.destination,
+        destination,
+      ).toBe(expected);
+    }
+  });
+
   it("keeps literal text and captures that look like escape markers", () => {
     // Next.js 16.2.7 throws on this destination; vinext redirects to it as written.
     expect(

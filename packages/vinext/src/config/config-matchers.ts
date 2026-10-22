@@ -808,7 +808,7 @@ function parseRedirectDestinationTemplate(
   redirect: NextRedirect,
   params: Record<string, string>,
   { basePath, hadBasePath }: BasePathMatchState,
-): { template: string; literalColon: string } {
+): { template: string; literalColon: string; parsed: boolean } {
   let template = redirect.destination;
   const isLocal = template.startsWith("/");
   if (isLocal && basePath && hadBasePath) {
@@ -832,22 +832,28 @@ function parseRedirectDestinationTemplate(
     literalColon = `_${literalColon}`;
   }
   const keys = Object.keys(params).sort((a, b) => b.length - a.length);
+  const keyPattern = keys.map((key) => key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
   // A `\`-escaped character is skipped, so `\:name` stays literal.
   const escaped =
     keys.length === 0
       ? template
       : template.replace(
-          new RegExp(
-            `\\\\.|:(${keys.map((key) => key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})(?![A-Za-z0-9_])`,
-            "gs",
-          ),
+          new RegExp(`\\\\.|:(${keyPattern})(?![A-Za-z0-9_])`, "gs"),
           (match, key: string | undefined) => (key ? `${marker}${key}` : match),
         );
   // path-to-regexp's compile consumes a `\` as an escape; an escaped `:` must
   // also survive substitution.
   const consumeEscapes = (value: string) =>
     value.replace(/\\(.)/gs, (_, char: string) => (char === ":" ? literalColon : char));
-  const url = isLocal ? new URL(`http://n${escaped}`) : new URL(escaped);
+  let url: URL;
+  try {
+    url = isLocal ? new URL(`http://n${escaped}`) : new URL(escaped);
+  } catch {
+    // Next.js throws on a template it cannot parse (a relative `about`, a
+    // param in the scheme or port); substituting it as written keeps the
+    // redirect working instead.
+    return { template, literalColon, parsed: false };
+  }
   const hash = url.hash;
   url.search = "";
   url.hash = "";
@@ -874,11 +880,22 @@ function parseRedirectDestinationTemplate(
   if (!isLocal && !SPECIAL_SCHEME_RE.test(url.protocol)) {
     base = base.slice(0, base.length - url.pathname.length) + consumeEscapes(url.pathname);
   }
-  const markerRe = new RegExp(marker, "gi");
-  const unescape = (value: string) => value.replace(markerRe, ":");
+  // The host parser lowercased any marker and param name in the host, where
+  // Next.js then throws for a param that is not all lowercase; restore the
+  // original name so the param is substituted.
+  const markerRe = new RegExp(`${marker}(${keyPattern})`, "gi");
+  const unescape = (value: string) =>
+    keys.length === 0
+      ? value
+      : value.replace(
+          markerRe,
+          (_, key: string) =>
+            `:${keys.includes(key) ? key : keys.find((k) => k.toLowerCase() === key.toLowerCase())}`,
+        );
   return {
     template: `${unescape(base)}${/^\?&*$/.test(query) ? "" : query}${unescape(consumeEscapes(hash))}`,
     literalColon,
+    parsed: true,
   };
 }
 
@@ -904,24 +921,26 @@ function resolveRedirectMatch(
   params: Record<string, string>,
   basePathState: BasePathMatchState,
 ): RedirectMatch {
-  const { template: destination, literalColon } = parseRedirectDestinationTemplate(
-    redirect,
-    params,
-    basePathState,
-  );
+  const {
+    template: destination,
+    literalColon,
+    parsed,
+  } = parseRedirectDestinationTemplate(redirect, params, basePathState);
   // The authority is split off before substitution, so captures in the host
   // are never mistaken for pathname slashes.
   const origin = REDIRECT_ORIGIN_RE.exec(destination)?.[0] ?? "";
   return {
-    destination: (origin
-      ? substituteDestinationParams(origin, params, "redirect") +
-        normalizeRedirectPathnameSlashes(
-          substituteDestinationParams(destination.slice(origin.length), params, "redirect"),
-        )
-      : // Collapse protocol-relative URLs (e.g. //evil.com from decoded %2F in catch-all params).
-        normalizeRedirectPathnameSlashes(
-          substituteAndSanitizeDestination(destination, params, "redirect"),
-        )
+    destination: (!parsed
+      ? substituteAndSanitizeDestination(destination, params, "redirect")
+      : origin
+        ? substituteDestinationParams(origin, params, "redirect") +
+          normalizeRedirectPathnameSlashes(
+            substituteDestinationParams(destination.slice(origin.length), params, "redirect"),
+          )
+        : // Collapse protocol-relative URLs (e.g. //evil.com from decoded %2F in catch-all params).
+          normalizeRedirectPathnameSlashes(
+            substituteAndSanitizeDestination(destination, params, "redirect"),
+          )
     ).replaceAll(literalColon, ":"),
     // Next.js getRedirectStatus (lib/redirect-status.ts).
     statusCode: redirect.statusCode || (redirect.permanent ? 308 : 307),
