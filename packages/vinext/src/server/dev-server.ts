@@ -1257,11 +1257,6 @@ export function createSSRHandler(
               res.end('{"notFound":true}');
               return;
             }
-            // Next.js dev answers the rendered 404 with its development page
-            // Cache-Control, over any value the handler set.
-            if (requestPreview.data === false) {
-              res.setHeader("Cache-Control", DEV_PAGES_CACHE_CONTROL);
-            }
             await renderErrorPage(
               server,
               runner,
@@ -1277,6 +1272,9 @@ export function createSSRHandler(
               {
                 ...errorPageContext,
                 notFoundSrcPage: patternToNextFormat(route.pattern),
+                // Next.js dev answers the rendered 404 with its development
+                // page Cache-Control, over any value user code set.
+                ...(requestPreview.data === false ? { cacheControl: DEV_PAGES_CACHE_CONTROL } : {}),
               },
             );
             return;
@@ -1897,6 +1895,8 @@ async function renderErrorPage(
     requestPathname?: string;
     /** Original Pages route that produced this development-only notFound render. */
     notFoundSrcPage?: string;
+    /** Cache-Control written after error-page and custom App initial props run. */
+    cacheControl?: string;
   } = { basePath: "" },
 ): Promise<void> {
   attachPagesRequestCookies(req);
@@ -2159,6 +2159,9 @@ async function renderErrorPage(
               : undefined,
           crossOrigin: context.crossOrigin,
           preserveExistingContentType: statusCode === 404,
+          extraHeaders: context.cacheControl
+            ? { "Cache-Control": context.cacheControl }
+            : undefined,
         });
       } else {
         const bodyHtml = await tracePagesDocument(errorPage, () => renderToStringAsync(element));
@@ -2199,6 +2202,7 @@ async function renderErrorPage(
           ),
           protectedAssetMarker,
         );
+        if (context.cacheControl) res.setHeader("Cache-Control", context.cacheControl);
         res.writeHead(
           statusCode,
           statusCode === 404 && res.hasHeader("Content-Type")
@@ -2230,6 +2234,7 @@ async function renderErrorPage(
     defaultResponse.headers.forEach((value, key) => {
       headers[key] = value;
     });
+    if (context.cacheControl) headers["cache-control"] = context.cacheControl;
     res.writeHead(defaultResponse.status, headers);
     res.end(await defaultResponse.text());
     return;

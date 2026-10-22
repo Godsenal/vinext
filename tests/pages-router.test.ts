@@ -10890,6 +10890,15 @@ describe("custom App optional pageProps envelope parity", () => {
       expect(await hitResponse.text()).toContain('<div id="page-content">gsp-sent-response</div>');
     });
   });
+
+  // Next.js dev sets its development page Cache-Control after the 404 render,
+  // so custom App code cannot make a per-request notFound document cacheable.
+  it("keeps the development Cache-Control on a getServerSideProps notFound in dev", async () => {
+    const response = await fetch(`${devUrl}/gssp-not-found`);
+    expect(response.status).toBe(404);
+    expect(response.headers.get("cache-control")).toBe("no-cache, must-revalidate");
+    await response.body?.cancel();
+  });
 });
 
 describe("Pages production asset manifest reuse", () => {
