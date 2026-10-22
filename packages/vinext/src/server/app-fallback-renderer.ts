@@ -8,7 +8,7 @@ import {
 } from "./app-page-boundary-render.js";
 import { DEFAULT_GLOBAL_ERROR_MODULE } from "./default-global-error-module.js";
 import { DEFAULT_GLOBAL_NOT_FOUND_MODULE } from "./default-global-not-found-module.js";
-import { DEFAULT_NOT_FOUND_MODULE } from "./default-not-found-module.js";
+import { DEFAULT_NOT_FOUND_MODULE } from "./default-http-access-fallback-modules.js";
 import { shareIsolatePromise } from "./isolate-shared-promise.js";
 import type { AppPageFontPreload } from "./app-page-execution.js";
 import type { AppPageMiddlewareContext } from "./app-page-response.js";
@@ -138,6 +138,10 @@ type AppFallbackRenderer<TModule extends AppPageModule = AppPageModule> = {
     opts: {
       boundaryComponent?: AppPageComponent | null;
       boundaryModule?: TModule | null;
+      /** Boundary whose metadata the head uses, when not `boundaryModule`. */
+      headBoundaryModule?: TModule | null;
+      /** Layouts whose metadata the head uses, when more than `layouts`. */
+      headLayouts?: readonly (TModule | null | undefined)[] | null;
       intercept?: AppPageInterceptOptions<TModule> | null;
       /** The document may be stored, so it must not carry the request's query. */
       isCacheCandidate?: boolean;
@@ -204,7 +208,7 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
   // markup (status + "This page could not be found." message). Matches the
   // default not-found UI shipped with Next.js's app loader.
   // See packages/vinext/src/shims/default-not-found.tsx and
-  // packages/vinext/src/server/default-not-found-module.ts.
+  // packages/vinext/src/server/default-http-access-fallback-modules.ts.
   const effectiveRootNotFoundModule: TModule | null =
     rootNotFoundModule ?? (DEFAULT_NOT_FOUND_MODULE as unknown as TModule);
 
@@ -327,6 +331,8 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
         getAndClearPendingCookies,
         getNavigationContext,
         globalErrorModule: effectiveGlobalErrorModule,
+        headBoundaryModule: opts?.headBoundaryModule ?? null,
+        headLayoutModules: useGlobalNotFound ? [] : (opts?.headLayouts ?? null),
         intercept: opts?.intercept ?? null,
         isCacheCandidate: opts?.isCacheCandidate,
         isEdgeRuntime: callContext?.isEdgeRuntime,

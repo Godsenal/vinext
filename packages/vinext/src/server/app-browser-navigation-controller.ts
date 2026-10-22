@@ -756,7 +756,13 @@ export function createAppBrowserNavigationController(
       targetHref: createSnapshotPathAndSearch(navigationSnapshot),
     });
     if (approval.approvedCommit) {
-      dispatchSynchronousVisibleCommit(approval.approvedCommit);
+      // Commit as a transition, like Next.js's hmrRefresh. An urgent update
+      // that suspends replaces revealed content with the nearest Suspense
+      // fallback, which shrinks the document and clamps the scroll position.
+      const approvedHmrCommit = approval.approvedCommit;
+      startTransition(() => {
+        dispatchVisibleCommit(approvedHmrCommit);
+      });
     } else if (approval.decision.disposition === "hard-navigate") {
       performHardNavigation(createSnapshotPathAndSearch(navigationSnapshot));
     }
@@ -805,6 +811,7 @@ export function createAppBrowserNavigationController(
     commit: ApprovedVisibleCommit,
     pendingRouterState: PendingBrowserRouterState | null,
     visibleCommitMode: NavigationRuntimeVisibleCommitMode,
+    republishPendingRouterState: boolean,
   ): void {
     const setter = getBrowserRouterStateSetter();
     const pendingCommit = pendingNavigationCommits.get(renderId);
@@ -821,9 +828,13 @@ export function createAppBrowserNavigationController(
       // resolving the deferred promise is normally sufficient. A same-path
       // search+hash response whose visible tree is unchanged can be retained by
       // React without mounting the new NavigationCommitSignal, though. In that
-      // narrow synchronous mode, publish the resolved state directly as well;
-      // the signal's commit effects remain the authority for URL and scroll
-      // effects, including when the response suspends or changes the tree.
+      // narrow case, publish the resolved state directly as well; the signal's
+      // commit effects remain the authority for URL and scroll effects,
+      // including when the response suspends or changes the tree. The publish
+      // stays a transition: the payload can still be resolving, and a sync
+      // render that suspends replaces the visible page with the nearest
+      // Suspense fallback. This branch ignores visibleCommitMode: its only
+      // "synchronous" caller (gesture push) never has a pending router state.
       if (pendingRouterState.settled) return;
       const committedState = captureCandidateState(
         applyApprovedVisibleCommit(getBrowserRouterState(), commit),
@@ -833,20 +844,20 @@ export function createAppBrowserNavigationController(
       if (activePendingBrowserRouterState === pendingRouterState) {
         activePendingBrowserRouterState = null;
       }
-      if (visibleCommitMode === "synchronous") {
-        flushSync(() => {
+      if (republishPendingRouterState) {
+        startTransition(() => {
           setter(committedState);
         });
       }
       return;
     }
 
-    // This is intentionally distinct from dispatchSynchronousVisibleCommit
-    // below: that path's callers (HMR, history traversal) already run inside a
-    // synchronous event-handler/effect context where React flushes the plain
-    // setter itself, whereas the gesture commit fires after an `await` inside a
-    // held async transition and must be forced out with flushSync. Don't
-    // consolidate the two.
+    // This is intentionally distinct from dispatchVisibleCommit
+    // below: that helper leaves priority to its callers (history traversal
+    // calls it inside its own flushSync; HMR and same-URL action revalidation
+    // wrap it in startTransition), whereas the gesture commit fires after an
+    // `await` inside a held async transition and must be forced out here with
+    // flushSync. Don't consolidate the two.
     if (visibleCommitMode === "synchronous") {
       flushSync(() => {
         const committedState = captureCandidateState(
@@ -865,7 +876,8 @@ export function createAppBrowserNavigationController(
     });
   }
 
-  function dispatchSynchronousVisibleCommit(commit: ApprovedVisibleCommit): void {
+  /** Calls the setter directly; the caller chooses the update's priority. */
+  function dispatchVisibleCommit(commit: ApprovedVisibleCommit): void {
     const setter = getBrowserRouterStateSetter();
     setter(applyApprovedVisibleCommit(getBrowserRouterState(), commit));
   }
@@ -952,7 +964,7 @@ export function createAppBrowserNavigationController(
     }
 
     options.beforeCommit?.();
-    dispatchSynchronousVisibleCommit(approval.approvedCommit);
+    dispatchVisibleCommit(approval.approvedCommit);
     return true;
   }
 
@@ -982,7 +994,7 @@ export function createAppBrowserNavigationController(
     }
   }
 
-  function shouldForceSynchronousCommit(options: BrowserNavigationPayloadOptions): boolean {
+  function shouldRepublishPendingRouterState(options: BrowserNavigationPayloadOptions): boolean {
     if (options.actionType === "traverse") return false;
     if (options.historyUpdateMode === undefined) return false;
     if (options.scrollIntent?.hash == null) return false;
@@ -1143,23 +1155,26 @@ export function createAppBrowserNavigationController(
         renderId,
         approvedCommit,
         options.pendingRouterState,
-        shouldForceSynchronousCommit(options)
-          ? "synchronous"
-          : (options.visibleCommitMode ?? "transition"),
+        options.visibleCommitMode ?? "transition",
+        shouldRepublishPendingRouterState(options),
       );
       if (options.navigationResponseCompletion) {
         // Keep the live Flight branch streaming. If React commits it normally,
         // NavigationCommitSignal removes this render from the pending map
         // before the cache tee reaches EOF. A retained optimistic subtree can
         // otherwise leave the fully received candidate uncommitted; publish it
-        // synchronously only as that terminal recovery path.
+        // again only as that terminal recovery path. The update must stay a
+        // transition: the cache tee can end while the payload is still
+        // resolving (a client module still loading, or a busy main thread),
+        // and a sync render that suspends replaces the visible page with the
+        // nearest Suspense fallback.
         void options.navigationResponseCompletion.then(
           () => {
             if (!isCurrentNavigation(options.navId) || !hasBrowserRouterState()) return;
             const pendingCommit = pendingNavigationCommits.get(renderId);
             const committedState = pendingCommit?.committedState;
             if (!committedState) return;
-            flushSync(() => {
+            startTransition(() => {
               getBrowserRouterStateSetter()(committedState);
             });
           },
@@ -1257,7 +1272,7 @@ export function createAppBrowserNavigationController(
       if (latestApproval.approvedCommit) {
         const approvedRevalidationCommit = latestApproval.approvedCommit;
         startTransition(() => {
-          dispatchSynchronousVisibleCommit(approvedRevalidationCommit);
+          dispatchVisibleCommit(approvedRevalidationCommit);
         });
         syncHistoryStatePreviousNextUrl(
           approvedRevalidationCommit.previousNextUrl,
