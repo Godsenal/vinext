@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { waitForHydration } from "../helpers";
 
 const BASE = "http://localhost:4190";
 
@@ -13,4 +14,20 @@ test("resolves the destination template after the basePath prefixes it", async (
     expect(res.status()).toBe(307);
     expect(res.headers()["location"]).toBe(location);
   }
+});
+
+// A client navigation follows a redirect that leaves the basePath to the same
+// URL as the server's Location, rather than re-adding the basePath.
+test("client navigation follows a redirect out of the basePath", async ({ page }) => {
+  await page.goto(`${BASE}/docs/`);
+  await waitForHydration(page);
+  const documentRequest = page.waitForRequest(
+    (request) => request.isNavigationRequest() && new URL(request.url()).pathname !== "/docs/",
+  );
+  await page.evaluate(() => {
+    void (
+      window as unknown as { next: { router: { push(url: string): Promise<boolean> } } }
+    ).next.router.push("/basepath-dot-redirect/");
+  });
+  expect((await documentRequest).url()).toBe(`${BASE}/outside`);
 });

@@ -1827,6 +1827,18 @@ function getClientConfigRouteContext(href: string): {
   };
 }
 
+/**
+ * matchRedirect has already applied basePath to a config destination, so a
+ * local one that resolves outside it (`/../outside`, or a `basePath: false`
+ * rule) is another app's URL. resolveLocalRedirectUrl would treat it as an app
+ * path and re-add basePath, so it is followed as a document navigation instead,
+ * landing where the server's redirect does.
+ */
+function configRedirectLeavesBasePath(location: string): boolean {
+  if (!__basePath || !location.startsWith("/") || location.startsWith("//")) return false;
+  return !hasBasePath(new URL(location, "http://vinext.local").pathname, __basePath);
+}
+
 async function resolveClientConfigRedirect(href: string): Promise<string | null> {
   const redirects = window.__VINEXT_CLIENT_REDIRECTS__;
   if (!redirects || redirects.length === 0) return null;
@@ -2854,7 +2866,9 @@ async function navigateClient(
           ? await resolveClientConfigRedirect(browserUrl)
           : null;
       if (configRedirect) {
-        const redirectedUrl = resolveLocalRedirectUrl(configRedirect);
+        const redirectedUrl = configRedirectLeavesBasePath(configRedirect)
+          ? null
+          : resolveLocalRedirectUrl(configRedirect);
         if (!redirectedUrl) {
           scheduleHardNavigationAndThrow(configRedirect, "Navigation redirected externally");
         }
