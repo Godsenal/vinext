@@ -1920,6 +1920,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let resolvedServerExternalPackages: string[] = [];
   let registerNodeOpenTelemetryLoader = false;
   let pagesTsconfigAliases: Record<string, string> = {};
+  let pagesTsconfigExactAliases: Record<string, string> = {};
   let pagesBundledPackages = new Set<string>();
   let isServeCommand = false;
   let buildEmptyOutDir: boolean | undefined;
@@ -2752,6 +2753,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       getPagesDir: () => (hasPagesDir ? pagesDir : null),
       getAliases: () => nextConfig?.aliases ?? {},
       getTsconfigAliases: () => pagesTsconfigAliases,
+      getTsconfigExactAliases: () => pagesTsconfigExactAliases,
       getBundledPackages: () => pagesBundledPackages,
       // Workers and Nitro need a self-contained server bundle. Their runtime
       // builds intentionally keep package code inside the graph.
@@ -2994,7 +2996,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         const resolvedTsconfigAliases = resolveTsconfigAliases(root, configuredTsconfigPath);
         tsconfigPathAliases = resolvedTsconfigAliases.vite;
         tsconfigExactPathAliases = resolvedTsconfigAliases.viteExact;
-        pagesTsconfigAliases = { ...tsconfigPathAliases, ...tsconfigExactPathAliases };
+        pagesTsconfigAliases = tsconfigPathAliases;
+        pagesTsconfigExactAliases = tsconfigExactPathAliases;
         sassTsconfigPathAliases = resolvedTsconfigAliases.sass;
         // Vite's native option discovers tsconfig.json and cannot receive Next's
         // typescript.tsconfigPath. Only auto-enable it for the default config;
