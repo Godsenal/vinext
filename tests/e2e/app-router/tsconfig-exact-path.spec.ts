@@ -30,6 +30,7 @@ test.describe("exact tsconfig paths keys", () => {
     await expect(page.getByTestId("server-entry")).toHaveText(ENTRY);
     await expect(page.getByTestId("server-runtime")).toHaveText(RUNTIME);
     await expectHydratedClient(page);
+    await expect(page.getByTestId("client-message")).toHaveText("message from wildcard export");
   });
 
   test("Pages Router resolves only the exact specifier through tsconfig paths", async ({
