@@ -3621,6 +3621,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               find,
               replacement,
             }));
+        // Aliases that take precedence over a tsconfig mapping with the same key.
+        const tsconfigOverridingAliases: Record<string, string> = {
+          ...nextConfig.aliases,
+          ...nextShimMap,
+          "vinext/server/pages-client-assets": _pagesClientAssetsPath,
+        };
         if (config.resolve) {
           // Vite retains the inline resolve object for server.restart(). Do not
           // remove aliases from that shared object when arranging this result.
@@ -3894,13 +3900,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 {
                   ...(swcHelpersAlias ? { "@swc/helpers/_": swcHelpersAlias } : {}),
                   ...tsconfigPathAliases,
-                  ...nextConfig.aliases,
-                  ...nextShimMap,
-                  "vinext/server/pages-client-assets": _pagesClientAssetsPath,
+                  ...tsconfigOverridingAliases,
                 },
                 tsconfigPathAliases,
                 tsconfigExactPathAliases,
-                { ...nextConfig.aliases, ...nextShimMap },
+                tsconfigOverridingAliases,
               ),
             ],
             // Dedupe React packages to prevent dual-instance errors.
