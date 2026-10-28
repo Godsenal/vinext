@@ -61,6 +61,7 @@ import {
   type PagesRenderOptions,
 } from "./pages-request-pipeline.js";
 import { mergeHeaders } from "./worker-utils.js";
+import { stripInheritedResponseStageCookies } from "./response-stage-policy.js";
 import {
   normalizeNextDataPagePathname,
   isNextDataPathname,
@@ -2846,14 +2847,26 @@ async function createPagesRouterRequestHandler(
             : null,
         handleApi:
           typeof handleApi === "function"
-            ? (request: Request, apiUrl: string) =>
-                handleApi(
+            ? async (request: Request, apiUrl: string, _ctx: unknown, stagedHeaders: Headers) => {
+                // Next.js applies the routing response headers to `res` before the
+                // API handler runs, so the handler can read and override them.
+                const response = await handleApi(
                   request,
                   apiUrl,
                   createNodeExecutionContext(),
                   resolveTrustedNodeRevalidateOrigin(req, host, port),
                   "node",
-                )
+                  stagedHeaders,
+                );
+                // The pipeline merges the staged cookies again; drop the copies
+                // the handler inherited so they are not sent twice.
+                const stripped = stripInheritedResponseStageCookies(response, stagedHeaders);
+                if (isVinextStreamedApiResponse(response)) {
+                  (stripped as ResponseWithVinextStreamingMetadata).__vinextStreamedApiResponse =
+                    true;
+                }
+                return stripped;
+              }
             : null,
         // ── 5b. Serve public-directory static files (post-middleware) ──
         // Public files (favicon.ico, robots.txt, anything under public/) are served

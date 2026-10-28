@@ -2630,6 +2630,21 @@ export const config = { matcher: "${matcher}" };
     expect(res.headers.get("x-custom-header")).toBe("vinext");
   });
 
+  // Next.js applies routing response headers to `res` before invoking the API
+  // route (packages/next/src/server/lib/router-server.ts), so the handler reads
+  // them and its own setHeader wins.
+  it("exposes next.config headers to the API handler before it runs", async () => {
+    const res = await fetch(`${baseUrl}/api/config-headers`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ link: '</sitemap.xml>; rel="sitemap"' });
+    expect(res.headers.get("link")).toBe(
+      '</sitemap.xml>; rel="sitemap", <https://example.com/doc>; rel="canonical"',
+    );
+    expect(res.headers.get("x-config-override")).toBe("handler");
+    expect(res.headers.get("x-config-untouched")).toBe("config");
+    expect(res.headers.getSetCookie()).toEqual(["config-cookie=1; Path=/"]);
+  });
+
   // Ported from PR #47 by @ibruno
   it("applies has/missing conditions for next.config.js headers", async () => {
     const guestRes = await fetch(`${baseUrl}/about`);
@@ -10100,6 +10115,21 @@ describe("Production server next.config.js features (Pages Router)", () => {
     const res = await fetch(`${prodUrl}/api/hello`);
     expect(res.status).toBe(200);
     expect(res.headers.get("x-custom-header")).toBe("vinext");
+  });
+
+  // Next.js applies routing response headers to `res` before invoking the API
+  // route (packages/next/src/server/lib/router-server.ts), so the handler reads
+  // them and its own setHeader wins.
+  it("exposes next.config headers to the API handler before it runs", async () => {
+    const res = await fetch(`${prodUrl}/api/config-headers`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ link: '</sitemap.xml>; rel="sitemap"' });
+    expect(res.headers.get("link")).toBe(
+      '</sitemap.xml>; rel="sitemap", <https://example.com/doc>; rel="canonical"',
+    );
+    expect(res.headers.get("x-config-override")).toBe("handler");
+    expect(res.headers.get("x-config-untouched")).toBe("config");
+    expect(res.headers.getSetCookie()).toEqual(["config-cookie=1; Path=/"]);
   });
 
   // Ported from PR #47 by @ibruno
