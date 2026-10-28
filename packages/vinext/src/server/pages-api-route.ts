@@ -283,8 +283,11 @@ async function _handlePagesApiRoute(options: HandlePagesApiRouteOptions): Promis
       }
       return response;
     };
-    const destroyAfterHandlerError = (error: unknown): never => {
+    const settleHandlerError = (error: unknown): { type: "error"; error: Error } => {
       const normalizedError = error instanceof Error ? error : new Error(String(error));
+      // Before the first write, Next.js answers on the same `res` (sendError),
+      // so headers the handler set before throwing are kept.
+      if (!res.headersSent) return { type: "error", error: normalizedError };
       // Once a handler has started writing, the Fetch Response may already be
       // on its way to the client. Error the bridge so a parked write callback
       // and the response consumer both settle instead of abandoning the
@@ -306,7 +309,7 @@ async function _handlePagesApiRoute(options: HandlePagesApiRouteOptions): Promis
           recordErrors: options.edgeRuntime !== "node",
         }),
       )
-      .then(() => ({ type: "handler" as const }), destroyAfterHandlerError);
+      .then(() => ({ type: "handler" as const }), settleHandlerError);
 
     // A real Node ServerResponse is consumed by the socket while the API
     // handler is still running. Mirror that concurrency at the Fetch boundary:
@@ -326,6 +329,13 @@ async function _handlePagesApiRoute(options: HandlePagesApiRouteOptions): Promis
       // through options.ctx.
       getRequestExecutionContext()?.waitUntil(handlerLifecycle);
       return finalizeResponse(firstSettled.response);
+    }
+
+    if (firstSettled.type === "error") {
+      await options.reportRequestError?.(firstSettled.error, route.pattern);
+      res.statusCode = 500;
+      res.end("Internal Server Error");
+      return finalizeResponse(await responsePromise);
     }
 
     completeHandler();
