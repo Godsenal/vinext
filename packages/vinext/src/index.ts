@@ -1002,7 +1002,10 @@ function resolveTsconfigExtends(configPath: string, specifier: string): string |
 }
 
 type MaterializedTsconfigPathAliases = {
+  // Trailing `/*` patterns, keyed by prefix: match the prefix and paths below it.
   vite: Record<string, string>;
+  // Keys without `*`: TypeScript matches them only against the exact specifier.
+  viteExact: Record<string, string>;
   sass: SassTsconfigPathAlias[];
 };
 
@@ -1029,6 +1032,7 @@ function materializeTsconfigPathAliases(
   projectRoot: string,
 ): MaterializedTsconfigPathAliases {
   const vite: Record<string, string> = {};
+  const viteExact: Record<string, string> = {};
   const sass: SassTsconfigPathAlias[] = [];
 
   for (const [find, rawTargets] of Object.entries(pathsConfig)) {
@@ -1075,10 +1079,10 @@ function materializeTsconfigPathAliases(
     }
 
     const replacement = path.resolve(baseUrl, target);
-    vite[find] = toViteAliasReplacement(replacement, projectRoot);
+    viteExact[find] = toViteAliasReplacement(replacement, projectRoot);
   }
 
-  return { vite, sass };
+  return { vite, viteExact, sass };
 }
 
 function toViteAliasReplacement(absolutePath: string, projectRoot: string): string {
@@ -1136,18 +1140,18 @@ function loadTsconfigPathAliases(
   seen = new Set<string>(),
 ): MaterializedTsconfigPathAliases {
   const normalizedPath = tryRealpathSync(configPath) ?? configPath;
-  if (seen.has(normalizedPath)) return { vite: {}, sass: [] };
+  if (seen.has(normalizedPath)) return { vite: {}, viteExact: {}, sass: [] };
   seen.add(normalizedPath);
 
   let parsed: Record<string, unknown> | null = null;
   try {
     parsed = parseStaticObjectLiteral(fs.readFileSync(normalizedPath, "utf-8"));
   } catch {
-    return { vite: {}, sass: [] };
+    return { vite: {}, viteExact: {}, sass: [] };
   }
-  if (!parsed) return { vite: {}, sass: [] };
+  if (!parsed) return { vite: {}, viteExact: {}, sass: [] };
 
-  let aliases: MaterializedTsconfigPathAliases = { vite: {}, sass: [] };
+  let aliases: MaterializedTsconfigPathAliases = { vite: {}, viteExact: {}, sass: [] };
   // `extends` may be a string or (TypeScript 5.0+) an array; iterate parents in
   // order so later entries override earlier ones (matching Next.js).
   for (const extendsSpecifier of normalizeTsconfigExtends(parsed.extends)) {
@@ -1156,6 +1160,7 @@ function loadTsconfigPathAliases(
       const parent = loadTsconfigPathAliases(extendedPath, projectRoot, seen);
       aliases = {
         vite: { ...aliases.vite, ...parent.vite },
+        viteExact: { ...aliases.viteExact, ...parent.viteExact },
         sass: mergeSassTsconfigPathAliases(aliases.sass, parent.sass),
       };
     }
@@ -1173,6 +1178,7 @@ function loadTsconfigPathAliases(
   const own = materializeTsconfigPathAliases(pathsConfig, resolvedBaseUrl, projectRoot);
   return {
     vite: { ...aliases.vite, ...own.vite },
+    viteExact: { ...aliases.viteExact, ...own.viteExact },
     sass: mergeSassTsconfigPathAliases(aliases.sass, own.sass),
   };
 }
@@ -1239,10 +1245,7 @@ function createOptionalOptimizeDepsLogger(logger: Logger, warnings: ReadonlySet<
 
 // Cache materialized tsconfig/jsconfig aliases so Vite's glob and dynamic-import
 // transforms can see them via resolve.alias without re-reading config files per env.
-type ResolvedTsconfigPathAliases = {
-  vite: Record<string, string>;
-  sass: SassTsconfigPathAlias[];
-};
+type ResolvedTsconfigPathAliases = MaterializedTsconfigPathAliases;
 
 const _tsconfigAliasCache = new Map<string, ResolvedTsconfigPathAliases>();
 
@@ -1269,15 +1272,15 @@ function resolveTsconfigAliases(
     return _tsconfigAliasCache.get(cacheKey)!;
   }
 
-  let aliases: ResolvedTsconfigPathAliases = { vite: {}, sass: [] };
+  let aliases: ResolvedTsconfigPathAliases = { vite: {}, viteExact: {}, sass: [] };
   for (const candidate of configPath
     ? [configPath]
     : TSCONFIG_FILES.map((name) => path.join(projectRoot, name))) {
     if (!fs.existsSync(candidate)) continue;
     const materialized = loadTsconfigPathAliases(candidate, projectRoot);
     aliases = {
+      ...materialized,
       vite: sortTsconfigAliasesBySpecificity(materialized.vite),
-      sass: materialized.sass,
     };
     break;
   }
@@ -1286,6 +1289,9 @@ function resolveTsconfigAliases(
   // every environment and give Server Components the client variant.
   aliases.vite = Object.fromEntries(
     Object.entries(aliases.vite).filter(([find]) => !_reactServerShims.has(find)),
+  );
+  aliases.viteExact = Object.fromEntries(
+    Object.entries(aliases.viteExact).filter(([find]) => !_reactServerShims.has(find)),
   );
 
   _tsconfigAliasCache.set(cacheKey, aliases);
@@ -1359,17 +1365,34 @@ function aliasFindMatches(find: string | RegExp, id: string): boolean {
  * Convert the merged alias map into Vite alias entries, attaching the
  * stylesheet-scoping resolver to entries that came from tsconfig `paths`.
  * Array order preserves the map's first-match ordering.
+ *
+ * Exact tsconfig keys come first as anchored RegExps: a string `find` would
+ * also match paths below the key, so `"@acme/pkg": ["./src/index.ts"]` would
+ * rewrite `@acme/pkg/runtime` to `./src/index.ts/runtime`. TypeScript and
+ * Next.js match such keys only against the exact specifier and prefer them over
+ * `*` patterns.
  */
 function buildResolveAliasEntries(
   aliasMap: Record<string, string>,
   tsconfigPathAliases: Record<string, string>,
+  tsconfigExactPathAliases: Record<string, string>,
   explicitAliases: Record<string, string>,
 ): Alias[] {
-  return Object.entries(aliasMap).map(([find, replacement]) =>
-    Object.hasOwn(tsconfigPathAliases, find) && !Object.hasOwn(explicitAliases, find)
-      ? { find, replacement, customResolver: tsconfigAliasCustomResolver }
-      : { find, replacement },
-  );
+  const exactEntries: Alias[] = Object.entries(tsconfigExactPathAliases)
+    .filter(([find]) => !Object.hasOwn(explicitAliases, find))
+    .map(([find, replacement]) => ({
+      find: new RegExp(`^${escapeRegExp(find)}$`),
+      replacement,
+      customResolver: tsconfigAliasCustomResolver,
+    }));
+  return [
+    ...exactEntries,
+    ...Object.entries(aliasMap).map(([find, replacement]) =>
+      Object.hasOwn(tsconfigPathAliases, find) && !Object.hasOwn(explicitAliases, find)
+        ? { find, replacement, customResolver: tsconfigAliasCustomResolver }
+        : { find, replacement },
+    ),
+  ];
 }
 
 // Vite 8 logs a deprecation warning when `resolve.alias` contains a
@@ -2802,6 +2825,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           (buildLifecycleInvocation !== undefined || claimViteCliBuildInvocation());
         const userResolve = config.resolve as UserResolveConfigWithTsconfigPaths | undefined;
         let tsconfigPathAliases: Record<string, string> = {};
+        let tsconfigExactPathAliases: Record<string, string> = {};
         let sassTsconfigPathAliases: SassTsconfigPathAlias[] = [];
         const swcHelpersAlias = resolveSwcHelpersAlias(root);
 
@@ -2969,7 +2993,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           : undefined;
         const resolvedTsconfigAliases = resolveTsconfigAliases(root, configuredTsconfigPath);
         tsconfigPathAliases = resolvedTsconfigAliases.vite;
-        pagesTsconfigAliases = tsconfigPathAliases;
+        tsconfigExactPathAliases = resolvedTsconfigAliases.viteExact;
+        pagesTsconfigAliases = { ...tsconfigPathAliases, ...tsconfigExactPathAliases };
         sassTsconfigPathAliases = resolvedTsconfigAliases.sass;
         // Vite's native option discovers tsconfig.json and cannot receive Next's
         // typescript.tsconfigPath. Only auto-enable it for the default config;
@@ -2982,7 +3007,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // (see suppressAliasCustomResolverDeprecationWarning). Mutating
         // config.customLogger (rather than returning it) keeps mergeConfig
         // from deep-cloning the logger and flattening its hasWarned getter.
-        if (Object.keys(tsconfigPathAliases).length > 0) {
+        if (
+          Object.keys(tsconfigPathAliases).length > 0 ||
+          Object.keys(tsconfigExactPathAliases).length > 0
+        ) {
           config.customLogger = suppressAliasCustomResolverDeprecationWarning(
             config.customLogger ??
               createLogger(config.logLevel, { allowClearScreen: config.clearScreen }),
@@ -3868,6 +3896,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                   "vinext/server/pages-client-assets": _pagesClientAssetsPath,
                 },
                 tsconfigPathAliases,
+                tsconfigExactPathAliases,
                 { ...nextConfig.aliases, ...nextShimMap },
               ),
             ],
