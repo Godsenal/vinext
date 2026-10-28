@@ -267,8 +267,8 @@ const nextConfig = {
         headers: [{ key: "Cache-Control", value: "no-store" }],
       },
 
-      // Used by Vitest: pages-router.test.ts. The API handler reads and
-      // extends these before they reach the response.
+      // Used by Playwright: tests/e2e/pages-api-config-headers.ts. The API
+      // handler reads, extends and replaces these before they reach the response.
       {
         source: "/api/config-headers",
         headers: [
