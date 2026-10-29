@@ -243,7 +243,6 @@ function applyPagesErrorCachePolicy(
       cacheControl: buildMissIsrCacheControl(revalidateSeconds, expireSeconds),
       tags: [pagesPathCacheTag(cacheTagPathname)],
     });
-    applyPagesPrerenderRevalidateHeader(headers, revalidateSeconds);
   }
   return new Response(response.body, {
     headers,
@@ -1266,6 +1265,13 @@ export function createPagesPageHandler(
             );
           } else if (pageDataResult.cacheState) {
             notFoundResponse = withPagesCacheState(notFoundResponse, pageDataResult.cacheState);
+          }
+          // Whichever 404 rendered, the build records the source route's lifetime.
+          if (pageDataResult.revalidateSeconds !== undefined) {
+            applyPagesPrerenderRevalidateHeader(
+              notFoundResponse.headers,
+              pageDataResult.revalidateSeconds,
+            );
           }
           return finalizePagesPreviewResponse(withBrowserPolicy(notFoundResponse), preview);
         }
