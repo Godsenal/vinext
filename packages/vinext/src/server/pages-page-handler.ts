@@ -33,7 +33,10 @@ import {
 } from "./pages-page-data.js";
 import type { PagesPageModule } from "./pages-page-data.js";
 import { resolvePagesPageMethodResponse } from "./pages-page-method.js";
-import { renderPagesPageResponse } from "./pages-page-response.js";
+import {
+  applyPagesPrerenderRevalidateHeader,
+  renderPagesPageResponse,
+} from "./pages-page-response.js";
 import { tracePagesDocumentStream, traceFindPageComponents } from "./pages-execution-tracing.js";
 import { buildPagesReadinessNextData } from "./pages-readiness.js";
 import type { PagesI18nRenderContext } from "./pages-page-response.js";
@@ -240,6 +243,7 @@ function applyPagesErrorCachePolicy(
       cacheControl: buildMissIsrCacheControl(revalidateSeconds, expireSeconds),
       tags: [pagesPathCacheTag(cacheTagPathname)],
     });
+    applyPagesPrerenderRevalidateHeader(headers, revalidateSeconds);
   }
   return new Response(response.body, {
     headers,
